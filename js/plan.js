@@ -16,7 +16,46 @@ export const KEYWORDS = [
 const DEGREE_RE = /[0-9０-９]+\s*度/;
 
 // 言い直しの合図になる言葉（「もう一回」はカット説明でも普通に使うので含めない）
-const RETAKE_RE = /言い直|撮り直|間違えました|間違えた|ごめんなさい|失礼しました/;
+// Whisper はひらがなや聞き間違いで書くことがある（例: いい直します、いいなをします）
+const RETAKE_RE = /言い直|いい直|言いなお|いいなお|いいなをし|撮り直|とり直|間違えました|間違えた|ごめんなさい|失礼しました/;
+
+// 文字起こしに先に与える「話題と用語」。Whisper はこれに引っぱられて専門用語を正しく書きやすくなる
+export const ASR_PROMPT = '美容師のカット解説です。ブロッキング、スライス、パネル、0度、45度、90度、ガイド、毛先、前下がり、ボブ、レイヤー、グラデーション、セニング、量感、軽さ、重さ、丸み、シルエット、襟足、もみあげ、前髪、ドライ、ブロー。';
+
+// よくある聞き間違い → 正しい用語（前後の文脈つきで、誤変換しにくいものだけ）
+const CORRECTIONS = [
+  [/[カハ]ネル(?=[をはのがにで])/g, 'パネル'],
+  [/ゼロ[ドど度]/g, '0度'],
+  [/下先(?=[をはのがにで])/g, '毛先'],
+  [/まえさがり|前さがり/g, '前下がり'],
+  [/マルミ|まるみ/g, '丸み'],
+  [/シルエッド/g, 'シルエット'],
+  [/ローカー(?=[をはのがにで])/g, '量感'],
+  [/カルサ(?=[をはのがにで])/g, '軽さ'],
+  [/ブロッキン(?=[をはのがにで])/g, 'ブロッキング'],
+  [/セーニング|センニング/g, 'セニング'],
+  [/ライドに合わせ/g, 'ガイドに合わせ'],
+  [/指1本/g, '指一本'],
+];
+// 字幕から取り除くつなぎ言葉（文頭・読点の後のものだけ）。「Aと」は「えーと」の聞き間違い
+const FILLER_HEAD_RE = /(^|[、。\s])(?:えーっと|えーと|えっと|ええと|Aと|あのー|あの、|えー|ええ、|まあ、|うーん)[、,\s]*/g;
+
+// 文字起こし結果を字幕向けに整える
+export function cleanSubtitle(text) {
+  let t = (text || '').replace(/\s+/g, ' ').trim();
+  for (const [re, to] of CORRECTIONS) t = t.replace(re, to);
+  for (let i = 0; i < 2; i++) t = t.replace(FILLER_HEAD_RE, '$1');
+  return t.replace(/^[、。\s]+/, '').replace(/、{2,}/g, '、').replace(/\s*([、。])\s*/g, '$1').trim();
+}
+
+// プロンプトの文がそのまま出てきたもの（無音部分などで起きる）
+export function isPromptEcho(text) {
+  const t = (text || '').replace(/\s/g, '');
+  if (!t) return false;
+  if (t.includes('美容師のカット解説です')) return true;
+  const terms = t.split('、').filter(Boolean);
+  return terms.length >= 5 && terms.filter(w => ASR_PROMPT.includes(w)).length / terms.length > 0.8;
+}
 
 // Whisper が無音部分で出しがちな定型文
 const HALLUCINATION_RE = /ご視聴ありがとうございました|チャンネル登録|字幕は|お疲れ様でした$/;
@@ -125,7 +164,10 @@ export function detectRetakes(chunks) {
   for (let i = 0; i < chunks.length; i++) {
     if (RETAKE_RE.test(chunks[i].text)) {
       flags[i] = '言い直しの合図';
-      if (i > 0 && chunks[i].start - chunks[i - 1].end < 10 && !flags[i - 1]) flags[i - 1] = '言い直し前の発言';
+      // 合図だけの短い発言なら、その直前の発言が言い直し前のもの。
+      // 合図の前に内容がある（「…スライスで、すみません、言い直します」）なら、この発言自体が言い直し前
+      const before = normalizeText(chunks[i].text.split(RETAKE_RE)[0].replace(/すみません|すいません|ごめんなさい/g, ''));
+      if (before.length < 6 && i > 0 && chunks[i].start - chunks[i - 1].end < 10 && !flags[i - 1]) flags[i - 1] = '言い直し前の発言';
     }
   }
   for (let i = 0; i < chunks.length; i++) {
@@ -217,7 +259,8 @@ export function buildUnits({ duration, rmsDb, speech, chunks, motion }) {
       const speechDur = piecesDuration(pieces);
       const len = Math.max(0.01, c.end - c.start);
       const text = (c.text || '').trim();
-      if (speechDur / len < 0.3 || (HALLUCINATION_RE.test(text) && speechDur / len < 0.6)) return; // 無音部分の誤認識
+      // 無音部分の誤認識（文ごとに割り当て直したものは、話している部分に合わせてあるので割合では判定しない）
+      if ((!c.aligned && speechDur / len < 0.3) || (HALLUCINATION_RE.test(text) && speechDur / len < 0.6) || isPromptEcho(text)) return;
       covered.push({ start: c.start, end: c.end });
       if (!pieces.length) return;
       const u = { kind: 'speech', start: pieces[0].start, end: pieces[pieces.length - 1].end, pieces, text };
@@ -400,4 +443,87 @@ export function formatTime(sec) {
   const s = Math.max(0, sec);
   const m = Math.floor(s / 60);
   return m + ':' + String(Math.floor(s % 60)).padStart(2, '0');
+}
+
+// 文字起こしの1つの塊に複数の文が入っている場合（プロンプトを与えると Whisper は文ごとの時刻を出さなくなる）、
+// 「。」で文に分け、音声の無音の切れ目に合わせて各文の時刻を割り当てる
+export function splitSentences(text) {
+  return (text || '').split(/(?<=[。！？!?])/).map(t => t.trim()).filter(Boolean);
+}
+
+export function alignSentences(chunks, regions) {
+  const out = [];
+  for (const c of chunks) {
+    const sents = splitSentences(c.text);
+    if (sents.length <= 1) { out.push(c); continue; }
+    const pieces = speechPieces(regions, c.start - 0.3, c.end + 0.3);
+    const start = pieces.length ? pieces[0].start : c.start;
+    const end = pieces.length ? pieces[pieces.length - 1].end : c.end;
+    const spans = pieces.length ? pieces : [{ start, end }];
+    const total = piecesDuration(spans);
+    // 話している時間の割合 f の地点の時刻
+    const timeAt = f => {
+      let rest = f * total;
+      for (const p of spans) {
+        const d = p.end - p.start;
+        if (rest <= d) return p.start + rest;
+        rest -= d;
+      }
+      return end;
+    };
+    const gaps = [], gapLens = [];
+    for (let i = 1; i < spans.length; i++) {
+      gaps.push((spans[i - 1].end + spans[i].start) / 2);
+      gapLens.push(spans[i].start - spans[i - 1].end);
+    }
+    const lens = sents.map(s => s.length);
+    const all = lens.reduce((a, b) => a + b, 0);
+    const targets = [];
+    let acc = 0;
+    for (let i = 0; i < sents.length - 1; i++) { acc += lens[i]; targets.push(timeAt(acc / all)); }
+    const bounds = [start, ...matchGaps(targets, gaps, gapLens)];
+    bounds.push(end);
+    sents.forEach((text, i) => {
+      // 区切りは無音の真ん中なので、各文の時間を実際に話している部分に詰める
+      const own = speechPieces(regions, bounds[i], bounds[i + 1]);
+      const s0 = own.length ? own[0].start : bounds[i];
+      const e0 = own.length ? own[own.length - 1].end : bounds[i + 1];
+      out.push({ start: s0, end: e0, text, raw: c.raw, aligned: true });
+    });
+  }
+  return out;
+}
+
+// 文の区切りの目安時刻 targets を、無音の切れ目 gaps に順番を保って割り当てる。
+// 全体のずれが最小になる組み合わせを選ぶ（切れ目が足りない区切りは目安時刻のまま）。
+// 文と文の間の「間」は読点の間より長いので、長い無音ほど選ばれやすくする
+function matchGaps(targets, gaps, gapLens) {
+  const K = targets.length, G = gaps.length, MISS = 2;
+  const cost = (g, k) => Math.abs(gaps[g] - targets[k]) / (1 + gapLens[g]);
+  // best[k][j]: k 個目までの区切りを決め、最後に使った切れ目が j-1 番（j=0 は未使用）のときの最小コスト
+  const best = Array.from({ length: K + 1 }, () => new Array(G + 1).fill(Infinity));
+  const prev = Array.from({ length: K + 1 }, () => new Array(G + 1).fill(null));
+  best[0][0] = 0;
+  for (let k = 0; k < K; k++) {
+    for (let j = 0; j <= G; j++) {
+      if (best[k][j] === Infinity) continue;
+      // 切れ目を使わない
+      if (best[k][j] + MISS < best[k + 1][j]) { best[k + 1][j] = best[k][j] + MISS; prev[k + 1][j] = [j, null]; }
+      // j 番以降の切れ目を使う
+      for (let g = j; g < G; g++) {
+        const c = best[k][j] + cost(g, k);
+        if (c < best[k + 1][g + 1]) { best[k + 1][g + 1] = c; prev[k + 1][g + 1] = [j, g]; }
+      }
+    }
+  }
+  let j = 0;
+  for (let x = 1; x <= G; x++) if (best[K][x] < best[K][j]) j = x;
+  const out = new Array(K);
+  for (let k = K; k > 0; k--) {
+    const [pj, g] = prev[k][j];
+    out[k - 1] = g === null ? targets[k - 1] : gaps[g];
+    j = pj;
+  }
+  for (let k = 1; k < K; k++) out[k] = Math.max(out[k], out[k - 1] + 0.2);
+  return out;
 }

@@ -185,7 +185,7 @@
       <li><span>MP4の書き出し・iPhoneへの保存</span><span class="badge warn">パソコンで確認</span></li>
       <li><span>カット技術の重要場面を残す<small>手元の動きの量と美容の用語で判定する簡易版。映像の内容までは理解しません</small></span><span class="badge warn">簡易版</span></li>
       <li><span>言い直しの検出<small>文字起こしが必要。似た発言のくり返し等を検出する簡易版</small></span><span class="badge warn">簡易版</span></li>
-      <li><span>日本語字幕の自動生成<small>端末内のAI（Whisper）。実際の文字起こしはまだどの環境でも試せていません</small></span><span class="badge pending">試験中</span></li>
+      <li><span>日本語字幕の自動生成<small>端末内のAI（Whisper）。美容の用語を先に教えて聞き取りを改善。誤字が出ることがあるので書き出し前に直せます</small></span><span class="badge warn">パソコンで確認</span></li>
       <li><span>10分の通常動画の自動編集</span><span class="badge pending">準備中</span></li>
     </ul>
   </section>
@@ -213,14 +213,11 @@
   <section class="card" id="stepAnalyze" aria-labelledby="analyze-title" hidden>
     <h2 id="analyze-title"><span class="step-no">2</span>自動編集する</h2>
     <label class="option"><input type="checkbox" id="optAsr"><span>字幕を作る・言い直しを探す（文字起こし・試験中）<br><small class="note" style="margin:0">OFFでも無音カット・場面選び・MP4書き出しはできます。ONにすると初回にAIモデル（目安100MB前後）をダウンロードし、メモリを多く使います。失敗した場合は字幕なしで続けます。</small></span></label>
-    <select id="optModel" aria-label="文字起こしの精度">
-      <option value="onnx-community/whisper-base">標準（速い・ダウンロード約100MB前後）</option>
-      <option value="onnx-community/whisper-small">高精度（遅い・約300MB前後・メモリ不足で止まる場合あり）</option>
-    </select>
     <button class="btn block" id="btnAnalyze">自動編集を開始</button>
     <ul class="steps" id="steps" hidden></ul>
     <div class="bar" id="bar" hidden><div></div></div>
     <p class="progress-text" id="progressText"></p>
+    <button class="btn block secondary" id="btnSkipAsr" type="button" hidden>字幕をスキップして続ける</button>
     <p class="note">処理中は画面を閉じたり、ほかのアプリに切り替えたりしないでください。15分の動画で数分〜10分ほどかかります。</p>
     <p class="error" id="analyzeError" hidden></p>
   </section>

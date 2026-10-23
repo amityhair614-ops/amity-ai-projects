@@ -3,6 +3,7 @@ import {
 } from './media.js';
 import {
   detectSpeech, transcriptionWindows, buildUnits, selectUnits, buildTimeline, formatTime, FRAME_SEC,
+  ASR_PROMPT, cleanSubtitle, alignSentences,
 } from './plan.js';
 import {
   previousJob, log, setEnv, jobStart, jobStage, jobProgress, jobEnd, report, clearLogs, errorText,
@@ -196,13 +197,25 @@ function setProgress(ratio, text) {
   jobProgress(ratio);
 }
 
-function transcribe(pcm, windows, model) {
+const ASR_MODEL = 'onnx-community/whisper-base';
+
+function transcribe(pcm, windows) {
   return new Promise((resolve, reject) => {
     const worker = new Worker('js/transcribe-worker.js', { type: 'module' });
     const files = new Map();
     const chunks = [];
     let i = 0;
-    const finish = (fn, v) => { worker.terminate(); fn(v); };
+    let finished = false;
+    const finish = (fn, v) => {
+      if (finished) return;
+      finished = true;
+      worker.terminate();
+      $('btnSkipAsr').hidden = true;
+      fn(v);
+    };
+    // 時間がかかりすぎる・止まって見えるときは、字幕なしで先へ進めるようにする
+    $('btnSkipAsr').hidden = false;
+    $('btnSkipAsr').onclick = () => { log('文字起こしをスキップ'); finish(reject, new Error('スキップしました')); };
     const next = () => {
       if (i >= windows.length) return finish(resolve, chunks);
       const w = windows[i];
@@ -224,14 +237,17 @@ function transcribe(pcm, windows, model) {
         }
       } else if (m.type === 'loaded') {
         state.asrDevice = m.device;
-        log('文字起こしモデル準備完了', m.device);
+        log('文字起こしモデル準備完了', { device: m.device, sessions: m.sessions, promptTokens: m.promptTokens });
+        setEnv('文字起こしモデル', `${ASR_MODEL}（${m.device}）${m.sessions}`);
         next();
       } else if (m.type === 'result') {
         const w = windows[m.id];
+        log(`文字起こし ${m.id + 1}/${windows.length}`, { chunks: m.chunks.length, times: m.times });
         const offset = Math.max(0, w.start - 0.2);
         for (const c of m.chunks) {
           const start = offset + c.start, end = Math.min(offset + c.end, w.end + 0.2);
-          if (end > start && c.text.trim()) chunks.push({ start, end, text: c.text.trim() });
+          const text = cleanSubtitle(c.text);
+          if (end > start && text) chunks.push({ start, end, text, raw: c.text.trim() });
         }
         i++;
         next();
@@ -241,7 +257,7 @@ function transcribe(pcm, windows, model) {
     };
     worker.onerror = e => finish(reject, new Error(e.message || '文字起こしの準備に失敗しました（ネットワークを確認してください）'));
     setProgress(0, 'AIモデルを準備中…');
-    worker.postMessage({ type: 'load', model });
+    worker.postMessage({ type: 'load', model: ASR_MODEL, prompt: ASR_PROMPT });
   });
 }
 
@@ -263,7 +279,7 @@ $('btnAnalyze').addEventListener('click', async () => {
     { key: 'motion', label: '手元の動きを解析する' },
     { key: 'plan', label: '約60秒の構成を作る' },
   ]);
-  jobStart('解析', { file: state.file.name, sizeMB: +(state.file.size / 1e6).toFixed(1), asr: useAsr, model: useAsr ? $('optModel').value : null, video: src.info });
+  jobStart('解析', { file: state.file.name, sizeMB: +(state.file.size / 1e6).toFixed(1), asr: useAsr, model: useAsr ? ASR_MODEL : null, video: src.info });
   const lock = await keepAwake();
   const t0 = performance.now();
   const warnings = [];
@@ -298,7 +314,8 @@ $('btnAnalyze').addEventListener('click', async () => {
     if (useAsr && pcm && state.speech.regions.length) {
       setStep('asr', 'active');
       try {
-        state.chunks = await transcribe(pcm, transcriptionWindows(state.speech.regions), $('optModel').value);
+        // 文ごとの時刻は、無音の切れ目に合わせて割り当て直す
+        state.chunks = alignSentences(await transcribe(pcm, transcriptionWindows(state.speech.regions)), state.speech.regions);
         setStep('asr', 'done');
       } catch (err) {
         log('文字起こしに失敗', errorText(err));

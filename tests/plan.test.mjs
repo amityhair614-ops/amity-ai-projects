@@ -134,3 +134,59 @@ test('タイムラインと字幕の時刻', () => {
   assert.equal(tl[0].subtitles[0].end, 3);
   assert.equal(tl[1].subtitles.length, 0);
 });
+
+test('字幕の整形: 聞き間違いの修正とつなぎ言葉の除去', async () => {
+  const { cleanSubtitle } = await import('../js/plan.js');
+  assert.equal(cleanSubtitle('まずは、Aと耳後ろでブロッキングを取っていきます。'), 'まずは、耳後ろでブロッキングを取っていきます。');
+  assert.equal(cleanSubtitle('バックは指1本分のスライスでカネルをゼロドに引き出します。'), 'バックは指一本分のスライスでパネルを0度に引き出します。');
+  assert.equal(cleanSubtitle('ガイドに合わせて、下先を切り揃えます。'), 'ガイドに合わせて、毛先を切り揃えます。');
+  assert.equal(cleanSubtitle('最後にセニングでローカーの調整して、カルサを出します。'), '最後にセニングで量感の調整して、軽さを出します。');
+  assert.equal(cleanSubtitle('これで仕上がりです。マルミのあるシルエッドになりました。'), 'これで仕上がりです。丸みのあるシルエットになりました。');
+  assert.equal(cleanSubtitle('えーと、スライドカットで量感を調整します'), 'スライドカットで量感を調整します');
+  // 正しい言葉は変えない
+  assert.equal(cleanSubtitle('ハネる毛先を、スライドで軽くします'), 'ハネる毛先を、スライドで軽くします');
+});
+
+test('言い直し: 合図の前に内容がある場合は、その発言だけを除外', () => {
+  const flags = detectRetakes([
+    { start: 6, end: 12, text: 'まずは耳後ろでブロッキングを取っていきます。' },
+    { start: 13, end: 18, text: 'バックは指一本分のスライスですみません。いいなをします。' },
+    { start: 19, end: 24, text: 'バックは指一本分のスライスで、パネルを0度に引き出します。' },
+  ]);
+  assert.equal(flags[0], null);
+  assert.ok(flags[1]);
+  assert.equal(flags[2], null);
+});
+
+test('プロンプトの文がそのまま出たものを見分ける', async () => {
+  const { isPromptEcho } = await import('../js/plan.js');
+  assert.ok(isPromptEcho('美容師のカット解説です。ブロッキング、スライス'));
+  assert.ok(isPromptEcho('ブロッキング、スライス、パネル、ガイド、毛先、丸み'));
+  assert.ok(!isPromptEcho('パネルを0度に引き出します'));
+});
+
+test('複数の文が入った塊を、無音の切れ目で文ごとに分ける', async () => {
+  const { alignSentences } = await import('../js/plan.js');
+  const regions = [{ start: 0.6, end: 5.4 }, { start: 6.7, end: 10.9 }, { start: 13.2, end: 15.9 }, { start: 16.3, end: 18.0 }, { start: 19.2, end: 24.2 }];
+  const out = alignSentences([{ start: 0.6, end: 24.4, text: '今日は前下がりボブのカットを解説します。まずは耳後ろでブロッキングを取っていきます。バックは指一本分のスライスで、すみません。いい直します。バックは指一本分のスライスで、パネルを0度に引き出します。' }], regions);
+  assert.equal(out.length, 5);
+  const near = (a, b) => Math.abs(a - b) < 0.8;
+  assert.ok(near(out[1].start, 6.7), String(out[1].start));
+  assert.ok(near(out[2].start, 13.2), String(out[2].start));
+  assert.ok(near(out[3].start, 16.3), String(out[3].start));
+  assert.ok(near(out[4].start, 19.2), String(out[4].start));
+  assert.ok(near(out[0].end, 5.4) && near(out[4].end, 24.2));
+  // 言い直しの検出がこの分け方で働く
+  const flags = detectRetakes(out);
+  assert.deepEqual(flags.map(Boolean), [false, false, true, true, false]);
+});
+
+test('文の区切りは、話す速さが違っても無音の切れ目に合わせる', async () => {
+  const { alignSentences } = await import('../js/plan.js');
+  // 2文目のあとに長い無言の作業がある
+  const regions = [{ start: 34.7, end: 37.65 }, { start: 40.3, end: 42.6 }, { start: 42.9, end: 44.7 }, { start: 54.9, end: 57.4 }, { start: 57.7, end: 58.9 }];
+  const out = alignSentences([{ start: 34.5, end: 59.1, text: 'ガイドに合わせて、毛先を切り揃えます。サイドは前下がりのラインを意識して、45度でカットします。最後にセニングで量感を調整して、軽さを出します。' }], regions);
+  assert.equal(out.length, 3);
+  assert.ok(Math.abs(out[1].start - 40.3) < 0.01 && Math.abs(out[1].end - 44.7) < 0.01, JSON.stringify(out[1]));
+  assert.ok(Math.abs(out[2].start - 54.9) < 0.01);
+});

@@ -5,6 +5,9 @@
 //     --fail-asr      文字起こしが失敗する場合（字幕なしで続行できるか）
 //     --webaudio      音声を Web Audio 方式で読む（WebCodecs で読めなかった場合の代替経路）
 //     --reload-at=段階 その段階の途中でページを再読み込みし、前回の段階が表示されるかを確かめる（audio/motion/render）
+//     --real-asr=DIR  偽のワーカーではなく本物の Whisper で文字起こしする。DIR は whisper-base のモデル
+//                     （config.json と onnx/ がある場所）。Transformers.js と ONNX Runtime は node_modules から配信する
+//     --zoom / --no-zoom / --no-subs  書き出し時の設定
 //
 // 事前に `python3 -m http.server 8123` をリポジトリ直下で起動しておく。
 // H.264 を扱えるブラウザが必要（Chrome for Testing など。Playwright 同梱の Chromium は不可）。
@@ -21,10 +24,14 @@ const noAsr = process.argv.includes('--no-asr');
 const failAsr = process.argv.includes('--fail-asr');
 const webaudio = process.argv.includes('--webaudio');
 const reloadAt = (process.argv.find(a => a.startsWith('--reload-at=')) || '').split('=')[1];
+const realAsr = (process.argv.find(a => a.startsWith('--real-asr=')) || '').split('=')[1];
+const zoom = process.argv.includes('--zoom') ? true : process.argv.includes('--no-zoom') ? false : null;
+const noSubs = process.argv.includes('--no-subs');
 const base = path.basename(sample).replace(/\.(mp4|mov)$/, '');
 const tFile = fs.existsSync(path.join(dir, `${base}-transcript.json`)) ? `${base}-transcript.json` : 'sample-transcript.json';
 const transcript = JSON.parse(fs.readFileSync(path.join(dir, tFile), 'utf8'));
-const tag = base + (noAsr ? '-noasr' : '') + (failAsr ? '-failasr' : '') + (webaudio ? '-webaudio' : '');
+const tag = base + (noAsr ? '-noasr' : '') + (failAsr ? '-failasr' : '') + (webaudio ? '-webaudio' : '') + (realAsr ? '-realasr' : '')
+  + (zoom === true ? '-zoom' : zoom === false ? '-nozoom' : '') + (noSubs ? '-nosubs' : '');
 
 // ブラウザのプロセスごとのメモリ（RSS）を0.5秒ごとに測り、段階ごとのピークを記録する
 const mem = { stage: '開始', peaks: {} };
@@ -72,12 +79,48 @@ self.onmessage = e => {
 };`;
 
 // GPU を有効にする（GPU なしだと、コマを描くたびにメモリが増える Chrome 側の現象が出て、実機と違う測定になる）
+const asrRequests = [];
 const browser = await chromium.launch({ executablePath: process.env.CHROME_PATH, args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
 page = await browser.newPage({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2 });
 const logs = [];
 page.on('console', m => logs.push(`[${m.type()}] ${m.text()}`));
 page.on('pageerror', e => logs.push('[pageerror] ' + e.message));
-await page.route('**/js/transcribe-worker.js', r => r.fulfill({ contentType: 'text/javascript', body: fakeWorker }));
+if (realAsr) {
+  // ワーカー内の通信も差し替えられるよう、コンテキスト単位で設定する
+  const nm = path.join(path.dirname(new URL(import.meta.url).pathname), 'node_modules');
+  const tfDist = path.join(nm, '@huggingface/transformers/dist');
+  const ortDist = path.join(nm, 'onnxruntime-web/dist');
+  const types = { '.js': 'text/javascript', '.mjs': 'text/javascript', '.wasm': 'application/wasm', '.json': 'application/json' };
+  const serve = (route, file) => fs.existsSync(file)
+    ? route.fulfill({ path: file, contentType: types[path.extname(file)] || 'application/octet-stream', headers: { 'access-control-allow-origin': '*' } })
+    : route.fulfill({ status: 404, body: 'not found', headers: { 'access-control-allow-origin': '*' } });
+  await page.context().route(/^https:\/\/cdn\.jsdelivr\.net\/npm\/@huggingface\/transformers@[^/]+(\/.*)?$/, (route, request) => {
+    const sub = new URL(request.url()).pathname.split('/').slice(4).join('/');
+    serve(route, path.join(tfDist, sub ? sub.replace(/^dist\//, '') : 'transformers.min.js'));
+  });
+  await page.context().route(/^https:\/\/cdn\.jsdelivr\.net\/npm\/onnxruntime-web@[^/]+\/dist\/.*$/, (route, request) => {
+    serve(route, path.join(ortDist, path.basename(new URL(request.url()).pathname)));
+  });
+  await page.context().route(/^https:\/\/huggingface\.co\/.*$/, (route, request) => {
+    const m = new URL(request.url()).pathname.match(/^\/[^/]+\/[^/]+\/resolve\/[^/]+\/(.*)$/);
+    asrRequests.push(new URL(request.url()).pathname);
+    serve(route, m ? path.join(realAsr, m[1]) : '/nonexistent');
+  });
+} else {
+  await page.route('**/js/transcribe-worker.js', r => r.fulfill({ contentType: 'text/javascript', body: fakeWorker }));
+}
+
+// 正解と認識結果の文字の一致率（編集距離から。句読点・空白は除く）
+function charAgreement(a, b) {
+  const clean = t => t.replace(/[\s、。，．,.！？!?]/g, '');
+  a = clean(a); b = clean(b);
+  const d = Array.from({ length: a.length + 1 }, (_, i) => [i]);
+  for (let j = 1; j <= b.length; j++) d[0][j] = j;
+  for (let i = 1; i <= a.length; i++) for (let j = 1; j <= b.length; j++) {
+    d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+  }
+  return (Math.max(0, 1 - d[a.length][b.length] / a.length) * 100).toFixed(1) + '%';
+}
 
 // 処理の途中でページを再読み込みし（iPhone がメモリ不足でページを落とした状況の再現）、
 // 次に開いたときに止まった段階が表示されることを確かめて終了する
@@ -124,6 +167,16 @@ try {
   console.log('段階: ' + steps);
   console.log(`解析: ${((Date.now() - t0) / 1000).toFixed(1)}秒`);
 
+  if (realAsr) {
+    console.log('モデルの読み込み: ' + asrRequests.filter(p => /onnx|json/.test(p)).map(p => p.split('/').pop()).join(', '));
+    const chunks = await page.evaluate(() => window.amityDebug.chunks || []);
+    console.log('--- 文字起こし（本物のWhisper） ---');
+    for (const c of chunks) console.log(`  ${c.start.toFixed(1)}-${c.end.toFixed(1)} ${c.text}${c.raw && c.raw !== c.text ? '  ← 元: ' + c.raw : ''}`);
+    const truthText = transcript.filter(c => !c.retake).map(c => c.text).join('');
+    const got = chunks.map(c => c.text).join('');
+    console.log('文字の一致率（正解との比較・目安）: ' + charAgreement(truthText, got));
+    console.log('時刻トークン: ' + (await page.evaluate(() => JSON.parse(localStorage.getItem('amity.log.v1')).filter(e => e.msg.startsWith('文字起こし ')).map(e => JSON.stringify(e.data.times)).join(' / '))));
+  }
   const plan = await page.evaluate(() => {
     const s = window.amityDebug;
     return {
