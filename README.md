@@ -15,7 +15,9 @@ GitHub Pages は「ファイルを置くだけ」のサーバーなので、編�
 | 言い直しの検出 | 文字起こし結果で、似た発言のくり返し・「言い直します」等を検出 | 簡易版 |
 | 重要な場面を残す | 手元の動きの量（約1秒ごとのコマの差）＋美容用語で点数をつける | 簡易版 |
 | 約60秒・9:16 | 点数の高い場面を時系列で並べ、動きのある位置で縦に切り抜く | パソコンで確認 |
-| 日本語字幕 | 端末内のWhisper（[Transformers.js](https://huggingface.co/docs/transformers.js)）。初回にモデルをダウンロード | 試験中（既定はOFF。失敗しても字幕なしで続行） |
+| 日本語字幕 | 端末内のWhisper（[Transformers.js](https://huggingface.co/docs/transformers.js)）。美容用語のプロンプト＋聞き間違いの補正 | パソコンで確認（既定はOFF。失敗しても字幕なしで続行） |
+| 字幕のデザイン | 白のゴシック体・最大2行・薄い影・フェード。手元に重ならない上/下に配置。言葉の途中で改行しない | パソコンで確認（書き出し時にON/OFF） |
+| 自然なズーム | 手元がまとまって動く2秒以上の場面だけ、ゆっくり1.03〜1.08倍。10秒以上あけ、手元が切れる場合はしない | パソコンで確認（書き出し時にON/OFF） |
 | MP4書き出し・保存 | WebCodecs（H.264/AAC）で1080×1920のMP4を作り、共有メニューから写真に保存 | パソコンで確認 |
 
 「パソコンで確認」= パソコン上のChromeでのテストで動作確認済み。**iPhone実機では v0.3 の修正後まだ確認していません。**
@@ -41,6 +43,20 @@ iPhone の Safari はメモリが足りなくなると、エラーを出さず�
 | 音声の読み込み | 559MB | 265MB |
 | 動きの解析 | 572MB | 391MB |
 | 書き出し | 783MB | 560MB |
+
+## 字幕AIの安定化（v0.4）
+
+v0.3 までは字幕AIを実物で動かせていませんでした。v0.4 では Whisper（whisper-base・q8）を実際に動かして、次の問題を直しました。
+
+- **メモリ**: 単語単位の時刻用の「注意の重み」を出力する形式のモデルだと、文字起こし中のページが約1.9GBに達した。
+  出力しない形式（アプリが使う公式の onnx-community 版はこちらの形式のはず）では約0.9〜1.0GB。
+  どちらの形式を読み込んだかを診断情報に記録する。重い「高精度（small）」は削除した
+- **専門用語**: 「パネル→カネル」「毛先→下先」「量感→ローカー」などの誤りが多かった（文字の一致率 68%）。
+  美容用語を並べたプロンプトを先に与え、よくある聞き間違いを補正して 81% に改善
+- **文の区切り**: プロンプトを与えると Whisper が文ごとの時刻を出さなくなるため、
+  「。」で文に分け、無音の切れ目（長い間ほど優先）に合わせて時刻を割り当てる
+- **言い直し**: ひらがな表記（「いい直します」等）でも合図として検出。合図の前に内容がある文は、その文だけを除外
+- 文字起こしが長引いたときに「字幕をスキップして続ける」ボタンで先に進める
 
 ## 診断情報と、途中で落ちたときの表示
 
@@ -75,9 +91,17 @@ CHROME_PATH=/path/to/chrome node tests/e2e/run.mjs /tmp/e2e
 python3 tests/e2e/make-sample.py /tmp/e2e 3840 2160 --duration 62 --format mov --rotate 90 --bitrate 24M
 CHROME_PATH=/path/to/chrome node tests/e2e/run.mjs /tmp/e2e sample-3840x2160-r90.mov
 # 失敗時の動き: --fail-asr / --no-asr / --webaudio / --reload-at=audio|asr|motion|render
+# 書き出しの設定: --zoom / --no-zoom / --no-subs
+
+# 日本語の解説音声つきのテスト動画（pyopenjtalk-plus が必要）と、本物の Whisper での確認
+python3 tests/e2e/make-ja-sample.py /tmp/e2e
+CHROME_PATH=/path/to/chrome node tests/e2e/run.mjs /tmp/e2e ja-sample-1920x1080-r90.mov --real-asr=/path/to/whisper-base
 ```
 
-通しテストでは、文字起こしだけは偽のデータに差し替えています（モデルのダウンロードが必要なため）。
+`--real-asr` は、Transformers.js・ONNX Runtime・モデルの通信を手元のファイルに差し替えて、本物の Whisper で文字起こしします
+（DIR には whisper-base の `config.json` などと `onnx/encoder_model_quantized.onnx`・`onnx/decoder_model_merged_quantized.onnx` を置く）。
+
+`--real-asr` を付けない通しテストでは、文字起こしは偽のデータに差し替えています。
 H.264 を扱える Chrome（Chrome for Testing など）が必要です。Linux の Chrome は HEVC を読めないため、
 HEVC の動画では「読み込めない」旨のメッセージが出ることだけを確認しています。
 各段階のページのメモリのピークも表示します。

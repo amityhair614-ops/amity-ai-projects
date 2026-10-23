@@ -70,6 +70,15 @@ try {
   const saved = localStorage.getItem('amity.optAsr');
   $('optAsr').checked = saved === 'on';
 } catch {}
+try {
+  $('optZoom').checked = localStorage.getItem('amity.optZoom') !== 'off';
+  $('optSubs').checked = localStorage.getItem('amity.optSubs') !== 'off';
+} catch {}
+for (const [id, key] of [['optZoom', 'amity.optZoom'], ['optSubs', 'amity.optSubs']]) {
+  $(id).addEventListener('change', () => {
+    try { localStorage.setItem(key, $(id).checked ? 'on' : 'off'); } catch {}
+  });
+}
 $('optAsr').addEventListener('change', () => {
   try { localStorage.setItem('amity.optAsr', $('optAsr').checked ? 'on' : 'off'); } catch {}
 });
@@ -431,6 +440,24 @@ function updateTotal() {
   $('btnRender').disabled = state.selected.size === 0;
 }
 
+function styleSummary(timeline, useSubs, useZoom) {
+  const parts = [];
+  if (useSubs) {
+    const top = timeline.filter(c => c.subtitles.length && c.subPos === 'top').length;
+    const all = timeline.filter(c => c.subtitles.length).length;
+    parts.push(`字幕: ${all}場面（${top ? `手元に重ならないよう${top}場面は上、ほかは下` : 'すべて下'}）`);
+  } else {
+    parts.push('字幕: なし');
+  }
+  if (useZoom) {
+    const z = timeline.filter(c => c.zoom);
+    parts.push(z.length ? `ズーム: ${z.length}か所（${z.map(c => formatTime(c.outStart) + ' ' + c.zoom.z.toFixed(2) + '倍').join('、')}）` : 'ズーム: 合う場面がなかったため なし');
+  } else {
+    parts.push('ズーム: なし');
+  }
+  return parts.join(' / ');
+}
+
 function showReview() {
   const units = state.units;
   const chosen = units.filter(u => state.selected.has(u.id));
@@ -454,6 +481,8 @@ function showReview() {
   else parts.push('字幕なしで構成しました。');
   if (!state.src.audio) parts.push('音声がないため、手元の動きだけで選びました。');
   $('summary').textContent = parts.join('');
+  $('optSubs').disabled = !state.chunks;
+  $('optSubsNote').textContent = state.chunks ? '' : '（文字起こしをしていないため使えません）';
   $('warnings').textContent = (state.warnings || []).join('\n');
   $('warnings').hidden = !(state.warnings || []).length;
   updateTotal();
@@ -498,8 +527,14 @@ $('btnRender').addEventListener('click', async () => {
   const lock = await keepAwake();
   const t0 = performance.now();
   try {
-    const timeline = buildTimeline(clips.map(u => ({ ...u, text: state.chunks ? u.text : '' })));
+    const useSubs = !!state.chunks && $('optSubs').checked;
+    const useZoom = $('optZoom').checked;
+    const timeline = buildTimeline(clips.map(u => ({ ...u, text: state.chunks ? u.text : '' })), {
+      srcW: state.src.width, srcH: state.src.height, zoom: useZoom, subtitles: useSubs,
+    });
     state.timeline = timeline;
+    state.styleNote = styleSummary(timeline, useSubs, useZoom);
+    log('演出', state.styleNote);
     const blob = await renderShort(state.src, timeline, {
       gainDb: computeGainDb(clips),
       onProgress: r => {
@@ -535,6 +570,7 @@ function showResult(blob, timeline) {
   $('outVideo').src = state.outUrl;
   $('outDuration').textContent = formatSec(last.outStart + last.outDuration);
   $('outSize').textContent = formatSize(blob.size);
+  $('outStyle').textContent = state.styleNote || '-';
   $('btnDownload').href = state.outUrl;
   $('btnDownload').download = state.outName;
   $('stepResult').hidden = false;

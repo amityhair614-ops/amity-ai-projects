@@ -199,6 +199,9 @@ try {
   await page.screenshot({ path: path.join(dir, `review-${tag}.png`), fullPage: true });
 
   const t1 = Date.now();
+  if (zoom === true) await page.check('#optZoom');
+  if (zoom === false) await page.uncheck('#optZoom');
+  if (noSubs) await page.uncheck('#optSubs');
   mem.stage = '書き出し';
   await page.click('#btnRender');
   if (reloadAt === 'render') await reloadDuring('render');
@@ -216,6 +219,9 @@ try {
   fs.writeFileSync(outFile, Buffer.from(b64, 'base64'));
   await page.screenshot({ path: path.join(dir, `result-${tag}.png`), fullPage: true });
   console.log('出力:', outFile);
+  console.log('演出: ' + (await page.$eval('#outStyle', el => el.textContent)));
+  const tl = await page.evaluate(() => window.amityDebug.timeline.map(c => ({ outStart: +c.outStart.toFixed(2), dur: +c.outDuration.toFixed(2), pos: c.subPos, zoom: c.zoom && { z: c.zoom.z, rect: c.zoom.rect }, crop: c.crop, inCrop: c.inCrop, subs: c.subtitles.map(p => p.lines.join('／')) })));
+  fs.writeFileSync(path.join(dir, `timeline-${tag}.json`), JSON.stringify(tl, null, 1));
 } catch (err) {
   if (err.message !== 'RELOAD_CHECK_DONE') throw err;
 } finally {

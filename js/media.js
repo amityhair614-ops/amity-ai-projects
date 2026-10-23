@@ -11,7 +11,7 @@ import {
   canEncodeAudio, canEncodeVideo,
 } from 'mediabunny';
 import { registerAacEncoder } from '@mediabunny/aac-encoder';
-import { FRAME_SEC, FPS, OUT_W, OUT_H, cropRect } from './plan.js';
+import { FRAME_SEC, FPS, OUT_W, OUT_H, SUB_ZONES, cropAt, subtitleAlpha } from './plan.js';
 import { log } from './diag.js';
 
 export const ASR_RATE = 16000;
@@ -151,6 +151,16 @@ class FramePainter {
   }
 }
 
+// 分布 arr の累積が全体の ratio に達する位置
+function massPoint(arr, total, ratio) {
+  let acc = 0;
+  for (let i = 0; i < arr.length; i++) {
+    acc += arr[i];
+    if (acc >= total * ratio) return i;
+  }
+  return arr.length - 1;
+}
+
 // 約1秒ごとにキーフレームだけを展開し、縮小画像で前のコマとの差（手元の動き）を測る
 export async function analyzeMotion(src, onProgress, step = 1) {
   const packets = new EncodedPacketSink(src.video);
@@ -161,7 +171,8 @@ export async function analyzeMotion(src, onProgress, step = 1) {
   const ctx = canvas.getContext('2d', { willReadFrequently: true });
   const painter = new FramePainter(src.rotation, w, h);
   const dec = new FrameDecoder(src.decoderConfig);
-  const out = { times: [], values: [], cx: [] };
+  const out = { times: [], values: [], cx: [], cy: [], box: [] };
+  const cols = new Float32Array(w), rows = new Float32Array(h);
   let prev = null, lastKey = -1;
 
   const onFrame = async frame => {
@@ -170,14 +181,21 @@ export async function analyzeMotion(src, onProgress, step = 1) {
     const gray = new Float32Array(w * h);
     for (let p = 0; p < w * h; p++) gray[p] = 0.299 * px[p * 4] + 0.587 * px[p * 4 + 1] + 0.114 * px[p * 4 + 2];
     if (prev) {
-      let sum = 0, sx = 0;
+      let sum = 0;
+      cols.fill(0);
+      rows.fill(0);
       for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
         const d = Math.abs(gray[y * w + x] - prev[y * w + x]);
-        if (d > 12) { sum += d; sx += d * x; }
+        if (d > 12) { sum += d; cols[x] += d; rows[y] += d; }
       }
       out.times.push(frame.timestamp / 1e6);
       out.values.push(sum / (w * h));
-      out.cx.push(sum > 0 ? sx / sum / (w - 1) : 0.5);
+      // 動いている範囲（動きの量の 10%〜90% が入る範囲）と中心。0〜1 の割合で持つ
+      out.cx.push(sum > 0 ? massPoint(cols, sum, 0.5) / (w - 1) : 0.5);
+      out.cy.push(sum > 0 ? massPoint(rows, sum, 0.5) / (h - 1) : 0.5);
+      out.box.push(sum > 0
+        ? [massPoint(cols, sum, 0.1) / (w - 1), massPoint(cols, sum, 0.9) / (w - 1), massPoint(rows, sum, 0.1) / (h - 1), massPoint(rows, sum, 0.9) / (h - 1)]
+        : null);
     }
     prev = gray;
   };
@@ -356,24 +374,36 @@ function toAudioBuffer(data, sr, from, to) {
 
 // ---------- 書き出し ----------
 
-const FONT = '"Hiragino Sans", "Hiragino Kaku Gothic ProN", "Noto Sans JP", "IPAGothic", sans-serif';
-function drawSubtitle(ctx, page) {
+// 字幕: 白の読みやすいゴシック体・最大2行・薄い黒の影。文字は動かさず、不透明度だけで出し入れする
+const FONT_FAMILY = '"Hiragino Sans", "Hiragino Kaku Gothic ProN", "Noto Sans JP", "IPAGothic", sans-serif';
+const FONT_SIZE = 58;
+const LINE_HEIGHT = 1.42;
+const MAX_TEXT_W = OUT_W * 0.86;
+
+function drawSubtitle(ctx, page, t) {
   if (!page) return;
+  const alpha = subtitleAlpha(page, t);
+  if (alpha <= 0) return;
   ctx.save();
-  ctx.font = `bold 70px ${FONT}`;
+  // 1行が長すぎるときだけ、そのページの文字を少し小さくする
+  let size = FONT_SIZE;
+  ctx.font = `600 ${size}px ${FONT_FAMILY}`;
+  const widest = Math.max(...page.lines.map(l => ctx.measureText(l).width));
+  if (widest > MAX_TEXT_W) {
+    size = Math.floor(size * MAX_TEXT_W / widest);
+    ctx.font = `600 ${size}px ${FONT_FAMILY}`;
+  }
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.lineJoin = 'round';
-  const lh = 92;
-  const baseY = OUT_H * 0.72 - ((page.lines.length - 1) * lh) / 2;
-  page.lines.forEach((line, i) => {
-    const y = baseY + i * lh;
-    ctx.lineWidth = 14;
-    ctx.strokeStyle = 'rgba(0,0,0,0.85)';
-    ctx.strokeText(line, OUT_W / 2, y);
-    ctx.fillStyle = '#ffffff';
-    ctx.fillText(line, OUT_W / 2, y);
-  });
+  ctx.globalAlpha = alpha;
+  ctx.fillStyle = '#ffffff';
+  ctx.shadowColor = 'rgba(0, 0, 0, 0.42)';
+  ctx.shadowBlur = 10;
+  ctx.shadowOffsetY = 2;
+  const lh = size * LINE_HEIGHT;
+  const centerY = OUT_H * (SUB_ZONES[page.pos] ?? SUB_ZONES.bottom);
+  const firstY = centerY - ((page.lines.length - 1) * lh) / 2;
+  page.lines.forEach((line, i) => ctx.fillText(line, OUT_W / 2, firstY + i * lh));
   ctx.restore();
 }
 
@@ -395,7 +425,8 @@ export async function renderShort(src, timeline, { gainDb = 0, onProgress } = {}
   const bctx = base.getContext('2d');
   bctx.fillStyle = '#000';
   bctx.fillRect(0, 0, OUT_W, OUT_H);
-  const videoSource = new CanvasSource(canvas, { codec: 'avc', bitrate: 8_000_000, keyFrameInterval: 2 });
+  // 髪の質感がつぶれないよう、ビットレートは高め（約 75MB/分）。色の加工はしない
+  const videoSource = new CanvasSource(canvas, { codec: 'avc', bitrate: 10_000_000, keyFrameInterval: 2 });
   output.addVideoTrack(videoSource, { frameRate: FPS });
   let audioSource = null;
   if (withAudio) {
@@ -412,7 +443,6 @@ export async function renderShort(src, timeline, { gainDb = 0, onProgress } = {}
 
   try {
     for (const clip of timeline) {
-      const crop = cropRect(src.width, src.height, clip.cx);
       for (const piece of clip.pieces) {
         const dur = piece.frames / FPS;
         const end = piece.srcStart + dur;
@@ -425,7 +455,7 @@ export async function renderShort(src, timeline, { gainDb = 0, onProgress } = {}
         const emit = async () => {
           const t = piece.outStart + k / FPS;
           ctx.drawImage(base, 0, 0);
-          drawSubtitle(ctx, clip.subtitles.find(p => t >= p.start && t < p.end));
+          drawSubtitle(ctx, clip.subtitles.find(p => t >= p.start && t < p.end), t);
           if (audio) {
             // 音声は映像と交互に少しずつ渡す
             const until = Math.min(audio.data[0].length, Math.round(((k + 1) / FPS + 0.5) * audio.sr));
@@ -442,7 +472,8 @@ export async function renderShort(src, timeline, { gainDb = 0, onProgress } = {}
         const onFrame = async frame => {
           const ts = frame.timestamp / 1e6;
           while (k < piece.frames && piece.srcStart + k / FPS < ts - 1e-3) await emit();
-          if (k < piece.frames) painter.draw(bctx, frame, crop);
+          // ズーム中は、このコマの出力時刻に合わせた枠で切り抜く
+          if (k < piece.frames) painter.draw(bctx, frame, cropAt(clip, piece.outStart + Math.max(0, ts - piece.srcStart)));
         };
 
         const dec = new FrameDecoder(src.decoderConfig);

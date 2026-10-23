@@ -232,17 +232,25 @@ export function motionLevels(motion) {
 }
 
 function motionOver(motion, levels, start, end) {
-  if (!motion || !motion.times.length) return { level: 0, cx: 0.5 };
+  if (!motion || !motion.times.length) return { level: 0, cx: 0.5, cy: 0.5, box: null };
   let sum = 0, n = 0;
-  const cxs = [];
+  const cxs = [], cys = [], boxes = [];
   for (let i = 0; i < motion.times.length; i++) {
     const t = motion.times[i];
     if (t >= start - 0.5 && t <= end + 0.5) {
       sum += levels[i]; n++;
-      if (levels[i] >= 0.3) cxs.push(motion.cx[i]);
+      if (levels[i] >= 0.3) {
+        cxs.push(motion.cx[i]);
+        if (motion.cy) cys.push(motion.cy[i]);
+        if (motion.box && motion.box[i]) boxes.push(motion.box[i]);
+      }
     }
   }
-  return { level: n ? sum / n : 0, cx: cxs.length ? percentile(cxs, 0.5) : 0.5 };
+  // 動いている範囲は、各時点の範囲を少し広めに合わせたもの
+  const box = boxes.length
+    ? [percentile(boxes.map(b => b[0]), 0.2), percentile(boxes.map(b => b[1]), 0.8), percentile(boxes.map(b => b[2]), 0.2), percentile(boxes.map(b => b[3]), 0.8)]
+    : null;
+  return { level: n ? sum / n : 0, cx: cxs.length ? percentile(cxs, 0.5) : 0.5, cy: cys.length ? percentile(cys, 0.5) : 0.5, box };
 }
 
 // 候補となる場面（ユニット）を作り、点数をつける
@@ -327,6 +335,8 @@ export function buildUnits({ duration, rmsDb, speech, chunks, motion }) {
     u.duration = piecesDuration(u.pieces);
     const m = motionOver(motion, levels, u.start, u.end);
     u.cx = m.cx;
+    u.cy = m.cy;
+    u.box = m.box;
     u.motion = m.level;
     u.keywords = keywordHits(u.text);
     const reasons = [];
@@ -371,18 +381,56 @@ export function selectUnits(units, duration, target = 58, max = 60) {
   return [...chosen].sort((a, b) => a.start - b.start);
 }
 
-// 字幕を「1行最大 maxChars 文字 × 2行」のページに分け、表示時間を文字数で配分する
-const NO_LINE_START = '、。，．,.！？!?）」』ゃゅょっャュョッァィゥェォー';
+// 字幕を「1行最大 maxChars 文字 × 2行」のページに分け、表示時間を文字数で配分する。
+// 日本語として自然な位置（読点の後 > 助詞の後 > 文字の種類が変わる所）で区切り、
+// 1〜2文字だけが次の行・ページに残るような分け方はしない
+const NO_LINE_START = '、。，．,.！？!?）」』ゃゅょっャュョッァィゥェォーぁぃぅぇぉ';
+const PARTICLES = 'はをにでがともへやの';
+
+function charType(c) {
+  if (/[\u4e00-\u9fff々]/.test(c)) return 'kanji';
+  if (/[\u30a0-\u30ff]/.test(c)) return 'kata';
+  if (/[\u3040-\u309f]/.test(c)) return 'hira';
+  if (/[0-9０-９]/.test(c)) return 'num';
+  return 'other';
+}
+
+// text の i 文字目の前で区切るときの「自然さ」
+function breakScore(text, i) {
+  const prev = text[i - 1], next = text[i];
+  if (!prev || !next || NO_LINE_START.includes(next)) return -Infinity;
+  if ('、。！？!? '.includes(prev)) return 4;
+  // 助詞の後（「…を」「…に」）。ただし「の」は名詞のつながりが多いので低め
+  if (PARTICLES.includes(prev) && charType(next) !== 'hira') return prev === 'の' ? 1.5 : 3;
+  // 漢字の後の助詞＋ひらがな（「形に／なりました」）。「が」は送り仮名（前下が|り）と紛らわしいので除く
+  if ('はをにでへ'.includes(prev) && charType(text[i - 2]) === 'kanji') return 2.5;
+  const a = charType(prev), b = charType(next);
+  if (a === 'hira' && (b === 'kanji' || b === 'kata')) return 1;
+  if ((a === 'num' || b === 'num') && a !== b) return -1; // 「0度」「45度」を分けない
+  if (a === b && a !== 'hira') return -3; // カタカナ語・漢字語・数字の途中では切らない
+  return 0;
+}
+
+// [lo, hi] の範囲で、中央 target に近く、自然な区切り位置を選ぶ
+function bestBreak(text, lo, hi, target) {
+  let best = -1, bestScore = -Infinity;
+  for (let i = Math.max(1, lo); i <= Math.min(text.length - 1, hi); i++) {
+    const sc = breakScore(text, i) * 2 - Math.abs(i - target) * 0.35;
+    if (sc > bestScore) { bestScore = sc; best = i; }
+  }
+  return best > 0 ? best : Math.min(text.length - 1, Math.max(1, Math.round(target)));
+}
+
 export function wrapLines(text, maxChars) {
+  const t = (text || '').trim();
+  if (t.length <= maxChars) return t ? [t] : [];
   const lines = [];
-  let rest = text;
+  let rest = t;
   while (rest.length > maxChars) {
-    let cut = maxChars;
-    const window = rest.slice(0, maxChars + 1);
-    const punct = Math.max(window.lastIndexOf('、'), window.lastIndexOf('。'), window.lastIndexOf(' '));
-    if (punct >= maxChars * 0.5) cut = punct + 1;
-    while (cut < rest.length && NO_LINE_START.includes(rest[cut]) && cut < maxChars + 1) cut++;
-    if (cut > maxChars) cut = maxChars; // 1行に収まらない場合は諦めて切る
+    // 残りが2行分以内なら半分ずつ、それより長ければ1行分を目安に区切る
+    const target = rest.length <= maxChars * 2 ? rest.length / 2 : maxChars;
+    const lo = Math.max(3, rest.length - maxChars * (rest.length <= maxChars * 2 ? 1 : 99));
+    const cut = bestBreak(rest, Math.min(lo, maxChars), maxChars, target);
     lines.push(rest.slice(0, cut).trim());
     rest = rest.slice(cut).trim();
   }
@@ -390,12 +438,42 @@ export function wrapLines(text, maxChars) {
   return lines.filter(Boolean);
 }
 
-export function subtitlePages(text, duration, maxChars = 13, maxLines = 2) {
+// 2行に分けるとき、自然な区切りが見つかるか
+function canWrap(t, maxChars) {
+  if (t.length <= maxChars) return true;
+  for (let i = t.length - maxChars; i <= maxChars; i++) if (breakScore(t, i) >= 1) return true;
+  return false;
+}
+
+// 文を2行ずつのページに分ける。ページの切れ目も自然な位置にし、
+// 2行にきれいに分けられない長さなら、もう1ページに分ける
+function pageTexts(text, maxChars, maxLines) {
+  const cap = maxChars * maxLines;
+  const out = [];
+  let rest = text;
+  for (let guard = 0; guard < 20 && (rest.length > cap || !canWrap(rest, maxChars)); guard++) {
+    const n = Math.max(2, Math.ceil(rest.length / cap));
+    const target = rest.length / n; // ページの長さをそろえる
+    const cut = bestBreak(rest, Math.max(3, rest.length - cap * (n - 1)), Math.min(cap, rest.length - 3), target);
+    if (cut <= 0 || cut >= rest.length) break;
+    out.push(rest.slice(0, cut).trim());
+    rest = rest.slice(cut).trim();
+  }
+  if (rest) out.push(rest);
+  return out;
+}
+
+export function subtitlePages(text, duration, maxChars = 14, maxLines = 2) {
   const clean = (text || '').replace(/\s+/g, ' ').trim();
   if (!clean || duration <= 0) return [];
-  const lines = wrapLines(clean, maxChars);
   const pages = [];
-  for (let i = 0; i < lines.length; i += maxLines) pages.push(lines.slice(i, i + maxLines));
+  for (const sentence of splitSentences(clean)) {
+    for (const pt of pageTexts(sentence.replace(/[、。]+$/, ''), maxChars, maxLines)) {
+      // 行末の「、」「。」は字幕では付けない（すっきり見せる）
+      const lines = wrapLines(pt, maxChars).map(l => l.replace(/[、。]+$/, '')).filter(Boolean);
+      if (lines.length) pages.push(lines.slice(0, maxLines).length === lines.length ? lines : [lines.slice(0, maxLines - 1).join(''), lines.slice(maxLines - 1).join('')]);
+    }
+  }
   const lens = pages.map(p => p.join('').length);
   const total = lens.reduce((a, b) => a + b, 0);
   let t = 0;
@@ -407,14 +485,23 @@ export function subtitlePages(text, duration, maxChars = 13, maxLines = 2) {
   });
 }
 
-// 9:16 に切り抜く範囲（表示座標）。cx は動きの横位置（0〜1）
-export function cropRect(srcW, srcH, cx = 0.5) {
+// 9:16 に切り抜く範囲（表示座標）。cx は動きの横位置（0〜1）、box は動いている範囲（0〜1 の [x0,x1,y0,y1]）
+export function cropRect(srcW, srcH, cx = 0.5, box = null) {
   const even = n => Math.max(2, Math.floor(n / 2) * 2);
   if (srcW / srcH > OUT_W / OUT_H) {
     const h = even(srcH);
     const w = even((h * OUT_W) / OUT_H);
     const center = (0.5 + (cx - 0.5) * 0.7) * srcW; // 端に寄りすぎないよう控えめに追従
-    const left = Math.round(Math.min(srcW - w, Math.max(0, center - w / 2)));
+    let left = center - w / 2;
+    // 手元（動いている範囲）が枠に収まるなら、切れないように枠をずらす
+    if (box) {
+      const margin = w * 0.04, b0 = box[0] * srcW, b1 = box[1] * srcW;
+      if (b1 - b0 + 2 * margin <= w) {
+        if (b0 - margin < left) left = b0 - margin;
+        if (b1 + margin > left + w) left = b1 + margin - w;
+      }
+    }
+    left = Math.round(Math.min(srcW - w, Math.max(0, left)));
     return { left, top: 0, width: w, height: h };
   }
   const w = even(srcW);
@@ -422,10 +509,38 @@ export function cropRect(srcW, srcH, cx = 0.5) {
   return { left: 0, top: Math.round((srcH - h) / 2), width: w, height: Math.min(h, even(srcH)) };
 }
 
-// 書き出し用のタイムライン。ピースごとのフレーム数を確定し、字幕の時刻を出力側に変換する
-export function buildTimeline(clips) {
+// 字幕の位置（文字の中心の高さ。画面の高さに対する割合）。
+// YouTube ショートの画面下部（タイトル・ボタン）と上部を避けた高さにしている
+export const SUB_ZONES = { top: 0.2, bottom: 0.745 };
+const ZONE_BANDS = { top: [0.12, 0.29], bottom: [0.65, 0.84] };
+export const ZOOM_MIN = 1.03;
+export const ZOOM_MAX = 1.08;
+const ZOOM_SPACING = 10; // ズームとズームの間は最低この秒数あける
+const FADE = 0.2;       // 字幕のフェード（秒）
+const FADE_SHORT = 0.1; // 字幕が切れ目なく続くときのフェード
+
+function clamp(v, lo, hi) { return Math.min(hi, Math.max(lo, v)); }
+
+// 表示座標の割合で表した範囲 box を、切り抜き枠 crop の中の割合に直す
+function boxInCrop(box, crop, srcW, srcH) {
+  if (!box) return null;
+  return [
+    (box[0] * srcW - crop.left) / crop.width, (box[1] * srcW - crop.left) / crop.width,
+    (box[2] * srcH - crop.top) / crop.height, (box[3] * srcH - crop.top) / crop.height,
+  ];
+}
+
+function bandHit(b, band) {
+  if (!b) return false;
+  return Math.max(0, Math.min(b[3], band[1]) - Math.max(b[2], band[0])) / (band[1] - band[0]) > 0.3;
+}
+
+// 書き出し用のタイムライン。ピースごとのフレーム数を確定し、字幕の時刻を出力側に変換する。
+// opts: { srcW, srcH, zoom: 自然なズームを使うか, subtitles: 字幕を入れるか }
+export function buildTimeline(clips, opts = {}) {
+  const { srcW = 1080, srcH = 1920, zoom = false, subtitles = true } = opts;
   let t = 0;
-  return clips.map(c => {
+  const tl = clips.map(c => {
     const pieces = c.pieces.map(p => {
       const frames = Math.max(1, Math.round((p.end - p.start) * FPS));
       const piece = { srcStart: p.start, frames, outStart: t };
@@ -434,9 +549,80 @@ export function buildTimeline(clips) {
     });
     const outStart = pieces[0].outStart;
     const outDuration = pieces.reduce((s, p) => s + p.frames / FPS, 0);
-    const subtitles = subtitlePages(c.text, outDuration).map(p => ({ ...p, start: p.start + outStart, end: p.end + outStart }));
-    return { ...c, pieces, outStart, outDuration, subtitles };
+    const text = subtitles ? c.text : '';
+    const subs = subtitlePages(text, outDuration).map(p => ({ ...p, start: p.start + outStart, end: p.end + outStart }));
+    const crop = cropRect(srcW, srcH, c.cx ?? 0.5, c.box);
+    return { ...c, pieces, outStart, outDuration, subtitles: subs, crop, inCrop: boxInCrop(c.box, crop, srcW, srcH) };
   });
+
+  // 字幕の位置: 基本は下。手元が下の方で動く場面が多い動画では上にする。
+  // 場面ごとには、その場面で手元が字幕の位置にかかるときだけ反対側にする
+  const moving = tl.filter(c => c.subtitles.length && c.inCrop && (c.motion ?? 0) >= 0.2);
+  const lowHands = moving.filter(c => bandHit(c.inCrop, ZONE_BANDS.bottom) && !bandHit(c.inCrop, ZONE_BANDS.top)).length;
+  const base = moving.length && lowHands > moving.length / 2 ? 'top' : 'bottom';
+  const other = base === 'top' ? 'bottom' : 'top';
+  for (const c of tl) {
+    const hit = (c.motion ?? 0) >= 0.2 && bandHit(c.inCrop, ZONE_BANDS[base]) && !bandHit(c.inCrop, ZONE_BANDS[other]);
+    c.subPos = hit ? other : base;
+  }
+
+  // 字幕のフェード: 前後に字幕が切れ目なく続くときは短く
+  const pages = tl.flatMap(c => c.subtitles.map(p => Object.assign(p, { pos: c.subPos })));
+  pages.forEach((p, i) => {
+    const prev = pages[i - 1], next = pages[i + 1];
+    p.fadeIn = prev && Math.abs(prev.end - p.start) < 0.05 && prev.pos === p.pos ? FADE_SHORT : FADE;
+    p.fadeOut = next && Math.abs(next.start - p.end) < 0.05 && next.pos === p.pos ? FADE_SHORT : FADE;
+  });
+
+  // 自然なズーム: 手元がまとまって動いている2秒以上の場面だけ、ゆっくり 1.03〜1.08 倍まで寄る。
+  // 続けてズームしない・間隔をあける・手元が枠からはみ出す場合はズームしない
+  let lastEnd = -Infinity, prevZoomed = false;
+  for (const c of tl) {
+    c.zoom = null;
+    const b = c.inCrop;
+    const ok = zoom && b && c.outDuration >= 2 && (c.motion ?? 0) >= 0.35 && !prevZoomed && c.outStart - lastEnd >= ZOOM_SPACING;
+    prevZoomed = false;
+    if (!ok) continue;
+    const bw = b[1] - b[0], bh = b[3] - b[2];
+    let z = Math.min(ZOOM_MAX, 1 / (Math.max(bw, bh) * 1.25), 1 + 0.025 * c.outDuration);
+    z = Math.floor(z * 200) / 200;
+    if (z < ZOOM_MIN) continue;
+    const { crop } = c;
+    const zw = crop.width / z, zh = crop.height / z;
+    const cx = crop.left + ((b[0] + b[1]) / 2) * crop.width;
+    const cy = crop.top + ((b[2] + b[3]) / 2) * crop.height;
+    const rect = {
+      left: clamp(cx - zw / 2, crop.left, crop.left + crop.width - zw),
+      top: clamp(cy - zh / 2, crop.top, crop.top + crop.height - zh),
+      width: zw, height: zh,
+    };
+    // 手元（＋少しの余白）が寄った後の枠に収まるか確かめる
+    const bx0 = crop.left + b[0] * crop.width, bx1 = crop.left + b[1] * crop.width;
+    const by0 = crop.top + b[2] * crop.height, by1 = crop.top + b[3] * crop.height;
+    const mx = zw * 0.04, my = zh * 0.04;
+    if (bx0 - mx < rect.left || bx1 + mx > rect.left + zw || by0 - my < rect.top || by1 + my > rect.top + zh) continue;
+    c.zoom = { z, rect };
+    lastEnd = c.outStart + c.outDuration;
+    prevZoomed = true;
+  }
+  return tl;
+}
+
+// 出力の時刻 t での切り抜き枠（ズームはゆっくり始まりゆっくり止まる）
+export function cropAt(clip, t) {
+  if (!clip.zoom) return clip.crop;
+  const x = clamp((t - clip.outStart) / clip.outDuration, 0, 1);
+  const e = x * x * (3 - 2 * x);
+  const a = clip.crop, b = clip.zoom.rect;
+  return {
+    left: a.left + (b.left - a.left) * e, top: a.top + (b.top - a.top) * e,
+    width: a.width + (b.width - a.width) * e, height: a.height + (b.height - a.height) * e,
+  };
+}
+
+// 字幕の不透明度（フェードイン・フェードアウト）
+export function subtitleAlpha(page, t) {
+  return clamp(Math.min((t - page.start) / page.fadeIn, (page.end - t) / page.fadeOut, 1), 0, 1);
 }
 
 export function formatTime(sec) {
