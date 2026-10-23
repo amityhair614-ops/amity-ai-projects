@@ -3,7 +3,7 @@ import {
 } from './media.js';
 import {
   detectSpeech, transcriptionWindows, buildUnits, selectUnits, buildTimeline, formatTime, FRAME_SEC,
-  cleanSubtitle, alignSentences,
+  cleanSubtitle, alignSentences, refineSubtitleTiming, fineSpeech,
 } from './plan.js';
 import {
   previousJob, log, setEnv, jobStart, jobStage, jobProgress, jobEnd, report, clearLogs, errorText,
@@ -328,7 +328,9 @@ $('btnAnalyze').addEventListener('click', async () => {
       setStep('asr', 'active');
       try {
         // 文ごとの時刻は、無音の切れ目に合わせて割り当て直す
-        state.chunks = alignSentences(await transcribe(pcm, transcriptionWindows(state.speech.regions)), state.speech.regions);
+        const sentences = alignSentences(await transcribe(pcm, transcriptionWindows(state.speech.regions)), state.speech.regions);
+        // 字幕の表示時刻を、実際の声の出始め・終わりに合わせる（自動カットの区切りは変えない）
+        state.chunks = refineSubtitleTiming(sentences, fineSpeech(state.rmsDb, state.speech.threshold));
         setStep('asr', 'done');
       } catch (err) {
         log('文字起こしに失敗', errorText(err));

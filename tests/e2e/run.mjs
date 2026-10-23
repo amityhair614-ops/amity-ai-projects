@@ -110,6 +110,55 @@ if (realAsr) {
   await page.route('**/js/transcribe-worker.js', r => r.fulfill({ contentType: 'text/javascript', body: fakeWorker }));
 }
 
+// 書き出した動画（カット後）の上で、字幕の表示時刻と、実際に話している時刻の差を測る
+async function evaluateOutputTiming() {
+  const { srcToOut, moraCount } = await import('../../js/plan.js');
+  const tl = await page.evaluate(() => window.amityDebug.timeline.map(c => ({
+    text: c.text, outStart: c.outStart, outDuration: c.outDuration,
+    pieces: c.pieces.map(p => ({ srcStart: p.srcStart, frames: p.frames, outStart: p.outStart })),
+    pages: c.subtitles.map(p => ({ start: p.start, end: p.end, text: p.lines.join('') })),
+  })));
+  const starts = [], ends = [], bounds = [];
+  const said = transcript.filter(c => !c.retake);
+  for (const clip of tl.filter(c => c.pages.length)) {
+    let tr = null, sim = 0;
+    for (const t of said) { const v = parseFloat(charAgreement(t.text, clip.text)); if (v > sim) { sim = v; tr = t; } }
+    if (!tr || sim < 40) continue;
+    const inClip = t => t >= clip.pieces[0].srcStart - 0.05 && t <= clip.pieces.at(-1).srcStart + clip.pieces.at(-1).frames / 30 + 0.05;
+    if (inClip(tr.start)) starts.push(clip.pages[0].start - srcToOut(clip, tr.start));
+    if (inClip(tr.end)) ends.push(clip.pages.at(-1).end - srcToOut(clip, tr.end));
+    // 文の中のページの切り替え: ページの最初の文字が話される時刻（正解の句の中を読みの長さで按分した推定）との差
+    const norm = t => t.replace(/[、。\s]/g, '');
+    const truthText = norm(tr.phrases.map(p => p.text).join(''));
+    const spokenAt = offset => {
+      let acc = 0;
+      for (const p of tr.phrases) {
+        const pt = norm(p.text);
+        if (offset < acc + pt.length) {
+          const w = moraCount(pt.slice(0, offset - acc)) / (moraCount(pt) || 1);
+          return p.start + w * (p.end - p.start);
+        }
+        acc += pt.length;
+      }
+      return tr.end;
+    };
+    let cursor = 0;
+    for (const [k, pg] of clip.pages.entries()) {
+      const at = truthText.indexOf(norm(pg.text).slice(0, 3), cursor);
+      if (at < 0) continue;
+      cursor = at + 1;
+      if (k === 0) continue;
+      const expect = srcToOut(clip, spokenAt(at));
+      bounds.push(pg.start + 0.1 - expect);
+      if (process.env.DEBUG_PAGES) console.log(`  ページ「${pg.text}」 表示 ${(pg.start + 0.1).toFixed(2)} / 話し始め(推定) ${expect.toFixed(2)}`);
+    }
+  }
+  const st = a => { const s = a.map(Math.abs).sort((x, y) => x - y); return s.length ? `中央値 ${s[Math.floor(s.length / 2)].toFixed(2)}s 最大 ${s.at(-1).toFixed(2)}s（${s.length}件）` : 'なし'; };
+  console.log(`カット後の字幕の時刻: 出始め−声の出始め ${st(starts.map(x => x + 0.1))} / 消える−話し終わり ${st(ends.map(x => x - 0.25))}`);
+  console.log(`  （表示は声の0.1秒前から、話し終わりの0.25秒後までの設定。上の差はその設定からのずれ）`);
+  console.log(`  文の途中のページ切り替え−そのページの言葉の話し始め(推定): ${st(bounds)}`);
+}
+
 // 正解と認識結果の文字の一致率（編集距離から。句読点・空白は除く）
 function charAgreement(a, b) {
   const clean = t => t.replace(/[\s、。，．,.！？!?]/g, '');
@@ -189,7 +238,7 @@ try {
           const sim = parseFloat(charAgreement(tr.text, c.text));
           if (sim > bestSim) { bestSim = sim; best = c; }
         }
-        if (best && bestSim >= 40) errs.push({ text: tr.text, ds: best.start - tr.start, de: best.end - tr.end });
+        if (best && bestSim >= 40) errs.push({ text: tr.text, ds: (best.subStart ?? best.start) - tr.start, de: (best.subEnd ?? best.end) - tr.end });
         else console.log(`  対応する字幕なし: ${tr.text}`);
       }
       const abs = a => a.map(Math.abs).sort((x, y) => x - y);
@@ -242,6 +291,7 @@ try {
   fs.writeFileSync(outFile, Buffer.from(b64, 'base64'));
   await page.screenshot({ path: path.join(dir, `result-${tag}.png`), fullPage: true });
   console.log('出力:', outFile);
+  if (realAsr && transcript[0].phrases) await evaluateOutputTiming();
   console.log('演出: ' + (await page.$eval('#outStyle', el => el.textContent)));
   const tl = await page.evaluate(() => window.amityDebug.timeline.map(c => ({ outStart: +c.outStart.toFixed(2), dur: +c.outDuration.toFixed(2), pos: c.subPos, zoom: c.zoom && { z: c.zoom.z, rect: c.zoom.rect }, crop: c.crop, inCrop: c.inCrop, subs: c.subtitles.map(p => p.lines.join('／')) })));
   fs.writeFileSync(path.join(dir, `timeline-${tag}.json`), JSON.stringify(tl, null, 1));

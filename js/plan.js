@@ -348,7 +348,7 @@ export function buildUnits({ duration, rmsDb, speech, chunks, motion }) {
       if ((!c.aligned && speechDur / len < 0.3) || (HALLUCINATION_RE.test(text) && speechDur / len < 0.6) || isPromptEcho(text)) return;
       covered.push({ start: c.start, end: c.end });
       if (!pieces.length) return;
-      const u = { kind: 'speech', start: pieces[0].start, end: pieces[pieces.length - 1].end, pieces, text };
+      const u = { kind: 'speech', start: pieces[0].start, end: pieces[pieces.length - 1].end, pieces, text, subStart: c.subStart, subEnd: c.subEnd, fine: c.fine };
       if (flags[i]) u.excluded = flags[i];
       else if (!normalizeText(text)) u.excluded = 'つなぎ言葉のみ';
       units.push(u);
@@ -627,9 +627,13 @@ export function buildTimeline(clips, opts = {}) {
     const outStart = pieces[0].outStart;
     const outDuration = pieces.reduce((s, p) => s + p.frames / FPS, 0);
     const text = subtitles ? c.text : '';
-    const subs = subtitlePages(text, outDuration).map(p => ({ ...p, start: p.start + outStart, end: p.end + outStart }));
+    const clip = { ...c, pieces, outStart, outDuration };
+    // 話している時刻がわかっている字幕は、元の動画の時刻から、カット後の時刻に変換して出す
+    const subs = text && c.subStart != null && c.subEnd > c.subStart
+      ? timedPages(clip, text)
+      : subtitlePages(text, outDuration).map(p => ({ ...p, start: p.start + outStart, end: p.end + outStart }));
     const crop = cropRect(srcW, srcH, c.cx ?? 0.5, c.box);
-    return { ...c, pieces, outStart, outDuration, subtitles: subs, crop, inCrop: boxInCrop(c.box, crop, srcW, srcH) };
+    return { ...clip, subtitles: subs, crop, inCrop: boxInCrop(c.box, crop, srcW, srcH) };
   });
 
   // 字幕の位置: 基本は下。手元が下の方で動く場面が多い動画では上にする。
@@ -739,7 +743,7 @@ export function alignSentences(chunks, regions) {
       gaps.push((spans[i - 1].end + spans[i].start) / 2);
       gapLens.push(spans[i].start - spans[i - 1].end);
     }
-    const lens = sents.map(s => s.length);
+    const lens = sents.map(moraCount); // 文字数ではなく読みの長さで割り振る
     const all = lens.reduce((a, b) => a + b, 0);
     const targets = [];
     let acc = 0;
@@ -788,5 +792,138 @@ function matchGaps(targets, gaps, gapLens) {
     j = pj;
   }
   for (let k = 1; k < K; k++) out[k] = Math.max(out[k], out[k - 1] + 0.2);
+  return out;
+}
+
+// ---------- 字幕の時刻合わせ ----------
+
+// 細かい発話区間（短い息継ぎでも区切る）。字幕の開始・終了とページの切り替えに使う
+export function fineSpeech(rmsDb, threshold) {
+  return detectSpeechWith(rmsDb, threshold, { minGap: 0.09, minLen: 0.08, pad: 0 });
+}
+
+function detectSpeechWith(rmsDb, threshold, { minGap, minLen, pad }) {
+  const out = [];
+  let start = -1;
+  for (let i = 0; i <= rmsDb.length; i++) {
+    const on = i < rmsDb.length && rmsDb[i] > threshold;
+    if (on && start < 0) start = i;
+    if (!on && start >= 0) {
+      const r = { start: start * FRAME_SEC - pad, end: i * FRAME_SEC + pad };
+      const last = out[out.length - 1];
+      if (last && r.start - last.end < minGap) last.end = r.end;
+      else out.push(r);
+      start = -1;
+    }
+  }
+  return out.filter(r => r.end - r.start >= minLen);
+}
+
+// 読みの長さの目安（拍の数）。漢字は読みがわからないので 1.7 拍、数字は 1 桁 1.5 拍とみなす
+export function moraCount(text) {
+  let n = 0;
+  for (const c of (text || '').replace(/[、。，．,.！？!?\s「」]/g, '')) {
+    if ('ゃゅょぁぃぅぇぉャュョァィゥェォ'.includes(c)) n += 0.3;
+    else if (/[\u4e00-\u9fff々]/.test(c)) n += 1.7;
+    else if (/[0-9０-９]/.test(c)) n += 1.5;
+    else if (/[A-Za-z]/.test(c)) n += 1.2;
+    else n += 1;
+  }
+  return n;
+}
+
+// Whisper の文の時刻を、実際の声の出始め・終わりに合わせる（subStart, subEnd を付ける）。
+// 自動カットに使う start / end は変えない。
+// 先にすべての文の出始めを決めてから、終わりを「次の文の出始めより前の、最後の声の終わり」にする
+export function refineSubtitleTiming(chunks, fine) {
+  const out = chunks.map(c => ({ ...c }));
+  // 1. 出始め: Whisper の開始時刻の近くにある声の出始め（前の文の出始めより後）
+  let prevStart = -Infinity;
+  for (const c of out) {
+    let best = null;
+    for (const r of fine) {
+      if (r.start < c.start - 0.7 || r.start > c.start + 0.9 || r.start >= c.end || r.start <= prevStart + 0.2) continue;
+      if (best === null || Math.abs(r.start - c.start) < Math.abs(best - c.start)) best = r.start;
+    }
+    c.subStart = best ?? Math.max(c.start, prevStart + 0.2);
+    prevStart = c.subStart;
+  }
+  // 2. 終わり: 次の文の出始めより前で、Whisper の終了時刻を少し過ぎるまでの、最後の声の終わり
+  out.forEach((c, i) => {
+    const nextStart = i + 1 < out.length ? out[i + 1].subStart : Infinity;
+    const limit = Math.min(c.end + 0.5, nextStart - 0.02);
+    let end = null;
+    for (const r of fine) {
+      if (r.end <= c.subStart + 0.1 || r.start >= limit) continue;
+      end = Math.min(r.end, limit);
+    }
+    c.subEnd = Math.max(c.subStart + 0.2, end ?? Math.min(c.end, limit));
+    c.fine = fine.filter(r => r.end > c.subStart && r.start < c.subEnd)
+      .map(r => ({ start: Math.max(r.start, c.subStart), end: Math.min(r.end, c.subEnd) }));
+  });
+  return out;
+}
+
+// 文の中のページの切り替え時刻（元の動画上）。読みの長さで話している時間を割り振り、近くの息継ぎに合わせる
+export function pageSourceTimes(pageTexts, start, end, fine) {
+  const spans = (fine && fine.length ? fine : [{ start, end }]).filter(r => r.end > r.start);
+  const total = spans.reduce((a, r) => a + r.end - r.start, 0) || (end - start);
+  const timeAt = f => {
+    let rest = f * total;
+    for (const r of spans) {
+      if (rest <= r.end - r.start) return r.start + rest;
+      rest -= r.end - r.start;
+    }
+    return end;
+  };
+  const gaps = [];
+  for (let i = 1; i < spans.length; i++) gaps.push({ t: (spans[i - 1].end + spans[i].start) / 2, a: spans[i - 1].end, b: spans[i].start });
+  const w = pageTexts.map(moraCount);
+  const all = w.reduce((a, b) => a + b, 0) || 1;
+  const times = [{ start, end }];
+  let acc = 0;
+  for (let i = 0; i < pageTexts.length - 1; i++) {
+    acc += w[i];
+    const target = timeAt(acc / all);
+    // 近くの息継ぎに合わせる。長い間ほど区切りらしいので選ばれやすくする
+    const cost = x => Math.abs(x.t - target) / (1 + 2 * (x.b - x.a));
+    const g = gaps.filter(x => Math.abs(x.t - target) <= 1.2 && x.t > times[times.length - 1].start + 0.3 && cost(x) <= 0.5)
+      .sort((x, y) => cost(x) - cost(y))[0];
+    const prev = times[times.length - 1];
+    if (g) { prev.end = g.a; times.push({ start: g.b, end }); }
+    else { prev.end = target; times.push({ start: target, end }); }
+  }
+  return times;
+}
+
+// 元の動画の時刻 t を、書き出す動画（カット後）の時刻に変換する。カットで削った部分なら次の場面の頭にする
+export function srcToOut(clip, t) {
+  for (const p of clip.pieces) {
+    const d = p.frames / FPS;
+    if (t < p.srcStart) return p.outStart;
+    if (t <= p.srcStart + d) return p.outStart + (t - p.srcStart);
+  }
+  return clip.outStart + clip.outDuration;
+}
+
+const SUB_LEAD = 0.1;   // 声より少しだけ先に出し始める（フェードの分）
+const SUB_LINGER = 0.25; // 話し終わってから少しだけ残す
+
+function timedPages(clip, text) {
+  const pages = subtitlePages(text, 1);
+  if (!pages.length) return [];
+  const src = pageSourceTimes(pages.map(p => p.lines.join('')), clip.subStart, clip.subEnd, clip.fine);
+  const clipEnd = clip.outStart + clip.outDuration;
+  const out = pages.map((p, i) => ({
+    lines: p.lines,
+    start: Math.max(clip.outStart, srcToOut(clip, src[i].start) - SUB_LEAD),
+    end: Math.min(clipEnd, srcToOut(clip, src[i].end) + SUB_LINGER),
+  }));
+  for (let i = 0; i < out.length; i++) {
+    const limit = i + 1 < out.length ? out[i + 1].start : clipEnd;
+    out[i].end = Math.min(out[i].end, limit);
+    // 短すぎて読めないページは、次のページの直前まで延ばす（文字は省かない）
+    if (out[i].end - out[i].start < 0.5) out[i].end = Math.min(limit, out[i].start + 0.5);
+  }
   return out;
 }
