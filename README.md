@@ -10,15 +10,43 @@ GitHub Pages は「ファイルを置くだけ」のサーバーなので、編�
 
 | 処理 | 方法 | 状態 |
 | --- | --- | --- |
-| 動画の読み込み | [Mediabunny](https://mediabunny.dev/)（`vendor/`）で端末内で読む | 使える |
-| 無音・長い間のカット | 音量（50msごと）から話している区間を検出 | 使える |
+| 動画の読み込み | [Mediabunny](https://mediabunny.dev/)（`vendor/`）で、ファイルの必要な部分だけを読む | パソコンで確認 |
+| 無音・長い間のカット | 音量（50msごと）から話している区間を検出 | パソコンで確認 |
 | 言い直しの検出 | 文字起こし結果で、似た発言のくり返し・「言い直します」等を検出 | 簡易版 |
 | 重要な場面を残す | 手元の動きの量（約1秒ごとのコマの差）＋美容用語で点数をつける | 簡易版 |
-| 約60秒・9:16 | 点数の高い場面を時系列で並べ、動きのある位置で縦に切り抜く | 使える |
-| 日本語字幕 | 端末内のWhisper（[Transformers.js](https://huggingface.co/docs/transformers.js)）。初回にモデルをダウンロード | 精度は限定的（書き出し前に修正可） |
-| MP4書き出し・保存 | WebCodecs（H.264/AAC）でMP4を作り、共有メニューから写真に保存 | 使える |
+| 約60秒・9:16 | 点数の高い場面を時系列で並べ、動きのある位置で縦に切り抜く | パソコンで確認 |
+| 日本語字幕 | 端末内のWhisper（[Transformers.js](https://huggingface.co/docs/transformers.js)）。初回にモデルをダウンロード | 試験中（既定はOFF。失敗しても字幕なしで続行） |
+| MP4書き出し・保存 | WebCodecs（H.264/AAC）で1080×1920のMP4を作り、共有メニューから写真に保存 | パソコンで確認 |
 
+「パソコンで確認」= パソコン上のChromeでのテストで動作確認済み。**iPhone実機では v0.3 の修正後まだ確認していません。**
 iOS 26 以降の Safari が必要です。
+
+## メモリを抑える工夫（v0.3）
+
+iPhone の Safari はメモリが足りなくなると、エラーを出さずにページを再読み込みします（v0.2 で4K縦動画の処理中に発生）。
+
+- ファイルは一部ずつ読む（`BlobSource` の stream reader を使わない。キャッシュ 8MB）
+- 映像は自前の `VideoDecoder` で1コマずつ展開してすぐ閉じる。先読みは数コマまで
+- コマは「切り抜き＋縮小」だけで canvas に描き、回転は描いた後の画像に対して行う
+  （変換をかけた canvas に動画のコマを直接描くと、コマのメモリが解放されず増え続けることがあった）
+- 動きの解析は 96×54 に縮小した画像で行い、書き出しは 1080×1920 固定
+- 音声は少しずつ読み、文字起こし用の 16kHz モノラルだけを残す。文字起こしが終わったら手放す
+- 処理中は `<video>` 要素から動画を外す
+- 音声を WebCodecs で読めない場合は、区間ごとに小さな M4A に詰め直して Web Audio で読む
+
+4K縦MOV（188MB・1分02秒）でのページのメモリのピーク（パソコンの Chrome で測定、GPU有効）:
+
+| 段階 | v0.2 | v0.3 |
+| --- | --- | --- |
+| 音声の読み込み | 559MB | 265MB |
+| 動きの解析 | 572MB | 391MB |
+| 書き出し | 783MB | 560MB |
+
+## 診断情報と、途中で落ちたときの表示
+
+処理の段階と進み具合を `localStorage` に記録しながら進めます。ページが途中で再読み込みされた場合、
+次に開いたときに「前回は○○の途中で止まった」と表示します（文字起こし中に止まった場合は字幕を自動でOFFにします）。
+ページ下部の「診断情報」から、端末・動画の形式・処理の記録をコピーできます（動画の中身は含みません）。
 
 ## ファイル
 
@@ -27,6 +55,7 @@ iOS 26 以降の Safari が必要です。
 - `js/media.js` … 動画の解析と書き出し（ブラウザ専用）
 - `js/plan.js` … 無音検出・言い直し検出・場面選び・字幕の割り付け（純粋な計算だけ）
 - `js/transcribe-worker.js` … 文字起こし（Whisper）
+- `js/diag.js` … 診断情報・処理段階の記録
 - `vendor/` … Mediabunny（MPL-2.0。AACエンコーダーにFFmpegのWASM版を含む）
 - `tests/` … テスト
 
@@ -41,10 +70,17 @@ python3 tests/e2e/make-sample.py /tmp/e2e            # テスト用動画を作�
 python3 -m http.server 8123 &                        # このフォルダで起動
 npm i playwright-core                                # tests/e2e から使えるように
 CHROME_PATH=/path/to/chrome node tests/e2e/run.mjs /tmp/e2e
+
+# iPhone の4K縦動画に近いもの（188MB・回転情報つきMOV）
+python3 tests/e2e/make-sample.py /tmp/e2e 3840 2160 --duration 62 --format mov --rotate 90 --bitrate 24M
+CHROME_PATH=/path/to/chrome node tests/e2e/run.mjs /tmp/e2e sample-3840x2160-r90.mov
+# 失敗時の動き: --fail-asr / --no-asr / --webaudio / --reload-at=audio|asr|motion|render
 ```
 
 通しテストでは、文字起こしだけは偽のデータに差し替えています（モデルのダウンロードが必要なため）。
-H.264 を扱える Chrome（Chrome for Testing など）が必要です。
+H.264 を扱える Chrome（Chrome for Testing など）が必要です。Linux の Chrome は HEVC を読めないため、
+HEVC の動画では「読み込めない」旨のメッセージが出ることだけを確認しています。
+各段階のページのメモリのピークも表示します。
 
 ## iPhoneで見る方法（GitHub Pages）
 

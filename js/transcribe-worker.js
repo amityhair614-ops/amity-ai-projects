@@ -4,9 +4,10 @@ import { pipeline } from 'https://cdn.jsdelivr.net/npm/@huggingface/transformers
 
 let asr = null;
 
-async function load(model) {
+// iPhone ではメモリの使い方が読みやすい WASM（CPU）を既定にする。WebGPU は明示したときだけ試す
+async function load(model, device) {
   const progress_callback = p => self.postMessage({ type: 'load-progress', p });
-  if ('gpu' in navigator) {
+  if (device === 'webgpu' && 'gpu' in navigator) {
     try {
       asr = await pipeline('automatic-speech-recognition', model, {
         device: 'webgpu',
@@ -26,7 +27,7 @@ self.onmessage = async e => {
   const m = e.data;
   try {
     if (m.type === 'load') {
-      const device = await load(m.model);
+      const device = await load(m.model, m.device);
       self.postMessage({ type: 'loaded', device });
     } else if (m.type === 'run') {
       const len = m.audio.length / 16000;

@@ -88,6 +88,9 @@
     .badge.warn { background: var(--warn-soft); color: var(--warn); }
     .badge.pending { background: var(--pending-soft); color: var(--muted); }
     .banner { font-size: 14px; padding: 12px 14px; border-radius: 12px; background: var(--warn-soft); color: var(--text); margin-bottom: 20px; }
+    .recover { font-size: 14px; padding: 14px; border-radius: 12px; background: var(--err-soft); color: var(--text); margin-bottom: 20px; }
+    .recover p { margin: 6px 0 10px; white-space: pre-wrap; }
+    .btn.small { padding: 6px 16px; font-size: 14px; }
     .error { font-size: 14px; padding: 12px 14px; border-radius: 12px; background: var(--err-soft); color: var(--err); margin-top: 12px; white-space: pre-wrap; }
     .note { font-size: 13px; color: var(--muted); margin: 12px 0 0; }
 
@@ -124,6 +127,9 @@
     .steps li { display: flex; gap: 8px; padding: 4px 0; color: var(--muted); }
     .steps li.active { color: var(--text); font-weight: 600; }
     .steps li.done { color: var(--ok); }
+    .steps li.warn { color: var(--warn); }
+    .warnings { font-size: 13px; padding: 10px 12px; border-radius: 10px; background: var(--warn-soft); white-space: pre-wrap; margin: 8px 0 0; }
+    pre.diag { font-size: 11px; line-height: 1.5; white-space: pre-wrap; word-break: break-all; background: var(--bg); border: 1px solid var(--line); border-radius: 10px; padding: 10px; max-height: 50vh; overflow: auto; }
     .steps .icon { width: 1.2em; flex: none; text-align: center; }
     .bar { height: 8px; border-radius: 99px; background: var(--pending-soft); overflow: hidden; margin-top: 8px; }
     .bar > div { height: 100%; width: 0; background: var(--accent); transition: width .2s; }
@@ -160,18 +166,26 @@
     <p class="lead">カット解説動画から、約60秒・縦型（9:16）・字幕付きのYouTubeショートを自動で作ります。処理はすべてこのiPhoneの中で行い、動画はどこにも送信しません。</p>
   </header>
 
-  <div class="banner"><b>テスト版です。</b> パソコン上の試験では動作を確認しました。iPhone実機での動作確認はこれからです。うまく動かない場合は、表示されたメッセージを教えてください。</div>
+  <div class="banner"><b>テスト版です。</b> iPhone実機で、4K動画の処理中にページが再読み込みされる不具合がありました。メモリの使い方を見直す修正をしましたが、<b>修正後のiPhone実機での動作はまだ確認できていません。</b>うまく動かない場合は、下の「診断情報」をコピーして送ってください。</div>
+
+  <div class="recover" id="recover" role="alert" hidden>
+    <b>前回の処理が途中で止まりました</b>
+    <p id="recoverText"></p>
+    <button class="btn secondary small" id="recoverClose" type="button">閉じる</button>
+  </div>
+  <p class="error" id="globalError" role="alert" hidden></p>
 
   <section class="card" aria-labelledby="status-title">
     <h2 id="status-title">機能の状況</h2>
+    <p class="note" style="margin:0 0 12px">「パソコンで確認」は、パソコン上のブラウザでのテストで動作を確認した機能です。iPhone実機での動作は、修正後まだ確認できていません。</p>
     <ul class="status">
-      <li><span>動画のアップロード（端末内で読み込み）</span><span class="badge ok">使えます</span></li>
-      <li><span>無音・長い間の自動カット<small>音量で判定します</small></span><span class="badge ok">使えます</span></li>
-      <li><span>言い直しの検出<small>文字起こしで、似た発言のくり返しや「言い直します」等を検出。見落としあり</small></span><span class="badge warn">簡易版</span></li>
-      <li><span>カット技術の重要場面を残す<small>手元の動きの量と、美容の用語（ブロッキング等）で判定。映像の内容までは理解しません</small></span><span class="badge warn">簡易版</span></li>
-      <li><span>約60秒・縦9:16に編集</span><span class="badge ok">使えます</span></li>
-      <li><span>日本語字幕の自動生成<small>端末内のAI（Whisper）で作成。誤字が出るので書き出し前に直せます</small></span><span class="badge warn">精度は限定的</span></li>
-      <li><span>完成したMP4をiPhoneに保存</span><span class="badge ok">使えます</span></li>
+      <li><span>動画の読み込み（端末内）<small>MOV・MP4、H.264・HEVC</small></span><span class="badge warn">パソコンで確認</span></li>
+      <li><span>無音・長い間の自動カット<small>音量で判定します</small></span><span class="badge warn">パソコンで確認</span></li>
+      <li><span>約60秒・縦9:16（1080×1920）に編集</span><span class="badge warn">パソコンで確認</span></li>
+      <li><span>MP4の書き出し・iPhoneへの保存</span><span class="badge warn">パソコンで確認</span></li>
+      <li><span>カット技術の重要場面を残す<small>手元の動きの量と美容の用語で判定する簡易版。映像の内容までは理解しません</small></span><span class="badge warn">簡易版</span></li>
+      <li><span>言い直しの検出<small>文字起こしが必要。似た発言のくり返し等を検出する簡易版</small></span><span class="badge warn">簡易版</span></li>
+      <li><span>日本語字幕の自動生成<small>端末内のAI（Whisper）。実際の文字起こしはまだどの環境でも試せていません</small></span><span class="badge pending">試験中</span></li>
       <li><span>10分の通常動画の自動編集</span><span class="badge pending">準備中</span></li>
     </ul>
   </section>
@@ -190,6 +204,7 @@
         <dt>サイズ</dt><dd id="size">-</dd>
         <dt>長さ</dt><dd id="duration">-</dd>
         <dt>画面</dt><dd id="dims">-</dd>
+        <dt>形式</dt><dd id="codec">-</dd>
       </dl>
     </div>
     <p class="error" id="fileError" hidden></p>
@@ -197,7 +212,7 @@
 
   <section class="card" id="stepAnalyze" aria-labelledby="analyze-title" hidden>
     <h2 id="analyze-title"><span class="step-no">2</span>自動編集する</h2>
-    <label class="option"><input type="checkbox" id="optAsr" checked><span>字幕を作る・言い直しを探す（文字起こし）<br><small class="note" style="margin:0">初回はAIモデルのダウンロードがあります。Wi-Fiでの利用をおすすめします。</small></span></label>
+    <label class="option"><input type="checkbox" id="optAsr"><span>字幕を作る・言い直しを探す（文字起こし・試験中）<br><small class="note" style="margin:0">OFFでも無音カット・場面選び・MP4書き出しはできます。ONにすると初回にAIモデル（目安100MB前後）をダウンロードし、メモリを多く使います。失敗した場合は字幕なしで続けます。</small></span></label>
     <select id="optModel" aria-label="文字起こしの精度">
       <option value="onnx-community/whisper-base">標準（速い・ダウンロード約100MB前後）</option>
       <option value="onnx-community/whisper-small">高精度（遅い・約300MB前後・メモリ不足で止まる場合あり）</option>
@@ -213,8 +228,9 @@
   <section class="card" id="stepReview" aria-labelledby="review-title" hidden>
     <h2 id="review-title"><span class="step-no">3</span>構成を確認する</h2>
     <p class="note" id="summary" style="margin-top:0"></p>
+    <p class="warnings" id="warnings" hidden></p>
     <div class="sticky-preview">
-      <video id="clipPreview" playsinline preload="metadata" controls></video>
+      <video id="clipPreview" playsinline preload="none" controls hidden></video>
       <div class="total" id="total"></div>
     </div>
     <p class="note">チェックを外すとその場面を使いません。字幕の文字は直接修正できます。「▶」で元の動画のその場面を確認できます。</p>
@@ -240,16 +256,25 @@
     </ol>
   </section>
 
+  <section class="card" aria-labelledby="diag-title">
+    <h2 id="diag-title">診断情報</h2>
+    <p class="note" style="margin-top:0">うまく動かないときは、ここをコピーして送ってください。端末・ブラウザ・動画の形式・処理の記録が入っています（動画の中身は含みません）。</p>
+    <details id="diagWrap"><summary>診断情報を表示</summary><pre class="diag" id="diagText"></pre></details>
+    <button class="btn block secondary" id="diagCopy" type="button">診断情報をコピー</button>
+    <button class="btn block secondary" id="diagClear" type="button" style="margin-top:8px">記録を消去</button>
+  </section>
+
   <section class="card" aria-labelledby="notes-title">
     <h2 id="notes-title">ご利用の注意</h2>
     <ul class="note" style="padding-left:1.2em;margin:0">
       <li>iOS 26 以降の Safari を想定しています。古いiOSでは動きません。</li>
       <li>動画・音声はこのiPhoneの中だけで処理します。インターネットを使うのは、ページとAIモデルの読み込みのときだけです。</li>
       <li>HDRで撮影した動画は、色が少し薄く見えることがあります。</li>
+      <li>処理中にページが再読み込みされた場合は、メモリ不足の可能性があります。次に開いたとき、どこで止まったかを表示します。</li>
     </ul>
   </section>
 
-  <footer>Amity AI動画編集 ・ ショート動画テスト版 v0.2</footer>
+  <footer>Amity AI動画編集 ・ ショート動画テスト版 v0.3</footer>
 </main>
 <script type="module" src="js/app.js"></script>
 </body>

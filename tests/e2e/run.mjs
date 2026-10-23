@@ -1,6 +1,10 @@
 // 通しテスト: 本物のブラウザでページを開き、動画を選んで解析→書き出しまで行う。
 //
-//   CHROME_PATH=/path/to/chrome node tests/e2e/run.mjs SAMPLE_DIR [sample.mp4] [--no-asr]
+//   CHROME_PATH=/path/to/chrome node tests/e2e/run.mjs SAMPLE_DIR [sample.mp4|mov] [オプション]
+//     --no-asr        字幕OFF
+//     --fail-asr      文字起こしが失敗する場合（字幕なしで続行できるか）
+//     --webaudio      音声を Web Audio 方式で読む（WebCodecs で読めなかった場合の代替経路）
+//     --reload-at=段階 その段階の途中でページを再読み込みし、前回の段階が表示されるかを確かめる（audio/motion/render）
 //
 // 事前に `python3 -m http.server 8123` をリポジトリ直下で起動しておく。
 // H.264 を扱えるブラウザが必要（Chrome for Testing など。Playwright 同梱の Chromium は不可）。
@@ -9,45 +13,115 @@
 import { chromium } from 'playwright-core';
 import fs from 'node:fs';
 import path from 'node:path';
+import { execSync } from 'node:child_process';
 
 const dir = process.argv[2];
 const sample = process.argv[3] && !process.argv[3].startsWith('--') ? process.argv[3] : 'sample-1280x720.mp4';
 const noAsr = process.argv.includes('--no-asr');
-const transcript = JSON.parse(fs.readFileSync(path.join(dir, 'sample-transcript.json'), 'utf8'));
-const tag = path.basename(sample, '.mp4') + (noAsr ? '-noasr' : '');
+const failAsr = process.argv.includes('--fail-asr');
+const webaudio = process.argv.includes('--webaudio');
+const reloadAt = (process.argv.find(a => a.startsWith('--reload-at=')) || '').split('=')[1];
+const base = path.basename(sample).replace(/\.(mp4|mov)$/, '');
+const tFile = fs.existsSync(path.join(dir, `${base}-transcript.json`)) ? `${base}-transcript.json` : 'sample-transcript.json';
+const transcript = JSON.parse(fs.readFileSync(path.join(dir, tFile), 'utf8'));
+const tag = base + (noAsr ? '-noasr' : '') + (failAsr ? '-failasr' : '') + (webaudio ? '-webaudio' : '');
+
+// ブラウザのプロセスごとのメモリ（RSS）を0.5秒ごとに測り、段階ごとのピークを記録する
+const mem = { stage: '開始', peaks: {} };
+function sampleMemory() {
+  let out = '';
+  try { out = execSync('ps -eo rss=,args= | grep -E "chrome(-linux64)?/chrome" | grep -v grep', { encoding: 'utf8' }); } catch { return; }
+  const sums = {};
+  for (const line of out.trim().split('\n')) {
+    const m = line.trim().match(/^(\d+)\s+(.*)$/);
+    if (!m) continue;
+    const type = (m[2].match(/--type=([\w-]+)/) || [, 'browser'])[1];
+    sums[type] = (sums[type] || 0) + Number(m[1]) / 1024;
+  }
+  const st = (mem.peaks[mem.sub || mem.stage] ||= {});
+  for (const [k, v] of Object.entries(sums)) st[k] = Math.max(st[k] || 0, Math.round(v));
+}
+let page = null;
+const memTimer = setInterval(async () => {
+  // 表示中の進み具合（数字を除いた文言）を段階名として使う
+  if (page && mem.stage !== '開始') {
+    try {
+      const t = await page.$eval('#progressText', el => el.textContent);
+      const r = await page.$eval('#renderText', el => el.textContent).catch(() => '');
+      const label = (mem.stage === '書き出し' ? r : t).replace(/[0-9.%/ ]+/g, '').replace(/…+$/, '');
+      if (label) mem.sub = mem.stage + ':' + label;
+    } catch {}
+  }
+  sampleMemory();
+}, 500);
 
 const fakeWorker = `
 const T = ${JSON.stringify(transcript)};
 self.onmessage = e => {
   const m = e.data;
   if (m.type === 'load') {
+    if (${failAsr}) { self.postMessage({ type: 'error', message: 'テスト用の失敗（モデルを読み込めない）' }); return; }
     self.postMessage({ type: 'load-progress', p: { status: 'progress', file: 'model.onnx', loaded: 5e7, total: 1e8 } });
     self.postMessage({ type: 'loaded', device: 'wasm' });
   } else if (m.type === 'run') {
     const end = m.offset + m.audio.length / 16000;
     const chunks = T.filter(c => c.start < end && c.end > m.offset)
       .map(c => ({ start: Math.max(0, c.start - m.offset), end: Math.min(end, c.end) - m.offset, text: c.text }));
-    self.postMessage({ type: 'result', id: m.id, chunks });
+    setTimeout(() => self.postMessage({ type: 'result', id: m.id, chunks }), ${reloadAt === 'asr' ? 1500 : 0});
   }
 };`;
 
-const browser = await chromium.launch({ executablePath: process.env.CHROME_PATH });
-const page = await browser.newPage({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2 });
+// GPU を有効にする（GPU なしだと、コマを描くたびにメモリが増える Chrome 側の現象が出て、実機と違う測定になる）
+const browser = await chromium.launch({ executablePath: process.env.CHROME_PATH, args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
+page = await browser.newPage({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2 });
 const logs = [];
 page.on('console', m => logs.push(`[${m.type()}] ${m.text()}`));
 page.on('pageerror', e => logs.push('[pageerror] ' + e.message));
 await page.route('**/js/transcribe-worker.js', r => r.fulfill({ contentType: 'text/javascript', body: fakeWorker }));
 
+// 処理の途中でページを再読み込みし（iPhone がメモリ不足でページを落とした状況の再現）、
+// 次に開いたときに止まった段階が表示されることを確かめて終了する
+async function reloadDuring(stage) {
+  await page.waitForFunction(st => {
+    try { const j = JSON.parse(localStorage.getItem('amity.job.v1')); return j && j.status === 'running' && j.stage === st && (st === 'asr' || j.progress > 0); } catch { return false; }
+  }, stage, { timeout: 600000, polling: 50 });
+  await page.reload();
+  await page.waitForSelector('#recover:not([hidden])', { timeout: 10000 });
+  const text = await page.$eval('#recoverText', el => el.textContent);
+  const asr = await page.$eval('#optAsr', el => el.checked);
+  console.log(`再読み込み後の表示: ${text}`);
+  console.log(`字幕の設定: ${asr ? 'ON' : 'OFF'}`);
+  await page.click('#diagWrap summary');
+  await page.waitForFunction(() => document.getElementById('diagText').textContent.length > 0);
+  const diag = await page.$eval('#diagText', el => el.textContent);
+  console.log('診断情報（先頭）:\n' + diag.split('\n').slice(0, 14).join('\n'));
+  await page.screenshot({ path: path.join(dir, `recover-${stage}.png`) });
+  throw new Error('RELOAD_CHECK_DONE');
+}
+
 try {
-  await page.goto('http://127.0.0.1:8123/');
+  await page.goto('http://127.0.0.1:8123/' + (webaudio ? '?audio=webaudio' : ''));
   await page.setInputFiles('#file', path.join(dir, sample));
-  await page.waitForSelector('#stepAnalyze:not([hidden])', { timeout: 30000 });
-  if (noAsr) await page.uncheck('#optAsr');
+  await page.waitForSelector('#stepAnalyze:not([hidden]), #fileError:not([hidden])', { timeout: 60000 });
+  const fileErr = await page.$eval('#fileError', el => (el.hidden ? null : el.textContent));
+  if (fileErr) {
+    console.log('動画を開けない（画面の表示）: ' + fileErr);
+    console.log('診断情報の動画欄: ' + (await page.evaluate(() => JSON.parse(localStorage.getItem('amity.log.v1')).slice(-2).map(e => e.msg + ' ' + JSON.stringify(e.data ?? '')).join(' / '))));
+    await page.screenshot({ path: path.join(dir, `fileerror-${tag}.png`) });
+    throw new Error('RELOAD_CHECK_DONE');
+  }
+  if (noAsr) await page.uncheck('#optAsr'); else await page.check('#optAsr');
   const t0 = Date.now();
+  mem.stage = '解析';
   await page.click('#btnAnalyze');
+  if (reloadAt && reloadAt !== 'render') await reloadDuring(reloadAt);
   await page.waitForSelector('#stepReview:not([hidden]), #analyzeError:not([hidden])', { timeout: 600000 });
   const analyzeErr = await page.$eval('#analyzeError', el => (el.hidden ? null : el.textContent));
   if (analyzeErr) throw new Error('解析エラー: ' + analyzeErr);
+  const warn = await page.$eval('#warnings', el => (el.hidden ? '' : el.textContent));
+  if (warn) console.log('注意表示: ' + warn);
+  const steps = await page.$$eval('#steps li', els => els.map(e => e.className + ':' + e.textContent).join(' | '));
+  console.log('段階: ' + steps);
   console.log(`解析: ${((Date.now() - t0) / 1000).toFixed(1)}秒`);
 
   const plan = await page.evaluate(() => {
@@ -72,7 +146,9 @@ try {
   await page.screenshot({ path: path.join(dir, `review-${tag}.png`), fullPage: true });
 
   const t1 = Date.now();
+  mem.stage = '書き出し';
   await page.click('#btnRender');
+  if (reloadAt === 'render') await reloadDuring('render');
   await page.waitForSelector('#stepResult:not([hidden]), #renderError:not([hidden])', { timeout: 600000 });
   const renderErr = await page.$eval('#renderError', el => (el.hidden ? null : el.textContent));
   if (renderErr) throw new Error('書き出しエラー: ' + renderErr);
@@ -87,7 +163,12 @@ try {
   fs.writeFileSync(outFile, Buffer.from(b64, 'base64'));
   await page.screenshot({ path: path.join(dir, `result-${tag}.png`), fullPage: true });
   console.log('出力:', outFile);
+} catch (err) {
+  if (err.message !== 'RELOAD_CHECK_DONE') throw err;
 } finally {
+  clearInterval(memTimer);
+  console.log('ページ(renderer)のメモリのピーク(MB):');
+  for (const [k, v] of Object.entries(mem.peaks)) console.log(`  ${k}: ${v.renderer ?? '-'}`);
   const errs = logs.filter(l => /error|pageerror/i.test(l));
   if (errs.length) console.log('ブラウザのエラー:\n' + errs.join('\n'));
   await browser.close();
