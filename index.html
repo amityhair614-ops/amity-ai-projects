@@ -8,6 +8,14 @@
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-title" content="Amity AI">
   <title>Amity AI動画編集</title>
+  <script type="importmap">
+    {
+      "imports": {
+        "mediabunny": "./vendor/mediabunny.min.mjs",
+        "@mediabunny/aac-encoder": "./vendor/mediabunny-aac-encoder.min.mjs"
+      }
+    }
+  </script>
   <style>
     :root {
       --bg: #faf7f4;
@@ -19,6 +27,10 @@
       --accent-soft: #f5e8df;
       --ok: #2f7a4f;
       --ok-soft: #e3f2e9;
+      --warn: #8a5a00;
+      --warn-soft: #fbf0d9;
+      --err: #a33a2c;
+      --err-soft: #fbe6e2;
       --pending-soft: #efece8;
     }
     @media (prefers-color-scheme: dark) {
@@ -32,6 +44,10 @@
         --accent-soft: #3a2a20;
         --ok: #7fcf9f;
         --ok-soft: #1e3227;
+        --warn: #e8c070;
+        --warn-soft: #362b17;
+        --err: #f0a090;
+        --err-soft: #3a1f1a;
         --pending-soft: #2c2721;
       }
     }
@@ -47,7 +63,7 @@
       padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
     }
     main { max-width: 560px; margin: 0 auto; padding: 24px 16px 48px; }
-    header { margin-bottom: 24px; }
+    header { margin-bottom: 20px; }
     h1 { font-size: 26px; line-height: 1.3; margin: 0 0 8px; letter-spacing: .02em; }
     h2 { font-size: 18px; margin: 0 0 12px; }
     .lead { color: var(--muted); margin: 0; font-size: 15px; }
@@ -58,60 +74,82 @@
       padding: 20px 16px;
       margin-bottom: 20px;
     }
+    [hidden] { display: none !important; }
+    .step-no {
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 26px; height: 26px; border-radius: 50%;
+      background: var(--accent); color: #fff; font-size: 14px; margin-right: 6px;
+    }
     .badge {
-      display: inline-block;
-      font-size: 12px;
-      font-weight: 600;
-      padding: 2px 10px;
-      border-radius: 999px;
-      vertical-align: middle;
-      margin-left: 6px;
-      white-space: nowrap;
+      display: inline-block; font-size: 12px; font-weight: 600;
+      padding: 2px 10px; border-radius: 999px; white-space: nowrap;
     }
     .badge.ok { background: var(--ok-soft); color: var(--ok); }
+    .badge.warn { background: var(--warn-soft); color: var(--warn); }
     .badge.pending { background: var(--pending-soft); color: var(--muted); }
+    .banner { font-size: 14px; padding: 12px 14px; border-radius: 12px; background: var(--warn-soft); color: var(--text); margin-bottom: 20px; }
+    .error { font-size: 14px; padding: 12px 14px; border-radius: 12px; background: var(--err-soft); color: var(--err); margin-top: 12px; white-space: pre-wrap; }
+    .note { font-size: 13px; color: var(--muted); margin: 12px 0 0; }
 
-    /* 動画選択 */
+    .status { list-style: none; margin: 0; padding: 0; font-size: 14px; }
+    .status li { display: flex; justify-content: space-between; gap: 12px; padding: 8px 0; border-top: 1px solid var(--line); }
+    .status li:first-child { border-top: 0; padding-top: 0; }
+    .status small { display: block; color: var(--muted); font-size: 12px; line-height: 1.5; }
+
     .picker {
-      display: block;
-      border: 2px dashed var(--line);
-      border-radius: 14px;
-      padding: 28px 16px;
-      text-align: center;
-      cursor: pointer;
+      display: block; border: 2px dashed var(--line); border-radius: 14px;
+      padding: 24px 16px; text-align: center; cursor: pointer;
     }
     .picker:active { background: var(--accent-soft); }
     .picker input { position: absolute; width: 1px; height: 1px; opacity: 0; }
-    .picker .btn {
-      display: inline-block;
-      background: var(--accent);
-      color: #fff;
-      font-weight: 700;
-      padding: 12px 28px;
-      border-radius: 999px;
-      margin-bottom: 8px;
+    .btn {
+      display: inline-block; border: 0; background: var(--accent); color: #fff;
+      font: inherit; font-weight: 700; padding: 12px 28px; border-radius: 999px; cursor: pointer;
     }
-    .picker small { display: block; color: var(--muted); font-size: 13px; }
-    .note { font-size: 13px; color: var(--muted); margin: 12px 0 0; }
+    .btn.block { display: block; width: 100%; margin-top: 16px; }
+    .btn:disabled { opacity: .45; cursor: default; }
+    .btn.secondary { background: var(--accent-soft); color: var(--accent); }
+    .picker small { display: block; color: var(--muted); font-size: 13px; margin-top: 8px; }
 
-    #result { margin-top: 16px; }
-    #result[hidden] { display: none; }
-    video { width: 100%; border-radius: 12px; background: #000; max-height: 60vh; }
+    video { width: 100%; border-radius: 12px; background: #000; max-height: 55vh; display: block; }
     dl { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; margin: 12px 0 0; font-size: 14px; }
     dt { color: var(--muted); }
     dd { margin: 0; word-break: break-all; }
-    .hint { font-size: 14px; margin: 12px 0 0; padding: 10px 12px; border-radius: 10px; background: var(--accent-soft); }
-    .hint[hidden] { display: none; }
 
-    /* 今後の機能 */
-    .features { list-style: none; margin: 0; padding: 0; }
-    .features li { padding: 14px 0; border-top: 1px solid var(--line); }
-    .features li:first-child { border-top: 0; padding-top: 0; }
-    .features h3 { font-size: 15px; margin: 0 0 4px; }
-    .features p { margin: 0; font-size: 14px; color: var(--muted); }
+    .option { display: flex; gap: 10px; align-items: flex-start; font-size: 15px; margin: 4px 0 12px; }
+    .option input { width: 22px; height: 22px; margin-top: 2px; accent-color: var(--accent); flex: none; }
+    select { font: inherit; font-size: 15px; padding: 8px 10px; border-radius: 10px; border: 1px solid var(--line); background: var(--card); color: var(--text); width: 100%; }
 
-    ol.flow { margin: 0; padding-left: 1.4em; font-size: 14px; }
-    ol.flow li { margin-bottom: 4px; }
+    .steps { list-style: none; padding: 0; margin: 16px 0 0; font-size: 14px; }
+    .steps li { display: flex; gap: 8px; padding: 4px 0; color: var(--muted); }
+    .steps li.active { color: var(--text); font-weight: 600; }
+    .steps li.done { color: var(--ok); }
+    .steps .icon { width: 1.2em; flex: none; text-align: center; }
+    .bar { height: 8px; border-radius: 99px; background: var(--pending-soft); overflow: hidden; margin-top: 8px; }
+    .bar > div { height: 100%; width: 0; background: var(--accent); transition: width .2s; }
+    .progress-text { font-size: 13px; color: var(--muted); margin-top: 6px; min-height: 1.5em; }
+
+    .total { font-size: 15px; font-weight: 700; margin: 12px 0 4px; }
+    .total.over { color: var(--err); }
+    .clips { margin-top: 12px; }
+    .clip { border-top: 1px solid var(--line); padding: 12px 0; }
+    .clip-head { display: flex; align-items: center; gap: 10px; }
+    .clip-head label { display: flex; align-items: center; gap: 8px; flex: 1; font-size: 14px; }
+    .clip-head input { width: 22px; height: 22px; accent-color: var(--accent); flex: none; }
+    .clip-head .kind { font-size: 12px; color: var(--muted); }
+    .play { font: inherit; font-size: 13px; border: 1px solid var(--line); background: transparent; color: var(--text); border-radius: 999px; padding: 4px 12px; }
+    .reasons { font-size: 12px; color: var(--muted); margin: 4px 0 0 30px; }
+    .clip textarea {
+      display: block; width: calc(100% - 30px); margin: 6px 0 0 30px; font: inherit; font-size: 15px;
+      padding: 8px 10px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); color: var(--text); resize: vertical;
+    }
+    .clip.off { opacity: .55; }
+    details { margin-top: 12px; font-size: 14px; }
+    summary { cursor: pointer; color: var(--accent); font-weight: 600; padding: 6px 0; }
+    .sticky-preview { position: sticky; top: 0; z-index: 2; background: var(--card); padding: 8px 0; }
+    .sticky-preview video { max-height: 28vh; width: auto; max-width: 100%; margin: 0 auto; }
+    .result-video { max-height: 70vh; width: auto; max-width: 100%; margin: 0 auto; }
+    ol.howto { margin: 8px 0 0; padding-left: 1.4em; font-size: 14px; }
     footer { text-align: center; font-size: 12px; color: var(--muted); margin-top: 32px; }
   </style>
 </head>
@@ -119,124 +157,100 @@
 <main>
   <header>
     <h1>Amity AI動画編集</h1>
-    <p class="lead">美容師のカット解説動画（10〜15分）を、AIで約10分に自動編集するための自分専用ツールです。現在は動作確認版です。</p>
+    <p class="lead">カット解説動画から、約60秒・縦型（9:16）・字幕付きのYouTubeショートを自動で作ります。処理はすべてこのiPhoneの中で行い、動画はどこにも送信しません。</p>
   </header>
 
+  <div class="banner"><b>テスト版です。</b> パソコン上の試験では動作を確認しました。iPhone実機での動作確認はこれからです。うまく動かない場合は、表示されたメッセージを教えてください。</div>
+
+  <section class="card" aria-labelledby="status-title">
+    <h2 id="status-title">機能の状況</h2>
+    <ul class="status">
+      <li><span>動画のアップロード（端末内で読み込み）</span><span class="badge ok">使えます</span></li>
+      <li><span>無音・長い間の自動カット<small>音量で判定します</small></span><span class="badge ok">使えます</span></li>
+      <li><span>言い直しの検出<small>文字起こしで、似た発言のくり返しや「言い直します」等を検出。見落としあり</small></span><span class="badge warn">簡易版</span></li>
+      <li><span>カット技術の重要場面を残す<small>手元の動きの量と、美容の用語（ブロッキング等）で判定。映像の内容までは理解しません</small></span><span class="badge warn">簡易版</span></li>
+      <li><span>約60秒・縦9:16に編集</span><span class="badge ok">使えます</span></li>
+      <li><span>日本語字幕の自動生成<small>端末内のAI（Whisper）で作成。誤字が出るので書き出し前に直せます</small></span><span class="badge warn">精度は限定的</span></li>
+      <li><span>完成したMP4をiPhoneに保存</span><span class="badge ok">使えます</span></li>
+      <li><span>10分の通常動画の自動編集</span><span class="badge pending">準備中</span></li>
+    </ul>
+  </section>
+
   <section class="card" aria-labelledby="upload-title">
-    <h2 id="upload-title">動画を選ぶ <span class="badge ok">使えます</span></h2>
+    <h2 id="upload-title"><span class="step-no">1</span>動画を選ぶ</h2>
     <label class="picker">
       <input type="file" id="file" accept="video/*">
       <span class="btn">動画を選択</span>
       <small>iPhoneの写真アプリやファイルから選べます</small>
     </label>
-    <p class="note">選んだ動画はこのiPhoneの中だけで読み込み、プレビューします。まだどこにも送信・保存されません。</p>
-
-    <div id="result" hidden>
-      <video id="preview" controls playsinline preload="metadata"></video>
+    <div id="fileInfo" hidden>
+      <video id="preview" controls playsinline preload="metadata" style="margin-top:16px"></video>
       <dl>
         <dt>ファイル名</dt><dd id="name">-</dd>
         <dt>サイズ</dt><dd id="size">-</dd>
-        <dt>長さ</dt><dd id="duration">読み込み中…</dd>
+        <dt>長さ</dt><dd id="duration">-</dd>
+        <dt>画面</dt><dd id="dims">-</dd>
       </dl>
-      <p class="hint" id="hint" hidden></p>
     </div>
+    <p class="error" id="fileError" hidden></p>
   </section>
 
-  <section class="card" aria-labelledby="future-title">
-    <h2 id="future-title">今後追加する自動編集機能 <span class="badge pending">準備中</span></h2>
-    <p class="note" style="margin:0 0 16px">以下はまだ使えません。順番に実装していく予定の機能です。</p>
-    <ul class="features">
-      <li>
-        <h3>無音・間（ま）の自動カット</h3>
-        <p>話していない時間や、手元の準備だけの長い間を見つけて短くします。</p>
-      </li>
-      <li>
-        <h3>言い直し・NGの自動カット</h3>
-        <p>音声を文字起こしして、言い直しや同じ説明の繰り返しを見つけます。</p>
-      </li>
-      <li>
-        <h3>大事なカット工程は残す</h3>
-        <p>ブロッキング、カットの角度、仕上がりなど、解説の要になる場面を優先して残します。</p>
-      </li>
-      <li>
-        <h3>約10分への長さ調整</h3>
-        <p>10〜15分の元動画から、目標の約10分に収まるように削る場所を選びます。</p>
-      </li>
-      <li>
-        <h3>字幕の自動生成</h3>
-        <p>話した内容から日本語字幕を作り、スマホで見やすく表示します。</p>
-      </li>
-      <li>
-        <h3>書き出し・保存</h3>
-        <p>編集後の動画をiPhoneに保存し、YouTubeにアップロードできる形にします。</p>
-      </li>
-    </ul>
+  <section class="card" id="stepAnalyze" aria-labelledby="analyze-title" hidden>
+    <h2 id="analyze-title"><span class="step-no">2</span>自動編集する</h2>
+    <label class="option"><input type="checkbox" id="optAsr" checked><span>字幕を作る・言い直しを探す（文字起こし）<br><small class="note" style="margin:0">初回はAIモデルのダウンロードがあります。Wi-Fiでの利用をおすすめします。</small></span></label>
+    <select id="optModel" aria-label="文字起こしの精度">
+      <option value="onnx-community/whisper-base">標準（速い・ダウンロード約100MB前後）</option>
+      <option value="onnx-community/whisper-small">高精度（遅い・約300MB前後・メモリ不足で止まる場合あり）</option>
+    </select>
+    <button class="btn block" id="btnAnalyze">自動編集を開始</button>
+    <ul class="steps" id="steps" hidden></ul>
+    <div class="bar" id="bar" hidden><div></div></div>
+    <p class="progress-text" id="progressText"></p>
+    <p class="note">処理中は画面を閉じたり、ほかのアプリに切り替えたりしないでください。15分の動画で数分〜10分ほどかかります。</p>
+    <p class="error" id="analyzeError" hidden></p>
   </section>
 
-  <section class="card" aria-labelledby="flow-title">
-    <h2 id="flow-title">完成時の使い方（予定）</h2>
-    <ol class="flow">
-      <li>iPhoneでカット解説を撮影する</li>
-      <li>このページで動画を選ぶ</li>
-      <li>AIが自動で約10分に編集する</li>
-      <li>仕上がりを確認して保存・YouTubeへ</li>
+  <section class="card" id="stepReview" aria-labelledby="review-title" hidden>
+    <h2 id="review-title"><span class="step-no">3</span>構成を確認する</h2>
+    <p class="note" id="summary" style="margin-top:0"></p>
+    <div class="sticky-preview">
+      <video id="clipPreview" playsinline preload="metadata" controls></video>
+      <div class="total" id="total"></div>
+    </div>
+    <p class="note">チェックを外すとその場面を使いません。字幕の文字は直接修正できます。「▶」で元の動画のその場面を確認できます。</p>
+    <div class="clips" id="clips"></div>
+    <details id="otherWrap"><summary id="otherSummary">ほかの候補</summary><div class="clips" id="others"></div></details>
+    <details id="retakeWrap"><summary id="retakeSummary">言い直しとして除外した場面</summary><div class="clips" id="retakes"></div></details>
+    <button class="btn block" id="btnRender">この内容でMP4を書き出す</button>
+    <div class="bar" id="renderBar" hidden><div></div></div>
+    <p class="progress-text" id="renderText"></p>
+    <p class="error" id="renderError" hidden></p>
+  </section>
+
+  <section class="card" id="stepResult" aria-labelledby="result-title" hidden>
+    <h2 id="result-title"><span class="step-no">4</span>完成・保存</h2>
+    <video id="outVideo" class="result-video" controls playsinline></video>
+    <dl><dt>長さ</dt><dd id="outDuration">-</dd><dt>サイズ</dt><dd id="outSize">-</dd><dt>形式</dt><dd>MP4（H.264）1080×1920</dd></dl>
+    <button class="btn block" id="btnSave">iPhoneに保存</button>
+    <a class="btn block secondary" id="btnDownload" style="text-align:center;text-decoration:none" download>ファイルとしてダウンロード</a>
+    <ol class="howto">
+      <li>「iPhoneに保存」を押す</li>
+      <li>出てきたメニューで「ビデオを保存」を選ぶ → 写真アプリに保存されます</li>
+      <li>うまくいかない時は「ファイルとしてダウンロード」→「ファイル」アプリに保存されます</li>
     </ol>
   </section>
 
-  <footer>Amity AI動画編集 ・ 動作確認版 v0.1</footer>
+  <section class="card" aria-labelledby="notes-title">
+    <h2 id="notes-title">ご利用の注意</h2>
+    <ul class="note" style="padding-left:1.2em;margin:0">
+      <li>iOS 26 以降の Safari を想定しています。古いiOSでは動きません。</li>
+      <li>動画・音声はこのiPhoneの中だけで処理します。インターネットを使うのは、ページとAIモデルの読み込みのときだけです。</li>
+      <li>HDRで撮影した動画は、色が少し薄く見えることがあります。</li>
+    </ul>
+  </section>
+
+  <footer>Amity AI動画編集 ・ ショート動画テスト版 v0.2</footer>
 </main>
-
-<script>
-  const input = document.getElementById('file');
-  const result = document.getElementById('result');
-  const video = document.getElementById('preview');
-  const hint = document.getElementById('hint');
-  let currentUrl = null;
-
-  function formatSize(bytes) {
-    if (bytes >= 1024 ** 3) return (bytes / 1024 ** 3).toFixed(2) + ' GB';
-    return (bytes / 1024 ** 2).toFixed(1) + ' MB';
-  }
-
-  function formatDuration(sec) {
-    const m = Math.floor(sec / 60);
-    const s = Math.round(sec % 60);
-    return m + '分' + String(s).padStart(2, '0') + '秒';
-  }
-
-  input.addEventListener('change', () => {
-    const file = input.files && input.files[0];
-    if (!file) return;
-    if (currentUrl) URL.revokeObjectURL(currentUrl);
-    currentUrl = URL.createObjectURL(file);
-
-    document.getElementById('name').textContent = file.name;
-    document.getElementById('size').textContent = formatSize(file.size);
-    document.getElementById('duration').textContent = '読み込み中…';
-    hint.hidden = true;
-    video.src = currentUrl;
-    result.hidden = false;
-  });
-
-  video.addEventListener('loadedmetadata', () => {
-    const sec = video.duration;
-    if (!isFinite(sec)) {
-      document.getElementById('duration').textContent = '取得できませんでした';
-      return;
-    }
-    document.getElementById('duration').textContent = formatDuration(sec);
-    const min = sec / 60;
-    if (min > 10) {
-      hint.textContent = '約10分にするには、およそ' + Math.ceil(min - 10) + '分ぶん短くする必要があります（自動編集は準備中です）。';
-    } else {
-      hint.textContent = 'この動画はすでに10分以内です。';
-    }
-    hint.hidden = false;
-  });
-
-  video.addEventListener('error', () => {
-    document.getElementById('duration').textContent = 'この形式はプレビューできませんでした';
-  });
-</script>
+<script type="module" src="js/app.js"></script>
 </body>
 </html>
