@@ -1,0 +1,242 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#faf7f4" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#16130f" media="(prefers-color-scheme: dark)">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Amity AI">
+  <title>Amity AI動画編集</title>
+  <style>
+    :root {
+      --bg: #faf7f4;
+      --card: #ffffff;
+      --text: #231f1b;
+      --muted: #6e665e;
+      --line: #e7e0d8;
+      --accent: #b0643c;
+      --accent-soft: #f5e8df;
+      --ok: #2f7a4f;
+      --ok-soft: #e3f2e9;
+      --pending-soft: #efece8;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #16130f;
+        --card: #211d18;
+        --text: #f2ede7;
+        --muted: #a89e93;
+        --line: #362f28;
+        --accent: #e0956a;
+        --accent-soft: #3a2a20;
+        --ok: #7fcf9f;
+        --ok-soft: #1e3227;
+        --pending-soft: #2c2721;
+      }
+    }
+    * { box-sizing: border-box; }
+    html { -webkit-text-size-adjust: 100%; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Hiragino Kaku Gothic ProN", "Noto Sans JP", sans-serif;
+      font-size: 16px;
+      line-height: 1.7;
+      padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+    }
+    main { max-width: 560px; margin: 0 auto; padding: 24px 16px 48px; }
+    header { margin-bottom: 24px; }
+    h1 { font-size: 26px; line-height: 1.3; margin: 0 0 8px; letter-spacing: .02em; }
+    h2 { font-size: 18px; margin: 0 0 12px; }
+    .lead { color: var(--muted); margin: 0; font-size: 15px; }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      padding: 20px 16px;
+      margin-bottom: 20px;
+    }
+    .badge {
+      display: inline-block;
+      font-size: 12px;
+      font-weight: 600;
+      padding: 2px 10px;
+      border-radius: 999px;
+      vertical-align: middle;
+      margin-left: 6px;
+      white-space: nowrap;
+    }
+    .badge.ok { background: var(--ok-soft); color: var(--ok); }
+    .badge.pending { background: var(--pending-soft); color: var(--muted); }
+
+    /* 動画選択 */
+    .picker {
+      display: block;
+      border: 2px dashed var(--line);
+      border-radius: 14px;
+      padding: 28px 16px;
+      text-align: center;
+      cursor: pointer;
+    }
+    .picker:active { background: var(--accent-soft); }
+    .picker input { position: absolute; width: 1px; height: 1px; opacity: 0; }
+    .picker .btn {
+      display: inline-block;
+      background: var(--accent);
+      color: #fff;
+      font-weight: 700;
+      padding: 12px 28px;
+      border-radius: 999px;
+      margin-bottom: 8px;
+    }
+    .picker small { display: block; color: var(--muted); font-size: 13px; }
+    .note { font-size: 13px; color: var(--muted); margin: 12px 0 0; }
+
+    #result { margin-top: 16px; }
+    #result[hidden] { display: none; }
+    video { width: 100%; border-radius: 12px; background: #000; max-height: 60vh; }
+    dl { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; margin: 12px 0 0; font-size: 14px; }
+    dt { color: var(--muted); }
+    dd { margin: 0; word-break: break-all; }
+    .hint { font-size: 14px; margin: 12px 0 0; padding: 10px 12px; border-radius: 10px; background: var(--accent-soft); }
+    .hint[hidden] { display: none; }
+
+    /* 今後の機能 */
+    .features { list-style: none; margin: 0; padding: 0; }
+    .features li { padding: 14px 0; border-top: 1px solid var(--line); }
+    .features li:first-child { border-top: 0; padding-top: 0; }
+    .features h3 { font-size: 15px; margin: 0 0 4px; }
+    .features p { margin: 0; font-size: 14px; color: var(--muted); }
+
+    ol.flow { margin: 0; padding-left: 1.4em; font-size: 14px; }
+    ol.flow li { margin-bottom: 4px; }
+    footer { text-align: center; font-size: 12px; color: var(--muted); margin-top: 32px; }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Amity AI動画編集</h1>
+    <p class="lead">美容師のカット解説動画（10〜15分）を、AIで約10分に自動編集するための自分専用ツールです。現在は動作確認版です。</p>
+  </header>
+
+  <section class="card" aria-labelledby="upload-title">
+    <h2 id="upload-title">動画を選ぶ <span class="badge ok">使えます</span></h2>
+    <label class="picker">
+      <input type="file" id="file" accept="video/*">
+      <span class="btn">動画を選択</span>
+      <small>iPhoneの写真アプリやファイルから選べます</small>
+    </label>
+    <p class="note">選んだ動画はこのiPhoneの中だけで読み込み、プレビューします。まだどこにも送信・保存されません。</p>
+
+    <div id="result" hidden>
+      <video id="preview" controls playsinline preload="metadata"></video>
+      <dl>
+        <dt>ファイル名</dt><dd id="name">-</dd>
+        <dt>サイズ</dt><dd id="size">-</dd>
+        <dt>長さ</dt><dd id="duration">読み込み中…</dd>
+      </dl>
+      <p class="hint" id="hint" hidden></p>
+    </div>
+  </section>
+
+  <section class="card" aria-labelledby="future-title">
+    <h2 id="future-title">今後追加する自動編集機能 <span class="badge pending">準備中</span></h2>
+    <p class="note" style="margin:0 0 16px">以下はまだ使えません。順番に実装していく予定の機能です。</p>
+    <ul class="features">
+      <li>
+        <h3>無音・間（ま）の自動カット</h3>
+        <p>話していない時間や、手元の準備だけの長い間を見つけて短くします。</p>
+      </li>
+      <li>
+        <h3>言い直し・NGの自動カット</h3>
+        <p>音声を文字起こしして、言い直しや同じ説明の繰り返しを見つけます。</p>
+      </li>
+      <li>
+        <h3>大事なカット工程は残す</h3>
+        <p>ブロッキング、カットの角度、仕上がりなど、解説の要になる場面を優先して残します。</p>
+      </li>
+      <li>
+        <h3>約10分への長さ調整</h3>
+        <p>10〜15分の元動画から、目標の約10分に収まるように削る場所を選びます。</p>
+      </li>
+      <li>
+        <h3>字幕の自動生成</h3>
+        <p>話した内容から日本語字幕を作り、スマホで見やすく表示します。</p>
+      </li>
+      <li>
+        <h3>書き出し・保存</h3>
+        <p>編集後の動画をiPhoneに保存し、YouTubeにアップロードできる形にします。</p>
+      </li>
+    </ul>
+  </section>
+
+  <section class="card" aria-labelledby="flow-title">
+    <h2 id="flow-title">完成時の使い方（予定）</h2>
+    <ol class="flow">
+      <li>iPhoneでカット解説を撮影する</li>
+      <li>このページで動画を選ぶ</li>
+      <li>AIが自動で約10分に編集する</li>
+      <li>仕上がりを確認して保存・YouTubeへ</li>
+    </ol>
+  </section>
+
+  <footer>Amity AI動画編集 ・ 動作確認版 v0.1</footer>
+</main>
+
+<script>
+  const input = document.getElementById('file');
+  const result = document.getElementById('result');
+  const video = document.getElementById('preview');
+  const hint = document.getElementById('hint');
+  let currentUrl = null;
+
+  function formatSize(bytes) {
+    if (bytes >= 1024 ** 3) return (bytes / 1024 ** 3).toFixed(2) + ' GB';
+    return (bytes / 1024 ** 2).toFixed(1) + ' MB';
+  }
+
+  function formatDuration(sec) {
+    const m = Math.floor(sec / 60);
+    const s = Math.round(sec % 60);
+    return m + '分' + String(s).padStart(2, '0') + '秒';
+  }
+
+  input.addEventListener('change', () => {
+    const file = input.files && input.files[0];
+    if (!file) return;
+    if (currentUrl) URL.revokeObjectURL(currentUrl);
+    currentUrl = URL.createObjectURL(file);
+
+    document.getElementById('name').textContent = file.name;
+    document.getElementById('size').textContent = formatSize(file.size);
+    document.getElementById('duration').textContent = '読み込み中…';
+    hint.hidden = true;
+    video.src = currentUrl;
+    result.hidden = false;
+  });
+
+  video.addEventListener('loadedmetadata', () => {
+    const sec = video.duration;
+    if (!isFinite(sec)) {
+      document.getElementById('duration').textContent = '取得できませんでした';
+      return;
+    }
+    document.getElementById('duration').textContent = formatDuration(sec);
+    const min = sec / 60;
+    if (min > 10) {
+      hint.textContent = '約10分にするには、およそ' + Math.ceil(min - 10) + '分ぶん短くする必要があります（自動編集は準備中です）。';
+    } else {
+      hint.textContent = 'この動画はすでに10分以内です。';
+    }
+    hint.hidden = false;
+  });
+
+  video.addEventListener('error', () => {
+    document.getElementById('duration').textContent = 'この形式はプレビューできませんでした';
+  });
+</script>
+</body>
+</html>
