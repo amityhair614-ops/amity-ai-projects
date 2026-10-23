@@ -135,16 +135,27 @@ test('タイムラインと字幕の時刻', () => {
   assert.equal(tl[1].subtitles.length, 0);
 });
 
-test('字幕の整形: 聞き間違いの修正とつなぎ言葉の除去', async () => {
+test('字幕の整形: つなぎ言葉は取り除くが、言葉の置き換えはしない', async () => {
   const { cleanSubtitle } = await import('../js/plan.js');
   assert.equal(cleanSubtitle('まずは、Aと耳後ろでブロッキングを取っていきます。'), 'まずは、耳後ろでブロッキングを取っていきます。');
-  assert.equal(cleanSubtitle('バックは指1本分のスライスでカネルをゼロドに引き出します。'), 'バックは指一本分のスライスでパネルを0度に引き出します。');
-  assert.equal(cleanSubtitle('ガイドに合わせて、下先を切り揃えます。'), 'ガイドに合わせて、毛先を切り揃えます。');
-  assert.equal(cleanSubtitle('最後にセニングでローカーの調整して、カルサを出します。'), '最後にセニングで量感の調整して、軽さを出します。');
-  assert.equal(cleanSubtitle('これで仕上がりです。マルミのあるシルエッドになりました。'), 'これで仕上がりです。丸みのあるシルエットになりました。');
+  assert.equal(cleanSubtitle('まずは全体をAと4つにブロッキングしていきます。'), 'まずは全体を4つにブロッキングしていきます。');
   assert.equal(cleanSubtitle('えーと、スライドカットで量感を調整します'), 'スライドカットで量感を調整します');
-  // 正しい言葉は変えない
-  assert.equal(cleanSubtitle('ハネる毛先を、スライドで軽くします'), 'ハネる毛先を、スライドで軽くします');
+  // 聞き間違いらしい言葉も、ここでは置き換えない（音声で確かめてから直す）
+  assert.equal(cleanSubtitle('バックは指1本分のスライスでカネルをゼロドに引き出します。'), 'バックは指1本分のスライスでカネルをゼロドに引き出します。');
+});
+
+test('専門用語の修正案: 辞書の書き間違い・同じ読み・似たカタカナ語', async () => {
+  const { proposeCorrections, applyCorrection } = await import('../js/plan.js');
+  const pick = t => proposeCorrections(t).map(c => `${c.from}→${c.to}:${c.kind}`);
+  assert.deepEqual(pick('エリアシは指一本分のスライスで ハネルをゼロドに引き出します。'), ['エリアシ→襟足:reading', 'ハネル→パネル:variant', 'ゼロド→0度:variant']);
+  assert.deepEqual(pick('次にスキーバサミで模様調整をしていきます。'), ['スキーバサミ→すきバサミ:variant', '模様調整→毛量調整:variant']);
+  assert.deepEqual(pick('ブラデーションがつながっているか'), ['ブラデーション→グラデーション:variant']);
+  assert.deepEqual(pick('クラデーシヨンがつながっているか'), ['クラデーシヨン→グラデーション:fuzzy']);
+  // 正しい別の言葉は修正案にしない
+  assert.deepEqual(pick('スライドカットで軽くします'), []);
+  assert.deepEqual(pick('ショートボブのパネルを毛先から'), []);
+  const c = proposeCorrections('両感を見ながら')[0];
+  assert.equal(applyCorrection('両感を見ながら', c), '量感を見ながら');
 });
 
 test('言い直し: 合図の前に内容がある場合は、その発言だけを除外', () => {
@@ -262,5 +273,29 @@ test('字幕の改行: 言葉の途中で切らず、1文字だけ残さない',
         }
       }
     }
+  }
+});
+
+test('16kHzへの変換: 声の帯域は保ち、高い音は折り返さない', async () => {
+  const { Resampler } = await import('../js/resample.js');
+  const run = (srIn, freq) => {
+    const n = srIn; // 1秒
+    const out = new Float32Array(16000);
+    const r = new Resampler(srIn, 16000, (j, v) => { if (j < out.length) out[j] = v; });
+    // AAC のように 1024 サンプルずつ届ける
+    for (let s = 0; s < n; s += 1024) {
+      const len = Math.min(1024, n - s);
+      const block = new Float32Array(len);
+      for (let i = 0; i < len; i++) block[i] = Math.sin(2 * Math.PI * freq * (s + i) / srIn);
+      r.push(s, block);
+    }
+    r.flush();
+    let e = 0;
+    for (let j = 2000; j < 14000; j++) e += out[j] * out[j];
+    return Math.sqrt(e / 12000);
+  };
+  for (const sr of [48000, 44100]) {
+    assert.ok(Math.abs(run(sr, 1000) - Math.SQRT1_2) < 0.02, '1kHz はそのまま');
+    assert.ok(run(sr, 12000) < 0.02, '12kHz は消える（単純な間引きだと 4kHz に折り返す）');
   }
 });

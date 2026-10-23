@@ -13,6 +13,7 @@ import {
 import { registerAacEncoder } from '@mediabunny/aac-encoder';
 import { FRAME_SEC, FPS, OUT_W, OUT_H, SUB_ZONES, cropAt, subtitleAlpha } from './plan.js';
 import { log } from './diag.js';
+import { Resampler } from './resample.js';
 
 export const ASR_RATE = 16000;
 
@@ -292,6 +293,8 @@ async function analyzeAudioOnce(src, onProgress) {
   const sumSq = new Float64Array(nFrames);
   const counts = new Uint32Array(nFrames);
   const pcm = new Float32Array(Math.ceil(src.duration * ASR_RATE) + ASR_RATE);
+  const write = (j, v) => { if (j >= 0 && j < pcm.length) pcm[j] = v; };
+  let resampler = null;
 
   for await (const { timestamp, sr, chans, length: len } of audioBlocks(src, 0, src.duration, ASR_RATE)) {
     const mono = mix(chans, len);
@@ -299,18 +302,15 @@ async function analyzeAudioOnce(src, onProgress) {
       const f = Math.floor((timestamp + i / sr) / FRAME_SEC);
       if (f >= 0 && f < nFrames) { sumSq[f] += mono[i] * mono[i]; counts[f]++; }
     }
-    // 16kHz へ（簡易ローパス付きの間引き）
-    const r = Math.max(0, Math.floor(sr / ASR_RATE / 2));
-    const j0 = Math.max(0, Math.ceil(timestamp * ASR_RATE));
-    const j1 = Math.min(pcm.length, Math.floor((timestamp + len / sr) * ASR_RATE));
-    for (let j = j0; j < j1; j++) {
-      const idx = Math.round((j / ASR_RATE - timestamp) * sr);
-      let s = 0, n = 0;
-      for (let k = idx - r; k <= idx + r; k++) if (k >= 0 && k < len) { s += mono[k]; n++; }
-      if (n) pcm[j] = s / n;
+    // 文字起こし用に 16kHz へ（低域通過フィルターつきで変換）
+    if (!resampler || resampler.srIn !== sr) {
+      resampler?.flush();
+      resampler = new Resampler(sr, ASR_RATE, write);
     }
+    resampler.push(Math.round(timestamp * sr), mono);
     onProgress?.(Math.min(1, (timestamp + len / sr) / src.duration));
   }
+  resampler?.flush();
   const rmsDb = new Float32Array(nFrames);
   for (let f = 0; f < nFrames; f++) rmsDb[f] = counts[f] ? 10 * Math.log10(sumSq[f] / counts[f] + 1e-12) : -120;
   return { rmsDb, pcm };

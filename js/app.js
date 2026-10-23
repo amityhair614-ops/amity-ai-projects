@@ -3,7 +3,7 @@ import {
 } from './media.js';
 import {
   detectSpeech, transcriptionWindows, buildUnits, selectUnits, buildTimeline, formatTime, FRAME_SEC,
-  ASR_PROMPT, cleanSubtitle, alignSentences,
+  cleanSubtitle, alignSentences,
 } from './plan.js';
 import {
   previousJob, log, setEnv, jobStart, jobStage, jobProgress, jobEnd, report, clearLogs, errorText,
@@ -246,17 +246,21 @@ function transcribe(pcm, windows) {
         }
       } else if (m.type === 'loaded') {
         state.asrDevice = m.device;
-        log('文字起こしモデル準備完了', { device: m.device, sessions: m.sessions, promptTokens: m.promptTokens });
+        log('文字起こしモデル準備完了', { device: m.device, sessions: m.sessions });
         setEnv('文字起こしモデル', `${ASR_MODEL}（${m.device}）${m.sessions}`);
         next();
       } else if (m.type === 'result') {
         const w = windows[m.id];
-        log(`文字起こし ${m.id + 1}/${windows.length}`, { chunks: m.chunks.length, times: m.times });
+        const fixes = m.chunks.flatMap(c => c.fixes || []);
+        log(`文字起こし ${m.id + 1}/${windows.length}`, {
+          chunks: m.chunks.length,
+          fixes: fixes.map(f => f.error ? '確認できず: ' + f.error : `${f.from}→${f.to} ${f.ok ? '採用' : '見送り'}(${f.delta})`),
+        });
         const offset = Math.max(0, w.start - 0.2);
         for (const c of m.chunks) {
           const start = offset + c.start, end = Math.min(offset + c.end, w.end + 0.2);
           const text = cleanSubtitle(c.text);
-          if (end > start && text) chunks.push({ start, end, text, raw: c.text.trim() });
+          if (end > start && text) chunks.push({ start, end, text, raw: c.raw, timed: c.timed });
         }
         i++;
         next();
@@ -266,7 +270,7 @@ function transcribe(pcm, windows) {
     };
     worker.onerror = e => finish(reject, new Error(e.message || '文字起こしの準備に失敗しました（ネットワークを確認してください）'));
     setProgress(0, 'AIモデルを準備中…');
-    worker.postMessage({ type: 'load', model: ASR_MODEL, prompt: ASR_PROMPT });
+    worker.postMessage({ type: 'load', model: ASR_MODEL });
   });
 }
 

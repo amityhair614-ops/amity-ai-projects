@@ -175,6 +175,29 @@ try {
     const truthText = transcript.filter(c => !c.retake).map(c => c.text).join('');
     const got = chunks.map(c => c.text).join('');
     console.log('文字の一致率（正解との比較・目安）: ' + charAgreement(truthText, got));
+    if (transcript[0].phrases) {
+      // 話した内容（言い直し前の発言も含む）と、文字起こし全体の一致率
+      const said = transcript.map(c => c.retake ? c.phrases.map(p => p.text).join('') : c.text).join('');
+      console.log('話した内容との一致率（言い直しも含む）: ' + charAgreement(said, got));
+      const fixes = await page.evaluate(() => JSON.parse(localStorage.getItem('amity.log.v1')).filter(e => e.msg.startsWith('文字起こし ')).flatMap(e => e.data.fixes || []));
+      console.log('用語の修正: ' + (fixes.join(' / ') || 'なし'));
+      // 字幕の時刻: 正解の各文に、文字が最も似ている字幕を対応づけて、開始・終了の差を測る
+      const errs = [];
+      for (const tr of transcript.filter(c => !c.retake)) {
+        let best = null, bestSim = 0;
+        for (const c of chunks) {
+          const sim = parseFloat(charAgreement(tr.text, c.text));
+          if (sim > bestSim) { bestSim = sim; best = c; }
+        }
+        if (best && bestSim >= 40) errs.push({ text: tr.text, ds: best.start - tr.start, de: best.end - tr.end });
+        else console.log(`  対応する字幕なし: ${tr.text}`);
+      }
+      const abs = a => a.map(Math.abs).sort((x, y) => x - y);
+      const med = a => a[Math.floor(a.length / 2)];
+      const S = abs(errs.map(e => e.ds)), Ee = abs(errs.map(e => e.de));
+      console.log(`字幕の時刻の差（元の動画上）: 開始 中央値 ${med(S).toFixed(2)}s 最大 ${S.at(-1).toFixed(2)}s / 終了 中央値 ${med(Ee).toFixed(2)}s 最大 ${Ee.at(-1).toFixed(2)}s（${errs.length}文）`);
+      for (const e of errs) if (Math.abs(e.ds) > 0.3 || Math.abs(e.de) > 0.3) console.log(`  ずれ ${e.ds.toFixed(2)} / ${e.de.toFixed(2)}  ${e.text}`);
+    }
     console.log('時刻トークン: ' + (await page.evaluate(() => JSON.parse(localStorage.getItem('amity.log.v1')).filter(e => e.msg.startsWith('文字起こし ')).map(e => JSON.stringify(e.data.times)).join(' / '))));
   }
   const plan = await page.evaluate(() => {

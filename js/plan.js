@@ -22,29 +22,106 @@ const RETAKE_RE = /言い直|いい直|言いなお|いいなお|いいなをし
 // 文字起こしに先に与える「話題と用語」。Whisper はこれに引っぱられて専門用語を正しく書きやすくなる
 export const ASR_PROMPT = '美容師のカット解説です。ブロッキング、スライス、パネル、0度、45度、90度、ガイド、毛先、前下がり、ボブ、レイヤー、グラデーション、セニング、量感、軽さ、重さ、丸み、シルエット、襟足、もみあげ、前髪、ドライ、ブロー。';
 
-// よくある聞き間違い → 正しい用語（前後の文脈つきで、誤変換しにくいものだけ）
-const CORRECTIONS = [
-  [/[カハ]ネル(?=[をはのがにで])/g, 'パネル'],
-  [/ゼロ[ドど度]/g, '0度'],
-  [/下先(?=[をはのがにで])/g, '毛先'],
-  [/まえさがり|前さがり/g, '前下がり'],
-  [/マルミ|まるみ/g, '丸み'],
-  [/シルエッド/g, 'シルエット'],
-  [/ローカー(?=[をはのがにで])/g, '量感'],
-  [/カルサ(?=[をはのがにで])/g, '軽さ'],
-  [/ブロッキン(?=[をはのがにで])/g, 'ブロッキング'],
-  [/セーニング|センニング/g, 'セニング'],
-  [/ライドに合わせ/g, 'ガイドに合わせ'],
-  [/指1本/g, '指一本'],
+// 美容の専門用語の辞書。variants は Whisper がよく書き間違える形。
+// ここから作るのは「修正案」だけで、実際に置き換えるかは音声で確かめてから決める（transcribe-worker.js）
+// reading はカタカナの読み。書き間違いが読みと同じ（エリアシ → 襟足）なら、聞こえた音は同じなので文字の種類を整えるだけ
+export const BEAUTY_TERMS = [
+  { term: 'ショートボブ', variants: ['ショート部分', 'ショートボーブ', 'ショートボップ'] },
+  { term: 'ショート', variants: ['ショット'] },
+  { term: 'ボブ', variants: ['ボーブ', 'ボップ'] },
+  { term: '前下がり', reading: 'マエサガリ', variants: ['前さがり', 'まえさがり', '前下り', '前坂'] },
+  { term: '前上がり', reading: 'マエアガリ', variants: ['前さあがり', 'まえあがり'] },
+  { term: 'グラデーション', variants: ['ブラデーション', 'グラデイション', 'クラデーション'] },
+  { term: 'レイヤー', variants: ['レーヤー', 'レイア', 'レイヤ'] },
+  { term: 'ブロッキング', variants: ['ブロッキン', 'ブロックキング', 'プロッキング'] },
+  { term: 'セニング', variants: ['セーニング', 'センニング', 'せニング', 'セイニング'] },
+  { term: '毛量調整', reading: 'モウリョウチョウセイ', variants: ['模様調整', '毛量調性', '猛量調整', '盲料調整', '猛料調整', 'もうりょう調整'] },
+  { term: '毛量', reading: 'モウリョウ', variants: ['猛量', '盲料', '猛料', 'もうりょう'] },
+  { term: '毛先', reading: 'ケサキ', variants: ['下先', '下さき', '傾作', '毛さき', 'けさき', '気先'] },
+  { term: '襟足', reading: 'エリアシ', variants: ['エリアシ', 'えりあし', '襟脚', 'エリ足'] },
+  { term: 'もみあげ', reading: 'モミアゲ', variants: ['模樣上', '模様上', 'もみ上げ', 'モミアゲ', '揉み上げ'] },
+  { term: 'スライス', variants: ['スライズ', 'スライスト'] },
+  { term: 'パネル', variants: ['ハネル', 'カネル', 'バネル'] },
+  { term: 'ガイド', variants: ['ガイト'] },
+  { term: 'サイドは', variants: ['再度は'] }, // 「再度」は普通の言葉なので「再度は」の形だけ
+  { term: '量感', reading: 'リョウカン', variants: ['両感', '料感', '量勘', 'ローカー', '涼感'] },
+  { term: 'シルエット', variants: ['シルエッド', 'シルエト'] },
+  { term: 'すきバサミ', reading: 'スキバサミ', variants: ['スキーバサミ', 'すきばさみ', 'スキバサミ', '隙鋏', '好きバサミ'] },
+  { term: 'チョップカット', variants: ['チョップカッと', 'チャップカット', 'チョップカッド', 'ちょっとカット'] },
+  { term: '丸み', reading: 'マルミ', variants: ['マルミ', 'まるみ'] },
+  { term: '軽さ', reading: 'カルサ', variants: ['カルサ'] },
+  { term: '0度', variants: ['ゼロド', 'ゼロ度', '零度'] },
+  { term: '45度', variants: ['45ド', '四十五度'] },
+  { term: '90度', variants: ['90ド', '九十度'] },
 ];
+
+const isKata = c => !!c && /[\u30a0-\u30ff]/.test(c);
+const toKata = t => t.replace(/[\u3041-\u3096]/g, c => String.fromCharCode(c.charCodeAt(0) + 0x60));
+
+function editDistance(a, b) {
+  const d = Array.from({ length: a.length + 1 }, (_, i) => [i]);
+  for (let j = 1; j <= b.length; j++) d[0][j] = j;
+  for (let i = 1; i <= a.length; i++) for (let j = 1; j <= b.length; j++) {
+    d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+  }
+  return d[a.length][b.length];
+}
+
+// 文の中から、辞書の用語への修正案を作る。{ index, from, to } の配列（重なりは長いものを優先）
+export function proposeCorrections(text) {
+  const t = text || '';
+  const found = [];
+  for (const { term, variants } of BEAUTY_TERMS) {
+    for (const v of variants) {
+      let i = t.indexOf(v);
+      while (i >= 0) {
+        // カタカナの書き間違いは、より長いカタカナ語の一部（例: スライド の ライド）では使わない
+        const inWord = isKata(v[0]) && isKata(t[i - 1]) || isKata(v[v.length - 1]) && isKata(t[i + v.length]);
+        if (!inWord && !t.startsWith(term, i) && !t.slice(Math.max(0, i - term.length), i + v.length).includes(term)) {
+          const reading = BEAUTY_TERMS.find(x => x.term === term).reading;
+          found.push({ index: i, from: v, to: term, kind: reading && toKata(v) === reading ? 'reading' : 'variant' });
+        }
+        i = t.indexOf(v, i + 1);
+      }
+    }
+  }
+  // 辞書にない書き間違い: カタカナ語が用語と1〜2文字だけ違う場合（例: ブラデーション → グラデーション）
+  const kataTerms = BEAUTY_TERMS.filter(x => [...toKata(x.term)].every(isKata));
+  for (const m of t.matchAll(/[\u30a0-\u30ff]{3,}/g)) {
+    for (const { term } of kataTerms) {
+      const k = toKata(term);
+      if (m[0] === k || m[0].includes(k)) continue;
+      const limit = k.length >= 6 ? 2 : 1;
+      if (Math.abs(m[0].length - k.length) <= limit && editDistance(m[0], k) <= limit) found.push({ index: m.index, from: m[0], to: term, kind: 'fuzzy' });
+    }
+  }
+  found.sort((a, b) => a.index - b.index || b.from.length - a.from.length);
+  const out = [];
+  for (const f of found) {
+    const last = out[out.length - 1];
+    if (last && f.index < last.index + last.from.length) continue;
+    out.push(f);
+  }
+  return out;
+}
+
+// 修正案を採用する基準（音声で確かめたときの、元の文に対する対数尤度の差の下限）
+export const CORRECTION_MARGIN = { reading: 20, variant: 6, fuzzy: 3 };
+
+export function applyCorrection(text, c) {
+  return text.slice(0, c.index) + c.to + text.slice(c.index + c.from.length);
+}
+
 // 字幕から取り除くつなぎ言葉（文頭・読点の後のものだけ）。「Aと」は「えーと」の聞き間違い
 const FILLER_HEAD_RE = /(^|[、。\s])(?:えーっと|えーと|えっと|ええと|Aと|あのー|あの、|えー|ええ、|まあ、|うーん)[、,\s]*/g;
+// 助詞の直後に入る「えーと」（「全体を、えーと、四つに」→ Whisper は「全体をAと4つに」と書く）
+const FILLER_MID_RE = /(?<=[をはにでがも])(?:、?\s*)(?:えーっと|えーと|えっと|Aと)(?:[、,\s]*)/g;
 
-// 文字起こし結果を字幕向けに整える
+// 文字起こし結果を字幕向けに整える（つなぎ言葉の除去と、空白・句読点の整理だけ。言葉の置き換えはしない）
 export function cleanSubtitle(text) {
   let t = (text || '').replace(/\s+/g, ' ').trim();
-  for (const [re, to] of CORRECTIONS) t = t.replace(re, to);
   for (let i = 0; i < 2; i++) t = t.replace(FILLER_HEAD_RE, '$1');
+  t = t.replace(FILLER_MID_RE, '');
   return t.replace(/^[、。\s]+/, '').replace(/、{2,}/g, '、').replace(/\s*([、。])\s*/g, '$1').trim();
 }
 
