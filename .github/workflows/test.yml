@@ -1,0 +1,24 @@
+# 計算部分の単体テスト（tests/plan.test.mjs）を自動で実行する。
+# ブラウザを使う通しテスト（tests/e2e）は実行しない。
+name: テスト
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    name: 単体テスト
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - run: node --test tests/plan.test.mjs
