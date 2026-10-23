@@ -912,7 +912,9 @@ const SUB_LINGER = 0.25; // 話し終わってから少しだけ残す
 function timedPages(clip, text) {
   const pages = subtitlePages(text, 1);
   if (!pages.length) return [];
-  const src = pageSourceTimes(pages.map(p => p.lines.join('')), clip.subStart, clip.subEnd, clip.fine);
+  // 手直しで表示時刻が変わっていても、その範囲の中の発話だけを使う
+  const fine = (clip.fine || []).map(r => ({ start: Math.max(r.start, clip.subStart), end: Math.min(r.end, clip.subEnd) })).filter(r => r.end > r.start);
+  const src = pageSourceTimes(pages.map(p => p.lines.join('')), clip.subStart, clip.subEnd, fine);
   const clipEnd = clip.outStart + clip.outDuration;
   const out = pages.map((p, i) => ({
     lines: p.lines,

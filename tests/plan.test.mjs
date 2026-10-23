@@ -336,3 +336,39 @@ test('カット後の時刻への変換: 削った無音をまたいでもずれ
   const q = tl[1].subtitles[0];
   assert.ok(Math.abs(q.start - (4.2 - 0.1)) < 0.01 && Math.abs(q.end - (5.5 + 0.25)) < 0.01, JSON.stringify(q));
 });
+
+test('字幕の手直し: 0.1秒ずつ動かし、保存・読み込み・全体のずらしがMP4用の時刻に反映される', async () => {
+  const { nudge, collectEdits, applyEdits, resetEdits, shifted, unitKey } = await import('../js/subedit.js');
+  const { buildTimeline } = await import('../js/plan.js');
+  const mk = () => [
+    { kind: 'speech', start: 10, end: 13, pieces: [{ start: 10, end: 13 }], text: 'パネルを0度に引き出します', subStart: 10.2, subEnd: 12.8, fine: [{ start: 10.2, end: 12.8 }] },
+    { kind: 'action', start: 20, end: 23, pieces: [{ start: 20, end: 23 }], text: '' },
+  ];
+  const units = mk();
+  applyEdits(units, null); // AIの結果を覚える
+  for (let i = 0; i < 3; i++) nudge(units[0], 'start', 0.1);
+  nudge(units[0], 'end', -0.1);
+  units[0].text = 'パネルを0度で引き出します';
+  assert.ok(Math.abs(units[0].subStart - 10.5) < 1e-9 && Math.abs(units[0].subEnd - 12.7) < 1e-9);
+  const saved = JSON.parse(JSON.stringify(collectEdits(units, 0.2)));
+  assert.deepEqual(Object.keys(saved.edits), [unitKey(units[0])]);
+  // もう一度解析した結果に、保存した修正を当てはめる
+  const again = mk();
+  assert.equal(applyEdits(again, saved), 1);
+  assert.equal(again[0].text, 'パネルを0度で引き出します');
+  assert.ok(Math.abs(again[0].subStart - 10.5) < 1e-9);
+  // 全体のずらし（+0.2秒）を足して書き出し用のタイムラインを作る
+  const tl = buildTimeline(again.map(u => ({ ...u, ...shifted(u, saved.offset) })), { subtitles: true });
+  const p = tl[0].subtitles[0];
+  assert.ok(Math.abs(p.start - (10.7 - 10 - 0.1)) < 1e-6, JSON.stringify(p));
+  assert.equal(p.lines.join(''), 'パネルを0度で引き出します');
+  // 動かせるのは場面の前後1秒まで・長さは0.3秒以上
+  for (let i = 0; i < 50; i++) nudge(again[0], 'start', -0.1);
+  assert.equal(again[0].subStart, 9);
+  for (let i = 0; i < 50; i++) nudge(again[0], 'end', -0.1);
+  assert.ok(Math.abs(again[0].subEnd - 9.3) < 1e-9);
+  // 取り消すとAIの結果に戻る
+  resetEdits(again);
+  assert.equal(again[0].text, 'パネルを0度に引き出します');
+  assert.equal(again[0].subStart, 10.2);
+});

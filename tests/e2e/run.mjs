@@ -110,6 +110,30 @@ if (realAsr) {
   await page.route('**/js/transcribe-worker.js', r => r.fulfill({ contentType: 'text/javascript', body: fakeWorker }));
 }
 
+// iPhone の画面幅で字幕を手直しする（文字の修正・0.1秒の調整・全体のずらし・保存）
+let editExpect = null;
+async function editTest() {
+  const ed = page.locator('#clips .sub-edit').first();
+  const ta = ed.locator('textarea');
+  const before = await ta.inputValue();
+  const after = before.replace(/。?$/, '（修正）');
+  await ta.fill(after);
+  const startBtn = ed.locator('.sub-adj').first().locator('button').nth(1);
+  const clock = ed.locator('.clock').first();
+  const t0 = await clock.textContent();
+  for (let i = 0; i < 3; i++) await startBtn.click();
+  const t1 = await clock.textContent();
+  await page.click('#subOffPlus');
+  await page.click('#subOffPlus');
+  await page.waitForTimeout(500);
+  const saved = await page.evaluate(() => Object.entries(localStorage).filter(([k]) => k.startsWith('amity.subs.v1:')).map(([, v]) => JSON.parse(v))[0]);
+  console.log(`手直し: 「${before}」→「${after}」 / 出る ${t0} → ${t1} / 全体 ${await page.$eval('#subOffset', el => el.textContent)}`);
+  console.log(`保存: ${await page.$eval('#subSaved', el => el.textContent)} ${JSON.stringify(saved)}`);
+  await ed.scrollIntoViewIfNeeded();
+  await page.screenshot({ path: path.join(dir, `edit-${tag}.png`) });
+  editExpect = { text: after.replace(/[、。]/g, '') };
+}
+
 // 書き出した動画（カット後）の上で、字幕の表示時刻と、実際に話している時刻の差を測る
 async function evaluateOutputTiming() {
   const { srcToOut, moraCount } = await import('../../js/plan.js');
@@ -271,6 +295,7 @@ try {
   await page.screenshot({ path: path.join(dir, `review-${tag}.png`), fullPage: true });
 
   const t1 = Date.now();
+  if (process.argv.includes('--edit-test')) await editTest();
   if (zoom === true) await page.check('#optZoom');
   if (zoom === false) await page.uncheck('#optZoom');
   if (noSubs) await page.uncheck('#optSubs');
@@ -292,6 +317,12 @@ try {
   await page.screenshot({ path: path.join(dir, `result-${tag}.png`), fullPage: true });
   console.log('出力:', outFile);
   if (realAsr && transcript[0].phrases) await evaluateOutputTiming();
+  if (editExpect) {
+    const subs = await page.evaluate(() => window.amityDebug.timeline.flatMap(c => c.subtitles.map(p => p.lines.join(''))).join(''));
+    const first = await page.evaluate(() => window.amityDebug.timeline.find(c => c.subtitles.length).subtitles.map(p => `${p.start.toFixed(2)}-${p.end.toFixed(2)} ${p.lines.join('／')}`).join(' | '));
+    console.log('手直しした場面の字幕: ' + first);
+    console.log(`MP4の字幕に手直しが反映: ${subs.replace(/[、。]/g, '').includes(editExpect.text) ? 'はい' : 'いいえ'}`);
+  }
   console.log('演出: ' + (await page.$eval('#outStyle', el => el.textContent)));
   const tl = await page.evaluate(() => window.amityDebug.timeline.map(c => ({ outStart: +c.outStart.toFixed(2), dur: +c.outDuration.toFixed(2), pos: c.subPos, zoom: c.zoom && { z: c.zoom.z, rect: c.zoom.rect }, crop: c.crop, inCrop: c.inCrop, subs: c.subtitles.map(p => p.lines.join('／')) })));
   fs.writeFileSync(path.join(dir, `timeline-${tag}.json`), JSON.stringify(tl, null, 1));

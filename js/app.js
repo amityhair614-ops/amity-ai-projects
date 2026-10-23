@@ -8,6 +8,7 @@ import {
 import {
   previousJob, log, setEnv, jobStart, jobStage, jobProgress, jobEnd, report, clearLogs, errorText,
 } from './diag.js';
+import { STEP, videoKey, nudge, collectEdits, applyEdits, resetEdits, shifted, formatClock } from './subedit.js';
 
 const $ = id => document.getElementById(id);
 const state = {};
@@ -359,6 +360,10 @@ $('btnAnalyze').addEventListener('click', async () => {
       duration: src.duration, rmsDb: state.rmsDb, speech: state.speech, chunks: state.chunks, motion: state.motion,
     });
     state.selected = new Set(selectUnits(state.units, src.duration).map(u => u.id));
+    // 同じ動画で前に直した字幕があれば当てはめる
+    const saved = loadSubEdits();
+    state.subOffset = saved?.offset || 0;
+    state.restoredEdits = applyEdits(state.units, saved);
     if (!state.selected.size) throw new Error('使える場面が見つかりませんでした。音声と映像の両方を読み込めなかった可能性があります。');
     setStep('plan', 'done');
     setProgress(1, `完了（${formatSec((performance.now() - t0) / 1000)}）`);
@@ -412,29 +417,109 @@ function clipRow(u) {
     r.textContent = reasons.join(' / ');
     div.appendChild(r);
   }
-  if (u.kind === 'speech' && state.chunks) {
-    const ta = document.createElement('textarea');
-    ta.rows = 2;
-    ta.value = u.text;
-    ta.placeholder = '（字幕なし）';
-    ta.setAttribute('aria-label', '字幕');
-    ta.addEventListener('input', () => { u.text = ta.value; });
-    div.appendChild(ta);
-  }
+  if (u.kind === 'speech' && state.chunks) div.appendChild(subtitleEditor(u));
   return div;
 }
 
+// 字幕の手直し: 文字はタップして直す。表示の開始・終了は 0.1 秒ずつ動かし、その部分の音声を再生して確かめる
+function subtitleEditor(u) {
+  const box = document.createElement('div');
+  box.className = 'sub-edit';
+  const ta = document.createElement('textarea');
+  ta.rows = 2;
+  ta.value = u.text;
+  ta.placeholder = '（字幕なし）';
+  ta.setAttribute('aria-label', '字幕の文字');
+  ta.addEventListener('input', () => { u.text = ta.value; saveSubEdits(); });
+  box.appendChild(ta);
+  if (u.subStart == null) return box;
+
+  const row = document.createElement('div');
+  row.className = 'sub-time';
+  const btn = (label, aria, fn) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.textContent = label;
+    b.setAttribute('aria-label', aria);
+    b.addEventListener('click', fn);
+    return b;
+  };
+  const startEl = document.createElement('span');
+  const endEl = document.createElement('span');
+  startEl.className = endEl.className = 'clock';
+  const show = () => {
+    startEl.textContent = formatClock(u.subStart);
+    endEl.textContent = formatClock(u.subEnd);
+    box.classList.toggle('edited', !!u.subEdited || u.text !== u.aiText);
+  };
+  const move = (which, d) => () => { nudge(u, which, d); show(); saveSubEdits(); };
+  const group = (title, which, el) => {
+    const g = document.createElement('div');
+    g.className = 'sub-adj';
+    const t = document.createElement('span');
+    t.className = 'sub-label';
+    t.textContent = title;
+    g.append(t, btn('−', `${title}を0.1秒早く`, move(which, -STEP)), el, btn('＋', `${title}を0.1秒遅く`, move(which, STEP)));
+    return g;
+  };
+  row.append(
+    group('出る', 'start', startEl),
+    group('消える', 'end', endEl),
+    btn('▶ 音声', 'この字幕の部分を再生', () => playRange(u.subStart + state.subOffset - 0.2, u.subEnd + state.subOffset + 0.2)),
+  );
+  box.appendChild(row);
+  show();
+  return box;
+}
+
+// ---------- 字幕の修正の保存 ----------
+function loadSubEdits() {
+  try { return JSON.parse(localStorage.getItem(videoKey(state.file, state.src.duration)) || 'null'); } catch { return null; }
+}
+
+let saveTimer = null;
+function saveSubEdits() {
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => {
+    try {
+      const data = collectEdits(state.units, state.subOffset);
+      localStorage.setItem(videoKey(state.file, state.src.duration), JSON.stringify(data));
+      $('subSaved').textContent = `修正を保存しました（${Object.keys(data.edits).length}か所${data.offset ? '・全体 ' + (data.offset > 0 ? '+' : '') + data.offset.toFixed(1) + '秒' : ''}）`;
+    } catch {
+      $('subSaved').textContent = '修正を保存できませんでした（このままMP4には反映されます）';
+    }
+  }, 300);
+}
+
+function showOffset() {
+  const o = state.subOffset || 0;
+  $('subOffset').textContent = (o > 0 ? '+' : o < 0 ? '−' : '±') + Math.abs(o).toFixed(1) + '秒';
+}
+
+$('subOffMinus').addEventListener('click', () => { state.subOffset = Math.round(((state.subOffset || 0) - STEP) * 10) / 10; showOffset(); saveSubEdits(); });
+$('subOffPlus').addEventListener('click', () => { state.subOffset = Math.round(((state.subOffset || 0) + STEP) * 10) / 10; showOffset(); saveSubEdits(); });
+$('subReset').addEventListener('click', () => {
+  if (!confirm('字幕の修正をすべて取り消して、AIの結果に戻しますか？')) return;
+  resetEdits(state.units);
+  state.subOffset = 0;
+  try { localStorage.removeItem(videoKey(state.file, state.src.duration)); } catch {}
+  $('subSaved').textContent = '修正を取り消しました';
+  showReview();
+});
+
 // 確認用の再生は、押されたときに初めて動画を読み込む
+let stopAt = null;
 function playRange(start, end) {
   const v = $('clipPreview');
   v.hidden = false;
   if (!v.getAttribute('src')) v.src = state.url;
-  v.currentTime = start;
-  v.play().catch(() => {});
-  const stop = () => {
-    if (v.currentTime >= end) { v.pause(); v.removeEventListener('timeupdate', stop); }
+  if (stopAt) v.removeEventListener('timeupdate', stopAt);
+  stopAt = () => {
+    if (v.currentTime >= end) { v.pause(); v.removeEventListener('timeupdate', stopAt); stopAt = null; }
   };
-  v.addEventListener('timeupdate', stop);
+  v.addEventListener('timeupdate', stopAt);
+  v.currentTime = Math.max(0, start);
+  v.play().catch(() => {});
   v.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
 
@@ -487,6 +572,9 @@ function showReview() {
   else parts.push('字幕なしで構成しました。');
   if (!state.src.audio) parts.push('音声がないため、手元の動きだけで選びました。');
   $('summary').textContent = parts.join('');
+  $('subTools').hidden = !state.chunks;
+  showOffset();
+  $('subSaved').textContent = state.restoredEdits ? `前回の字幕の修正を読み込みました（${state.restoredEdits}か所）` : '';
   $('optSubs').disabled = !state.chunks;
   $('optSubsNote').textContent = state.chunks ? '' : '（文字起こしをしていないため使えません）';
   $('warnings').textContent = (state.warnings || []).join('\n');
@@ -535,7 +623,7 @@ $('btnRender').addEventListener('click', async () => {
   try {
     const useSubs = !!state.chunks && $('optSubs').checked;
     const useZoom = $('optZoom').checked;
-    const timeline = buildTimeline(clips.map(u => ({ ...u, text: state.chunks ? u.text : '' })), {
+    const timeline = buildTimeline(clips.map(u => ({ ...u, text: state.chunks ? u.text : '', ...shifted(u, state.subOffset) })), {
       srcW: state.src.width, srcH: state.src.height, zoom: useZoom, subtitles: useSubs,
     });
     state.timeline = timeline;
