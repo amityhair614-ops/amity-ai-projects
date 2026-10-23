@@ -299,3 +299,76 @@ test('16kHzへの変換: 声の帯域は保ち、高い音は折り返さない'
     assert.ok(run(sr, 12000) < 0.02, '12kHz は消える（単純な間引きだと 4kHz に折り返す）');
   }
 });
+
+test('字幕の時刻: Whisper の時刻を声の出始め・終わりに合わせる（前の字幕が次の発言まで残らない）', async () => {
+  const { refineSubtitleTiming } = await import('../js/plan.js');
+  // 細かい発話区間（サロン版で実際に検出されたもの）
+  const fine = [[0.7, 1.75], [2.1, 2.4], [2.6, 4.4], [4.8, 6.4], [6.55, 6.95], [7.1, 7.9], [8.3, 9.25], [9.4, 10.4], [10.55, 11.4], [11.55, 12.0], [12.35, 13.6], [13.75, 15.3]]
+    .map(([start, end]) => ({ start, end }));
+  // Whisper の時刻（前後の文とつながっていて、開始が早め・終わりが遅め）
+  const chunks = [[0.4, 4.4], [4.4, 8.4], [8.4, 12.4], [12.4, 15.4]].map(([start, end]) => ({ start, end, text: 'x' }));
+  const out = refineSubtitleTiming(chunks, fine);
+  const truth = [[0.7, 4.47], [4.82, 7.96], [8.31, 12.03], [12.38, 15.34]];
+  out.forEach((c, i) => {
+    assert.ok(Math.abs(c.subStart - truth[i][0]) < 0.15, `開始 ${c.subStart} / ${truth[i][0]}`);
+    assert.ok(Math.abs(c.subEnd - truth[i][1]) < 0.15, `終了 ${c.subEnd} / ${truth[i][1]}`);
+    if (i > 0) assert.ok(out[i - 1].subEnd < c.subStart);
+    // 自動カットに使う時刻は変えない
+    assert.equal(c.start, chunks[i].start);
+    assert.equal(c.end, chunks[i].end);
+  });
+});
+
+test('カット後の時刻への変換: 削った無音をまたいでもずれが積み重ならない', async () => {
+  const { srcToOut, buildTimeline } = await import('../js/plan.js');
+  const clips = [
+    { pieces: [{ start: 10, end: 12 }, { start: 13, end: 15 }], text: '前半の説明です。後半の説明です。', subStart: 10.1, subEnd: 14.8,
+      fine: [{ start: 10.1, end: 11.9 }, { start: 13.1, end: 14.8 }] },
+    { pieces: [{ start: 40, end: 42 }], text: '別の場面です。', subStart: 40.2, subEnd: 41.5, fine: [{ start: 40.2, end: 41.5 }] },
+  ];
+  const tl = buildTimeline(clips, { subtitles: true });
+  assert.ok(Math.abs(srcToOut(tl[0], 13.1) - 2.1) < 1e-6);
+  assert.equal(srcToOut(tl[0], 12.5), 2); // 削った部分は次の場面の頭
+  assert.ok(Math.abs(srcToOut(tl[1], 40.2) - 4.2) < 1e-6);
+  const [p1, p2] = tl[0].subtitles;
+  assert.ok(Math.abs(p1.start - 0.0) < 0.11 && Math.abs(p2.start - (2.1 - 0.1)) < 0.11, JSON.stringify(tl[0].subtitles));
+  assert.ok(p1.end <= p2.start);
+  const q = tl[1].subtitles[0];
+  assert.ok(Math.abs(q.start - (4.2 - 0.1)) < 0.01 && Math.abs(q.end - (5.5 + 0.25)) < 0.01, JSON.stringify(q));
+});
+
+test('字幕の手直し: 0.1秒ずつ動かし、保存・読み込み・全体のずらしがMP4用の時刻に反映される', async () => {
+  const { nudge, collectEdits, applyEdits, resetEdits, shifted, unitKey } = await import('../js/subedit.js');
+  const { buildTimeline } = await import('../js/plan.js');
+  const mk = () => [
+    { kind: 'speech', start: 10, end: 13, pieces: [{ start: 10, end: 13 }], text: 'パネルを0度に引き出します', subStart: 10.2, subEnd: 12.8, fine: [{ start: 10.2, end: 12.8 }] },
+    { kind: 'action', start: 20, end: 23, pieces: [{ start: 20, end: 23 }], text: '' },
+  ];
+  const units = mk();
+  applyEdits(units, null); // AIの結果を覚える
+  for (let i = 0; i < 3; i++) nudge(units[0], 'start', 0.1);
+  nudge(units[0], 'end', -0.1);
+  units[0].text = 'パネルを0度で引き出します';
+  assert.ok(Math.abs(units[0].subStart - 10.5) < 1e-9 && Math.abs(units[0].subEnd - 12.7) < 1e-9);
+  const saved = JSON.parse(JSON.stringify(collectEdits(units, 0.2)));
+  assert.deepEqual(Object.keys(saved.edits), [unitKey(units[0])]);
+  // もう一度解析した結果に、保存した修正を当てはめる
+  const again = mk();
+  assert.equal(applyEdits(again, saved), 1);
+  assert.equal(again[0].text, 'パネルを0度で引き出します');
+  assert.ok(Math.abs(again[0].subStart - 10.5) < 1e-9);
+  // 全体のずらし（+0.2秒）を足して書き出し用のタイムラインを作る
+  const tl = buildTimeline(again.map(u => ({ ...u, ...shifted(u, saved.offset) })), { subtitles: true });
+  const p = tl[0].subtitles[0];
+  assert.ok(Math.abs(p.start - (10.7 - 10 - 0.1)) < 1e-6, JSON.stringify(p));
+  assert.equal(p.lines.join(''), 'パネルを0度で引き出します');
+  // 動かせるのは場面の前後1秒まで・長さは0.3秒以上
+  for (let i = 0; i < 50; i++) nudge(again[0], 'start', -0.1);
+  assert.equal(again[0].subStart, 9);
+  for (let i = 0; i < 50; i++) nudge(again[0], 'end', -0.1);
+  assert.ok(Math.abs(again[0].subEnd - 9.3) < 1e-9);
+  // 取り消すとAIの結果に戻る
+  resetEdits(again);
+  assert.equal(again[0].text, 'パネルを0度に引き出します');
+  assert.equal(again[0].subStart, 10.2);
+});
