@@ -161,7 +161,9 @@ self.onmessage = async e => {
       const device = await load(m.model, m.device);
       special = new Set(asr.tokenizer.all_special_ids);
       initIds = [tokenId('<|startoftranscript|>'), tokenId('<|ja|>'), tokenId('<|transcribe|>')];
-      termSeqs = BEAUTY_TERMS.map(t => encode(t.term)).filter(s => s.length >= 2);
+      // 辞書の用語に加えて、編集前に入力された言葉（この動画のタイトルや内容に出てくる用語）も使う
+      const terms = [...new Set([...BEAUTY_TERMS.map(t => t.term), ...(Array.isArray(m.terms) ? m.terms : [])])];
+      termSeqs = terms.map(t => encode(t)).filter(s => s.length >= 2);
       self.postMessage({ type: 'loaded', device, sessions: describeSessions() });
     } else if (m.type === 'run') {
       const duration = m.audio.length / 16000;

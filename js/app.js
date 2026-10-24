@@ -9,6 +9,9 @@ import {
   previousJob, log, setEnv, jobStart, jobStage, jobProgress, jobEnd, report, clearLogs, errorText,
 } from './diag.js';
 import { STEP, videoKey, nudge, collectEdits, applyEdits, resetEdits, shifted, formatClock } from './subedit.js';
+import {
+  FORMATS, EMPTY_BRIEF, normalizeBrief, hasText, briefPlan, applyBrief, applyStyle, targetRange, fitReport, fmt,
+} from './brief.js';
 
 const $ = id => document.getElementById(id);
 const state = {};
@@ -128,6 +131,114 @@ $('diagClear').addEventListener('click', () => {
   $('diagText').textContent = report();
 });
 
+// ---------- 2. 完成イメージの入力（すべて任意） ----------
+// 種類・長さ・スタイルは次の動画にも引き継ぐ。文章の入力は動画ごとに保存する
+const PREFS_KEY = 'amity.prefs.v1';
+const briefKey = () => (state.file && state.src ? 'amity.brief.v1:' + videoKey(state.file, state.src.duration) : null);
+const TEXT_FIELDS = { title: 'bTitle', content: 'bContent', message: 'bMessage', flow: 'bFlow', mustKeep: 'bMust' };
+
+function loadJSON(key) {
+  try { return JSON.parse(localStorage.getItem(key) || 'null'); } catch { return null; }
+}
+
+function readBrief() {
+  const b = {};
+  for (const [k, id] of Object.entries(TEXT_FIELDS)) b[k] = $(id).value;
+  b.format = document.querySelector('input[name=format]:checked')?.value;
+  b.style = document.querySelector('input[name=style]:checked')?.value;
+  const preset = document.querySelector('input[name=dur]:checked')?.value;
+  const f = FORMATS[b.format] || FORMATS.short;
+  if (preset === 'custom') {
+    const v = parseFloat($('durCustom').value);
+    b.targetSec = b.format === 'long' ? v * 60 : v;
+  } else {
+    b.targetSec = Number(preset) || f.defaultSec;
+  }
+  return normalizeBrief(b);
+}
+
+function renderPresets(format, targetSec) {
+  const f = FORMATS[format];
+  const long = format === 'long';
+  const wrap = $('durPresets');
+  wrap.innerHTML = '';
+  const isPreset = f.presets.includes(targetSec);
+  for (const sec of [...f.presets, 'custom']) {
+    const label = document.createElement('label');
+    const input = document.createElement('input');
+    input.type = 'radio';
+    input.name = 'dur';
+    input.value = String(sec);
+    input.checked = sec === 'custom' ? !isPreset : sec === targetSec;
+    const span = document.createElement('span');
+    span.textContent = sec === 'custom' ? '自由入力' : fmt(sec);
+    label.append(input, span);
+    wrap.appendChild(label);
+    input.addEventListener('change', () => { syncCustom(); briefChanged(); });
+  }
+  $('durUnit').textContent = long ? '分' : '秒';
+  $('durCustom').min = long ? f.min / 60 : f.min;
+  $('durCustom').max = long ? f.max / 60 : f.max;
+  $('durCustom').step = long ? 0.5 : 1;
+  $('durRange').textContent = long ? `（${f.min / 60}〜${f.max / 60}分）` : `（${f.min}〜${f.max}秒）`;
+  $('durCustom').value = long ? +(targetSec / 60).toFixed(1) : targetSec;
+  syncCustom();
+}
+
+function syncCustom() {
+  $('durCustomWrap').hidden = document.querySelector('input[name=dur]:checked')?.value !== 'custom';
+}
+
+function writeBrief(b) {
+  for (const [k, id] of Object.entries(TEXT_FIELDS)) $(id).value = b[k] || '';
+  for (const el of document.querySelectorAll('input[name=format]')) el.checked = el.value === b.format;
+  for (const el of document.querySelectorAll('input[name=style]')) el.checked = el.value === b.style;
+  renderPresets(b.format, b.targetSec);
+}
+
+let briefTimer = null;
+function briefChanged() {
+  clearTimeout(briefTimer);
+  briefTimer = setTimeout(() => {
+    const b = readBrief();
+    try {
+      localStorage.setItem(PREFS_KEY, JSON.stringify({ format: b.format, targetSec: b.targetSec, style: b.style }));
+      const key = briefKey();
+      if (key) {
+        const text = {};
+        for (const k of Object.keys(TEXT_FIELDS)) text[k] = b[k];
+        if (hasText(b)) localStorage.setItem(key, JSON.stringify(text)); else localStorage.removeItem(key);
+      }
+    } catch {}
+    // 構成を作った後に入力を変えたら、作り直せるようにする
+    if (state.units) $('btnReplan').hidden = false;
+  }, 300);
+}
+
+for (const id of Object.values(TEXT_FIELDS)) $(id).addEventListener('input', briefChanged);
+$('durCustom').addEventListener('input', briefChanged);
+$('durCustom').addEventListener('change', () => {
+  // 範囲外の値は、範囲内に直して表示する
+  const b = readBrief();
+  $('durCustom').value = b.format === 'long' ? +(b.targetSec / 60).toFixed(1) : b.targetSec;
+  briefChanged();
+});
+for (const el of document.querySelectorAll('input[name=format]')) {
+  el.addEventListener('change', () => { renderPresets(el.value, FORMATS[el.value].defaultSec); briefChanged(); });
+}
+for (const el of document.querySelectorAll('input[name=style]')) el.addEventListener('change', briefChanged);
+$('briefClear').addEventListener('click', () => {
+  for (const id of Object.values(TEXT_FIELDS)) $(id).value = '';
+  briefChanged();
+});
+
+function initBrief() {
+  const prefs = loadJSON(PREFS_KEY) || {};
+  const text = (briefKey() && loadJSON(briefKey())) || {};
+  writeBrief(normalizeBrief({ ...EMPTY_BRIEF, ...prefs, ...text }));
+}
+writeBrief(normalizeBrief({ ...EMPTY_BRIEF, ...(loadJSON(PREFS_KEY) || {}) }));
+
 // ---------- 1. 動画を選ぶ ----------
 $('file').addEventListener('change', async () => {
   const file = $('file').files && $('file').files[0];
@@ -135,6 +246,7 @@ $('file').addEventListener('change', async () => {
   for (const id of ['fileError', 'analyzeError', 'renderError', 'globalError']) $(id).hidden = true;
   $('stepReview').hidden = true;
   $('stepResult').hidden = true;
+  $('stepBrief').hidden = true;
   $('steps').hidden = true;
   $('bar').hidden = true;
   $('progressText').textContent = '';
@@ -163,6 +275,8 @@ $('file').addEventListener('change', async () => {
     $('duration').textContent = formatSec(duration);
     $('dims').textContent = `${width}×${height}（${width >= height ? '横向き' : '縦向き'}）${audio ? '' : '・音声なし'}`;
     $('codec').textContent = info.video;
+    initBrief();
+    $('stepBrief').hidden = false;
     $('stepAnalyze').hidden = false;
     const missing = checkSupport();
     if (missing.length) {
@@ -209,7 +323,7 @@ function setProgress(ratio, text) {
 
 const ASR_MODEL = 'onnx-community/whisper-base';
 
-function transcribe(pcm, windows) {
+function transcribe(pcm, windows, terms = []) {
   return new Promise((resolve, reject) => {
     const worker = new Worker('js/transcribe-worker.js', { type: 'module' });
     const files = new Map();
@@ -271,7 +385,7 @@ function transcribe(pcm, windows) {
     };
     worker.onerror = e => finish(reject, new Error(e.message || '文字起こしの準備に失敗しました（ネットワークを確認してください）'));
     setProgress(0, 'AIモデルを準備中…');
-    worker.postMessage({ type: 'load', model: ASR_MODEL });
+    worker.postMessage({ type: 'load', model: ASR_MODEL, terms });
   });
 }
 
@@ -279,6 +393,9 @@ $('btnAnalyze').addEventListener('click', async () => {
   const src = state.src;
   if (!src) return;
   const useAsr = $('optAsr').checked && !!src.audio;
+  const brief = readBrief();
+  const bp = briefPlan(brief);
+  $('btnReplan').hidden = true;
   $('analyzeError').hidden = true;
   $('globalError').hidden = true;
   $('stepReview').hidden = true;
@@ -291,9 +408,12 @@ $('btnAnalyze').addEventListener('click', async () => {
     { key: 'audio', label: '音声を読み込み、無音を探す' },
     { key: 'asr', label: '文字起こし（字幕・言い直し）' },
     { key: 'motion', label: '手元の動きを解析する' },
-    { key: 'plan', label: '約60秒の構成を作る' },
+    { key: 'plan', label: `約${fmt(brief.targetSec)}の構成を作る` },
   ]);
-  jobStart('解析', { file: state.file.name, sizeMB: +(state.file.size / 1e6).toFixed(1), asr: useAsr, model: useAsr ? ASR_MODEL : null, video: src.info });
+  jobStart('解析', {
+    file: state.file.name, sizeMB: +(state.file.size / 1e6).toFixed(1), asr: useAsr, model: useAsr ? ASR_MODEL : null, video: src.info,
+    brief: { format: brief.format, targetSec: brief.targetSec, style: brief.style, text: hasText(brief), must: bp.mustItems.length, asrTerms: bp.asrTerms.length },
+  });
   const lock = await keepAwake();
   const t0 = performance.now();
   const warnings = [];
@@ -329,7 +449,7 @@ $('btnAnalyze').addEventListener('click', async () => {
       setStep('asr', 'active');
       try {
         // 文ごとの時刻は、無音の切れ目に合わせて割り当て直す
-        const sentences = alignSentences(await transcribe(pcm, transcriptionWindows(state.speech.regions)), state.speech.regions);
+        const sentences = alignSentences(await transcribe(pcm, transcriptionWindows(state.speech.regions), bp.asrTerms), state.speech.regions);
         // 字幕の表示時刻を、実際の声の出始め・終わりに合わせる（自動カットの区切りは変えない）
         state.chunks = refineSubtitleTiming(sentences, fineSpeech(state.rmsDb, state.speech.threshold));
         setStep('asr', 'done');
@@ -356,18 +476,11 @@ $('btnAnalyze').addEventListener('click', async () => {
     }
 
     setStep('plan', 'active');
-    state.units = buildUnits({
-      duration: src.duration, rmsDb: state.rmsDb, speech: state.speech, chunks: state.chunks, motion: state.motion,
-    });
-    state.selected = new Set(selectUnits(state.units, src.duration).map(u => u.id));
-    // 同じ動画で前に直した字幕があれば当てはめる
-    const saved = loadSubEdits();
-    state.subOffset = saved?.offset || 0;
-    state.restoredEdits = applyEdits(state.units, saved);
+    state.warnings = warnings;
+    makePlan(brief);
     if (!state.selected.size) throw new Error('使える場面が見つかりませんでした。音声と映像の両方を読み込めなかった可能性があります。');
     setStep('plan', 'done');
     setProgress(1, `完了（${formatSec((performance.now() - t0) / 1000)}）`);
-    state.warnings = warnings;
     jobEnd('done');
     showReview();
   } catch (err) {
@@ -379,6 +492,50 @@ $('btnAnalyze').addEventListener('click', async () => {
     $('preview').src = state.url;
     lock?.release?.();
   }
+});
+
+// 解析結果（音声・文字起こし・動き）と入力内容から構成を作る。入力を変えたときは解析し直さずにこれだけ行う
+function makePlan(brief) {
+  const src = state.src;
+  const bp = briefPlan(brief);
+  state.brief = bp.brief;
+  state.units = buildUnits({
+    duration: src.duration, rmsDb: state.rmsDb, speech: state.speech, chunks: state.chunks, motion: state.motion,
+  });
+  const { must } = applyBrief(state.units, bp);
+  applyStyle(state.units, bp.brief.style);
+  const { target, max } = targetRange(bp.brief.targetSec);
+  const sel = selectUnits(state.units, src.duration, target, max, { buckets: bp.buckets });
+  state.selected = new Set(sel.map(u => u.id));
+  state.fit = fitReport({ targetSec: bp.brief.targetSec, selected: sel, units: state.units, sourceDuration: src.duration });
+  // 入力内容がどう使われたか
+  const used = [];
+  if (bp.themeTerms.length || bp.messageTerms.length) {
+    used.push(`入力から読み取った言葉: ${[...bp.messageTerms, ...bp.themeTerms].slice(0, 12).join('・')}`);
+    const boosted = state.units.filter(u => u.reasons.some(r => r.startsWith('入力した内容') || r.startsWith('伝えたいこと'))).length;
+    used.push(!state.chunks ? '→ 文字起こしがOFFのため、話の内容との照合はしていません。'
+      : boosted ? `→ これらの言葉を話している${boosted}場面を優先しました。` : '→ 話の中に同じ言葉は見つかりませんでした。');
+  }
+  if (bp.mustItems.length && state.chunks) {
+    for (const m of must) used.push(m.unit ? `必ず残す: 「${m.item}」→ ${formatTime(m.unit.start)}の発言「${m.unit.text.slice(0, 24)}」` : `必ず残す: 「${m.item}」→ 合う発言が見つかりませんでした`);
+  }
+  if (bp.buckets !== 5) used.push(`流れ（${bp.buckets}段階）に合わせて、動画全体から順に場面を選びました。`);
+  state.briefUsed = used;
+  state.briefWarnings = [];
+  if (bp.mustItems.length && !state.chunks) state.briefWarnings.push('「必ず残したい説明や場面」は文字起こし（字幕）をONにしたときだけ照合できます。今回は照合していません。');
+  else if (must.some(m => !m.unit)) state.briefWarnings.push('「必ず残したい説明や場面」の一部に合う発言が見つかりませんでした。下の「ほかの候補」から選んでください。');
+  log('構成', { targetSec: bp.brief.targetSec, planned: +state.fit.planned.toFixed(1), ok: state.fit.ok, must: must.map(m => !!m.unit), style: bp.brief.style });
+  // 同じ動画で前に直した字幕があれば当てはめる
+  const saved = loadSubEdits();
+  state.subOffset = saved?.offset || 0;
+  state.restoredEdits = applyEdits(state.units, saved);
+}
+
+$('btnReplan').addEventListener('click', () => {
+  if (!state.units) return;
+  makePlan(readBrief());
+  $('btnReplan').hidden = true;
+  showReview();
 });
 
 // ---------- 3. 構成の確認 ----------
@@ -402,6 +559,12 @@ function clipRow(u) {
   kind.className = 'kind';
   kind.textContent = u.kind === 'action' ? '作業' : '話し';
   label.append(cb, time, kind);
+  if (u.mustKeep) {
+    const tag = document.createElement('span');
+    tag.className = 'must-tag';
+    tag.textContent = '必ず残す';
+    label.appendChild(tag);
+  }
   const play = document.createElement('button');
   play.className = 'play';
   play.type = 'button';
@@ -525,9 +688,10 @@ function playRange(start, end) {
 
 function updateTotal() {
   const total = state.units.filter(u => state.selected.has(u.id)).reduce((s, u) => s + u.duration, 0);
+  const target = state.brief?.targetSec ?? 60;
   const el = $('total');
-  el.textContent = `合計 ${total.toFixed(1)}秒（${state.selected.size}場面）` + (total > 60 ? ' ― 60秒を超えています' : '');
-  el.classList.toggle('over', total > 60);
+  el.textContent = `合計 ${total.toFixed(1)}秒（${state.selected.size}場面）・目標 ${fmt(target)}` + (total > target + 0.5 ? ' ― 目標を超えています' : '');
+  el.classList.toggle('over', total > target + 0.5);
   $('btnRender').disabled = state.selected.size === 0;
 }
 
@@ -577,8 +741,19 @@ function showReview() {
   $('subSaved').textContent = state.restoredEdits ? `前回の字幕の修正を読み込みました（${state.restoredEdits}か所）` : '';
   $('optSubs').disabled = !state.chunks;
   $('optSubsNote').textContent = state.chunks ? '' : '（文字起こしをしていないため使えません）';
-  $('warnings').textContent = (state.warnings || []).join('\n');
-  $('warnings').hidden = !(state.warnings || []).length;
+  const warns = [...(state.warnings || []), ...(state.briefWarnings || [])];
+  $('warnings').textContent = warns.join('\n');
+  $('warnings').hidden = !warns.length;
+  const fit = state.fit;
+  if (fit) {
+    $('fit').className = 'fit ' + (fit.ok ? 'ok' : 'ng');
+    $('fit').textContent = fit.ok
+      ? `目標 ${fmt(fit.targetSec)} → 完成予定 約${fmt(fit.planned)}`
+      : `目標 ${fmt(fit.targetSec)} → 完成予定 約${fmt(fit.planned)}\n${fit.reason}`;
+    $('fit').hidden = false;
+  }
+  $('briefUsed').textContent = (state.briefUsed || []).join('\n');
+  $('briefUsed').hidden = !(state.briefUsed || []).length;
   updateTotal();
   $('stepReview').hidden = false;
   $('stepReview').scrollIntoView({ behavior: 'smooth' });
@@ -624,7 +799,7 @@ $('btnRender').addEventListener('click', async () => {
     const useSubs = !!state.chunks && $('optSubs').checked;
     const useZoom = $('optZoom').checked;
     const timeline = buildTimeline(clips.map(u => ({ ...u, text: state.chunks ? u.text : '', ...shifted(u, state.subOffset) })), {
-      srcW: state.src.width, srcH: state.src.height, zoom: useZoom, subtitles: useSubs,
+      srcW: state.src.width, srcH: state.src.height, zoom: useZoom, subtitles: useSubs, style: state.brief?.style,
     });
     state.timeline = timeline;
     state.styleNote = styleSummary(timeline, useSubs, useZoom);

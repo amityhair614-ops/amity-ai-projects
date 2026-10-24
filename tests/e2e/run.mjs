@@ -8,6 +8,10 @@
 //     --real-asr=DIR  偽のワーカーではなく本物の Whisper で文字起こしする。DIR は whisper-base のモデル
 //                     （config.json と onnx/ がある場所）。Transformers.js と ONNX Runtime は node_modules から配信する
 //     --zoom / --no-zoom / --no-subs  書き出し時の設定
+//     --target=秒     完成動画の長さ（30/45/60 はボタン、それ以外は自由入力）
+//     --style=tempo   編集スタイル
+//     --brief         タイトル・内容・伝えたいこと・流れ・必ず残したい場面を入力する
+//     --replan=秒     構成の確認画面で長さを変えて「構成し直す」を押す
 //
 // 事前に `python3 -m http.server 8123` をリポジトリ直下で起動しておく。
 // H.264 を扱えるブラウザが必要（Chrome for Testing など。Playwright 同梱の Chromium は不可）。
@@ -27,11 +31,17 @@ const reloadAt = (process.argv.find(a => a.startsWith('--reload-at=')) || '').sp
 const realAsr = (process.argv.find(a => a.startsWith('--real-asr=')) || '').split('=')[1];
 const zoom = process.argv.includes('--zoom') ? true : process.argv.includes('--no-zoom') ? false : null;
 const noSubs = process.argv.includes('--no-subs');
+const arg = name => (process.argv.find(a => a.startsWith(`--${name}=`)) || '').split('=')[1];
+const target = arg('target');
+const style = arg('style');
+const withBrief = process.argv.includes('--brief');
+const replan = arg('replan');
 const base = path.basename(sample).replace(/\.(mp4|mov)$/, '');
 const tFile = fs.existsSync(path.join(dir, `${base}-transcript.json`)) ? `${base}-transcript.json` : 'sample-transcript.json';
 const transcript = JSON.parse(fs.readFileSync(path.join(dir, tFile), 'utf8'));
 const tag = base + (noAsr ? '-noasr' : '') + (failAsr ? '-failasr' : '') + (webaudio ? '-webaudio' : '') + (realAsr ? '-realasr' : '')
-  + (zoom === true ? '-zoom' : zoom === false ? '-nozoom' : '') + (noSubs ? '-nosubs' : '');
+  + (zoom === true ? '-zoom' : zoom === false ? '-nozoom' : '') + (noSubs ? '-nosubs' : '')
+  + (target ? '-t' + target : '') + (style ? '-' + style : '') + (withBrief ? '-brief' : '') + (replan ? '-replan' + replan : '');
 
 // ブラウザのプロセスごとのメモリ（RSS）を0.5秒ごとに測り、段階ごとのピークを記録する
 const mem = { stage: '開始', peaks: {} };
@@ -183,6 +193,17 @@ async function evaluateOutputTiming() {
   console.log(`  文の途中のページ切り替え−そのページの言葉の話し始め(推定): ${st(bounds)}`);
 }
 
+// 完成動画の長さを選ぶ（30/45/60 はボタン、それ以外は自由入力）
+async function setTarget(sec) {
+  if (!sec) return;
+  if (['30', '45', '60'].includes(sec)) await page.click(`input[name=dur][value="${sec}"] + span`);
+  else {
+    await page.click('input[name=dur][value=custom] + span');
+    await page.fill('#durCustom', sec);
+    await page.dispatchEvent('#durCustom', 'change');
+  }
+}
+
 // 正解と認識結果の文字の一致率（編集距離から。句読点・空白は除く）
 function charAgreement(a, b) {
   const clean = t => t.replace(/[\s、。，．,.！？!?]/g, '');
@@ -227,6 +248,17 @@ try {
     throw new Error('RELOAD_CHECK_DONE');
   }
   if (noAsr) await page.uncheck('#optAsr'); else await page.check('#optAsr');
+  await page.waitForSelector('#stepBrief:not([hidden])');
+  await setTarget(target);
+  if (style) await page.click(`input[name=style][value=${style}] + span`);
+  if (withBrief) {
+    await page.fill('#bTitle', 'ボブのカット解説');
+    await page.fill('#bContent', 'ブロッキングから仕上がりまで、ボブの切り方を解説します');
+    await page.fill('#bMessage', 'パネルを45度で引き出すこと');
+    await page.fill('#bFlow', '冒頭、ブロッキング、カット、セニング、仕上がり');
+    await page.fill('#bMust', 'ここがこのカットの一番大事なポイント\n毛先をセニングして軽さを出す');
+  }
+  await page.screenshot({ path: path.join(dir, `brief-${tag}.png`), fullPage: true });
   const t0 = Date.now();
   mem.stage = '解析';
   await page.click('#btnAnalyze');
@@ -276,21 +308,31 @@ try {
   const plan = await page.evaluate(() => {
     const s = window.amityDebug;
     return {
+      brief: s.brief, fit: s.fit,
       summary: document.getElementById('summary').textContent,
       total: document.getElementById('total').textContent,
       regions: s.speech.regions.map(r => [+r.start.toFixed(2), +r.end.toFixed(2)]),
       units: s.units.map(u => ({
         id: u.id, kind: u.kind, start: +u.start.toFixed(2), end: +u.end.toFixed(2), dur: +u.duration.toFixed(2),
         text: u.text, excluded: u.excluded || null, score: +u.score.toFixed(2), cx: +u.cx.toFixed(2),
-        selected: s.selected.has(u.id), reasons: u.reasons,
+        selected: s.selected.has(u.id), reasons: u.reasons, mustKeep: u.mustKeep || null,
       })),
     };
   });
   fs.writeFileSync(path.join(dir, `plan-${tag}.json`), JSON.stringify(plan, null, 1));
   console.log(plan.summary);
   console.log(plan.total);
+  console.log('完成時間: ' + (await page.$eval('#fit', el => (el.hidden ? '(表示なし)' : el.textContent))));
+  const used = await page.$eval('#briefUsed', el => (el.hidden ? '' : el.textContent));
+  if (used) console.log('入力の反映:\n' + used);
+  if (replan) {
+    await setTarget(replan);
+    await page.waitForSelector('#btnReplan:not([hidden])');
+    await page.click('#btnReplan');
+    console.log(`構成し直し（${replan}秒）: ${await page.$eval('#total', el => el.textContent)} / ${await page.$eval('#fit', el => el.textContent)}`);
+  }
   for (const u of plan.units) {
-    console.log(`${u.selected ? '■' : '□'} ${u.kind.padEnd(6)} ${u.start.toFixed(1).padStart(6)}-${u.end.toFixed(1).padStart(6)} score=${u.score} ${u.excluded ? '[除外:' + u.excluded + '] ' : ''}${u.text}`);
+    console.log(`${u.selected ? '■' : '□'} ${u.kind.padEnd(6)} ${u.start.toFixed(1).padStart(6)}-${u.end.toFixed(1).padStart(6)} score=${u.score} ${u.mustKeep ? '[必ず残す] ' : ''}${u.excluded ? '[除外:' + u.excluded + '] ' : ''}${u.text}`);
   }
   await page.screenshot({ path: path.join(dir, `review-${tag}.png`), fullPage: true });
 
@@ -316,6 +358,10 @@ try {
   fs.writeFileSync(outFile, Buffer.from(b64, 'base64'));
   await page.screenshot({ path: path.join(dir, `result-${tag}.png`), fullPage: true });
   console.log('出力:', outFile);
+  try {
+    const probe = execSync(`ffprobe -v error -show_entries stream=codec_name,width,height:format=duration -of compact "${outFile}"`, { encoding: 'utf8' });
+    console.log('ffprobe: ' + probe.trim().replace(/\n/g, ' | '));
+  } catch {}
   if (realAsr && transcript[0].phrases) await evaluateOutputTiming();
   if (editExpect) {
     const subs = await page.evaluate(() => window.amityDebug.timeline.flatMap(c => c.subtitles.map(p => p.lines.join(''))).join(''));

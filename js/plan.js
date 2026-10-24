@@ -431,20 +431,23 @@ export function buildUnits({ duration, rmsDb, speech, chunks, motion }) {
   return units;
 }
 
-// 目標の長さになるように場面を選ぶ
-export function selectUnits(units, duration, target = 58, max = 60) {
+// 目標の長さになるように場面を選ぶ。
+// opts.buckets: 動画全体を何区間に分けて、それぞれから選ぶか（入力した流れの段階数）
+// 必ず残す場面（u.mustKeep）は、上限を超えても残す（重要な説明を時間のために削らない）
+export function selectUnits(units, duration, target = 58, max = 60, opts = {}) {
   const cands = units.filter(u => !u.excluded && u.duration >= 0.5);
   const chosen = new Set();
   let total = 0;
   const add = u => { if (!chosen.has(u) && total + u.duration <= max) { chosen.add(u); total += u.duration; } };
 
+  for (const u of cands) if (u.mustKeep && !chosen.has(u)) { chosen.add(u); total += u.duration; }
   // 冒頭と最後
   const intro = cands.filter(u => u.intro).sort((a, b) => b.score - a.score)[0];
   const ending = cands.filter(u => u.ending).sort((a, b) => b.score - a.score)[0];
   if (intro) add(intro);
   if (ending) add(ending);
   // 動画全体からまんべんなく
-  const K = 5;
+  const K = opts.buckets || 5;
   for (let k = 0; k < K; k++) {
     const s = (duration * k) / K, e = (duration * (k + 1)) / K;
     const best = cands.filter(u => u.start >= s && u.start < e).sort((a, b) => b.score - a.score)[0];
@@ -454,6 +457,10 @@ export function selectUnits(units, duration, target = 58, max = 60) {
   for (const u of [...cands].sort((a, b) => b.score - a.score)) {
     if (total >= target) break;
     if (total + u.duration <= target) add(u);
+  }
+  // 目標よりかなり短いときは、上限までの範囲で場面を足す（短い目標ほど1場面の長さの影響が大きいため）
+  if (total < max - Math.max(3, max * 0.1)) {
+    for (const u of [...cands].sort((a, b) => b.score - a.score)) add(u);
   }
   return [...chosen].sort((a, b) => a.start - b.start);
 }
@@ -593,6 +600,11 @@ const ZONE_BANDS = { top: [0.12, 0.29], bottom: [0.65, 0.84] };
 export const ZOOM_MIN = 1.03;
 export const ZOOM_MAX = 1.08;
 const ZOOM_SPACING = 10; // ズームとズームの間は最低この秒数あける
+// 編集スタイルごとのズーム。テンポ重視は間隔を短く、少しだけ強く（それでも 1.10 倍まで）
+export const ZOOM_STYLES = {
+  simple: { spacing: ZOOM_SPACING, max: ZOOM_MAX },
+  tempo: { spacing: 6, max: 1.10 },
+};
 const FADE = 0.2;       // 字幕のフェード（秒）
 const FADE_SHORT = 0.1; // 字幕が切れ目なく続くときのフェード
 
@@ -616,6 +628,7 @@ function bandHit(b, band) {
 // opts: { srcW, srcH, zoom: 自然なズームを使うか, subtitles: 字幕を入れるか }
 export function buildTimeline(clips, opts = {}) {
   const { srcW = 1080, srcH = 1920, zoom = false, subtitles = true } = opts;
+  const zs = ZOOM_STYLES[opts.style] || ZOOM_STYLES.simple;
   let t = 0;
   const tl = clips.map(c => {
     const pieces = c.pieces.map(p => {
@@ -661,11 +674,11 @@ export function buildTimeline(clips, opts = {}) {
   for (const c of tl) {
     c.zoom = null;
     const b = c.inCrop;
-    const ok = zoom && b && c.outDuration >= 2 && (c.motion ?? 0) >= 0.35 && !prevZoomed && c.outStart - lastEnd >= ZOOM_SPACING;
+    const ok = zoom && b && c.outDuration >= 2 && (c.motion ?? 0) >= 0.35 && !prevZoomed && c.outStart - lastEnd >= zs.spacing;
     prevZoomed = false;
     if (!ok) continue;
     const bw = b[1] - b[0], bh = b[3] - b[2];
-    let z = Math.min(ZOOM_MAX, 1 / (Math.max(bw, bh) * 1.25), 1 + 0.025 * c.outDuration);
+    let z = Math.min(zs.max,1 / (Math.max(bw, bh) * 1.25), 1 + 0.025 * c.outDuration);
     z = Math.floor(z * 200) / 200;
     if (z < ZOOM_MIN) continue;
     const { crop } = c;
