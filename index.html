@@ -172,6 +172,39 @@
     .sticky-preview video { max-height: 28vh; width: auto; max-width: 100%; margin: 0 auto; }
     .result-video { max-height: 70vh; width: auto; max-width: 100%; margin: 0 auto; }
     ol.howto { margin: 8px 0 0; padding-left: 1.4em; font-size: 14px; }
+    .field { display: block; margin: 14px 0 0; font-size: 14px; }
+    .field > span { display: block; font-weight: 600; margin-bottom: 4px; }
+    .field > span small { font-weight: 400; color: var(--muted); margin-left: 6px; }
+    .field input[type=text], .field input[type=number], .field textarea {
+      display: block; width: 100%; font: inherit; font-size: 16px; padding: 10px 12px; border-radius: 10px;
+      border: 1px solid var(--line); background: var(--bg); color: var(--text); resize: vertical;
+    }
+    .field input::placeholder, .field textarea::placeholder { color: var(--muted); opacity: .8; }
+    .field-group { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--line); }
+    .field-group:first-of-type { margin-top: 0; padding-top: 0; border-top: 0; }
+    .group-title { font-size: 15px; font-weight: 700; margin: 0 0 8px; }
+    .seg { display: flex; gap: 8px; flex-wrap: wrap; }
+    .seg label { flex: 1 1 0; min-width: 0; position: relative; }
+    .seg input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+    .seg span {
+      display: block; text-align: center; padding: 10px 6px; border-radius: 12px; border: 1.5px solid var(--line);
+      font-size: 14px; line-height: 1.4; background: var(--bg); cursor: pointer;
+    }
+    .seg span small { display: block; font-size: 11px; color: var(--muted); }
+    .seg input:checked + span { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); font-weight: 700; }
+    .seg input:focus-visible + span { outline: 2px solid var(--accent); outline-offset: 2px; }
+    .seg input:disabled + span { opacity: .45; cursor: default; }
+    .seg.chips label { flex: 0 0 auto; }
+    .seg.chips span { padding: 8px 16px; border-radius: 999px; }
+    .style-cards { display: grid; gap: 8px; }
+    .style-cards span { text-align: left; padding: 12px 14px; }
+    .custom-time { display: flex; align-items: center; gap: 8px; margin-top: 10px; font-size: 14px; }
+    .custom-time input { width: 7em; font: inherit; font-size: 16px; padding: 8px 10px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); color: var(--text); }
+    .fit { font-size: 14px; padding: 10px 12px; border-radius: 10px; margin: 8px 0 0; white-space: pre-wrap; }
+    .fit.ok { background: var(--ok-soft); color: var(--ok); }
+    .fit.ng { background: var(--warn-soft); color: var(--text); }
+    .brief-used { font-size: 13px; color: var(--muted); margin: 8px 0 0; white-space: pre-wrap; }
+    .must-tag { font-size: 11px; font-weight: 700; color: var(--accent); background: var(--accent-soft); border-radius: 999px; padding: 1px 8px; white-space: nowrap; }
     footer { text-align: center; font-size: 12px; color: var(--muted); margin-top: 32px; }
   </style>
 </head>
@@ -179,10 +212,10 @@
 <main>
   <header>
     <h1>Amity AI動画編集</h1>
-    <p class="lead">カット解説動画から、約60秒・縦型（9:16）・字幕付きのYouTubeショートを自動で作ります。処理はすべてこのiPhoneの中で行い、動画はどこにも送信しません。</p>
+    <p class="lead">カット解説動画から、字幕付きのYouTube動画を自動で作ります。動画の内容や完成時間を入力すると、それに合わせて場面を選びます。処理はすべてこのiPhoneの中で行い、動画はどこにも送信しません。</p>
   </header>
 
-  <div class="banner"><b>テスト版です。</b> 字幕の聞き取り精度と表示タイミングを改善し、字幕を手で直せるようにしました。<b>今回の字幕の改善は、iPhone実機ではまだ確認できていません。</b>うまく動かない場合は、下の「診断情報」をコピーして送ってください。字幕・ズームはそれぞれOFFにできます。</div>
+  <div class="banner"><b>テスト版です。</b> 編集前に「動画の内容・完成時間・編集スタイル」を入力できるようにしました（入力は任意）。<b>今回の追加は、iPhone実機ではまだ確認できていません。</b>うまく動かない場合は、下の「診断情報」をコピーして送ってください。字幕・ズームはそれぞれOFFにできます。</div>
 
   <div class="recover" id="recover" role="alert" hidden>
     <b>前回の処理が途中で止まりました</b>
@@ -204,7 +237,8 @@
       <li><span>日本語字幕の自動生成<small>端末内のAI（Whisper）。美容用語の辞書を使い、音声と合うときだけ用語に直します。表示は声に合わせます。書き出し前に文字・タイミングを直せます</small></span><span class="badge warn">パソコンで確認</span></li>
       <li><span>字幕のデザイン<small>白のゴシック体・最大2行・薄い影・ふわっと表示。手元に重ならない位置に置き、言葉の途中で改行しない</small></span><span class="badge warn">パソコンで確認</span></li>
       <li><span>自然なズーム<small>手元がまとまって動く場面だけ、ゆっくり1.03〜1.08倍。間隔をあけ、手元が切れる場合はしない。色や質感の加工はしません</small></span><span class="badge warn">パソコンで確認</span></li>
-      <li><span>10分の通常動画の自動編集</span><span class="badge pending">準備中</span></li>
+      <li><span>動画の内容・完成時間・編集スタイルの入力<small>入力した言葉で場面の点数を上げ、「必ず残したい場面」は時間を超えても残します。収まらないときは理由と予定時間を表示</small></span><span class="badge warn">パソコンで確認</span></li>
+      <li><span>10分の通常動画（横16:9）の自動編集</span><span class="badge pending">準備中</span></li>
     </ul>
   </section>
 
@@ -228,8 +262,49 @@
     <p class="error" id="fileError" hidden></p>
   </section>
 
+  <section class="card" id="stepBrief" aria-labelledby="brief-title" hidden>
+    <h2 id="brief-title"><span class="step-no">2</span>完成イメージを入力</h2>
+    <p class="note" style="margin-top:0">すべて任意です。何も入力しなくても自動編集できます。入力した言葉は、場面選びと字幕の用語の聞き取りに使います（入力した文が字幕に追加されることはありません）。</p>
+
+    <div class="field-group">
+      <p class="group-title">動画の種類</p>
+      <div class="seg" role="radiogroup" aria-label="動画の種類">
+        <label><input type="radio" name="format" value="short" checked><span>ショート<small>縦 9:16・1080×1920</small></span></label>
+        <label><input type="radio" name="format" value="long" disabled><span>ロング<small>横 16:9・準備中</small></span></label>
+      </div>
+    </div>
+
+    <div class="field-group">
+      <p class="group-title">完成動画の長さ</p>
+      <div class="seg chips" id="durPresets" role="radiogroup" aria-label="完成動画の長さ"></div>
+      <div class="custom-time" id="durCustomWrap" hidden>
+        <input type="number" id="durCustom" inputmode="numeric" min="10" step="1" aria-label="長さを入力">
+        <span id="durUnit">秒</span><small class="note" id="durRange" style="margin:0"></small>
+      </div>
+    </div>
+
+    <div class="field-group">
+      <p class="group-title">編集スタイル</p>
+      <div class="seg style-cards" role="radiogroup" aria-label="編集スタイル">
+        <label><input type="radio" name="style" value="simple" checked><span><b>シンプル・オシャレ</b><small>自然なカット・控えめなズーム・白ゴシック字幕。映像が主役</small></span></label>
+        <label><input type="radio" name="style" value="tempo"><span><b>テンポ重視</b><small>短めの場面を多めに・ズームを少し多めに。飽きにくいテンポ</small></span></label>
+      </div>
+    </div>
+
+    <div class="field-group">
+      <p class="group-title">動画の内容</p>
+      <label class="field"><span>動画タイトル</span><input type="text" id="bTitle" maxlength="100" placeholder="例: 前下がりボブの切り方"></label>
+      <label class="field"><span>どんな内容の動画か</span><textarea id="bContent" rows="2" maxlength="2000" placeholder="例: 肩上の前下がりボブを、ブロッキングから仕上げまで解説"></textarea></label>
+      <label class="field"><span>視聴者に一番伝えたいこと</span><textarea id="bMessage" rows="2" maxlength="2000" placeholder="例: 45度で引き出して切ると、襟足がきれいに収まる"></textarea></label>
+      <label class="field"><span>動画の流れ<small>「、」や改行で区切る</small></span><textarea id="bFlow" rows="2" maxlength="2000" placeholder="例: 冒頭、ブロッキング、バックのカット、サイド、仕上がり"></textarea></label>
+      <label class="field"><span>必ず残したい説明や場面<small>1行に1つ</small></span><textarea id="bMust" rows="3" maxlength="2000" placeholder="例:&#10;45度で引き出す説明&#10;襟足をセニングするところ"></textarea></label>
+      <p class="note">「必ず残したい説明」は、話した内容（文字起こし）と照らし合わせて探します。字幕をOFFにすると照合できません。</p>
+      <button type="button" class="link-btn" id="briefClear">入力内容をクリア</button>
+    </div>
+  </section>
+
   <section class="card" id="stepAnalyze" aria-labelledby="analyze-title" hidden>
-    <h2 id="analyze-title"><span class="step-no">2</span>自動編集する</h2>
+    <h2 id="analyze-title"><span class="step-no">3</span>自動編集する</h2>
     <label class="option"><input type="checkbox" id="optAsr"><span>字幕を作る・言い直しを探す（文字起こし・試験中）<br><small class="note" style="margin:0">OFFでも無音カット・場面選び・MP4書き出しはできます。ONにすると初回にAIモデル（目安100MB前後）をダウンロードし、メモリを多く使います。失敗した場合は字幕なしで続けます。</small></span></label>
     <button class="btn block" id="btnAnalyze">自動編集を開始</button>
     <ul class="steps" id="steps" hidden></ul>
@@ -241,8 +316,11 @@
   </section>
 
   <section class="card" id="stepReview" aria-labelledby="review-title" hidden>
-    <h2 id="review-title"><span class="step-no">3</span>構成を確認する</h2>
+    <h2 id="review-title"><span class="step-no">4</span>構成を確認する</h2>
     <p class="note" id="summary" style="margin-top:0"></p>
+    <p class="fit" id="fit" hidden></p>
+    <p class="brief-used" id="briefUsed" hidden></p>
+    <button class="btn block secondary" id="btnReplan" type="button" hidden>変更した入力内容で構成し直す</button>
     <p class="warnings" id="warnings" hidden></p>
     <div class="sticky-preview">
       <video id="clipPreview" playsinline preload="none" controls hidden></video>
@@ -272,7 +350,7 @@
   </section>
 
   <section class="card" id="stepResult" aria-labelledby="result-title" hidden>
-    <h2 id="result-title"><span class="step-no">4</span>完成・保存</h2>
+    <h2 id="result-title"><span class="step-no">5</span>完成・保存</h2>
     <video id="outVideo" class="result-video" controls playsinline></video>
     <dl><dt>長さ</dt><dd id="outDuration">-</dd><dt>サイズ</dt><dd id="outSize">-</dd><dt>形式</dt><dd>MP4（H.264）1080×1920</dd><dt>演出</dt><dd id="outStyle">-</dd></dl>
     <button class="btn block" id="btnSave">iPhoneに保存</button>
@@ -302,7 +380,7 @@
     </ul>
   </section>
 
-  <footer>Amity AI動画編集 ・ ショート動画テスト版 v0.5</footer>
+  <footer>Amity AI動画編集 ・ テスト版 v0.6</footer>
 </main>
 <script type="module" src="js/app.js"></script>
 </body>
