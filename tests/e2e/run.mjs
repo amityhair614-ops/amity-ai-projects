@@ -84,8 +84,15 @@ self.onmessage = e => {
     self.postMessage({ type: 'loaded', device: 'wasm' });
   } else if (m.type === 'run') {
     const end = m.offset + m.audio.length / 16000;
-    const chunks = T.filter(c => c.start < end && c.end > m.offset)
-      .map(c => ({ s: c.asrStart ?? c.start, e: c.asrEnd ?? c.end, text: c.text }))
+    // 区間をまたぐ文は、本物の Whisper と同じく、その区間で話している句だけを返す（phrases がある正解のとき）
+    const chunks = T.filter(c => c.start < end && c.end > m.offset).map(c => {
+      if (!c.phrases) return { s: c.asrStart ?? c.start, e: c.asrEnd ?? c.end, text: c.text };
+      const ps = c.phrases.filter(p => (p.start + p.end) / 2 >= m.offset && (p.start + p.end) / 2 < end);
+      if (!ps.length) return null;
+      const first = ps[0] === c.phrases[0], last = ps[ps.length - 1] === c.phrases[c.phrases.length - 1];
+      const text = ps.length === c.phrases.length ? c.text : ps.map(p => p.text).join('');
+      return { s: first ? (c.asrStart ?? c.start) : ps[0].start, e: last ? (c.asrEnd ?? c.end) : ps[ps.length - 1].end, text };
+    }).filter(Boolean)
       .map(c => ({ start: Math.max(0, c.s - m.offset), end: Math.min(end, c.e) - m.offset, text: c.text }));
     setTimeout(() => self.postMessage({ type: 'result', id: m.id, chunks }), ${reloadAt === 'asr' ? 1500 : 0});
   }

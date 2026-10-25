@@ -47,8 +47,15 @@ self.onmessage = e => {
     self.postMessage({ type: 'loaded', device: 'wasm' });
   } else if (m.type === 'run') {
     const end = m.offset + m.audio.length / 16000;
-    const chunks = T.filter(c => c.start < end && c.end > m.offset)
-      .map(c => ({ s: c.asrStart ?? c.start, e: c.asrEnd ?? c.end, text: c.text }))
+    // 区間をまたぐ文は、本物の Whisper と同じく、その区間で話している句だけを返す（phrases がある正解のとき）
+    const chunks = T.filter(c => c.start < end && c.end > m.offset).map(c => {
+      if (!c.phrases) return { s: c.asrStart ?? c.start, e: c.asrEnd ?? c.end, text: c.text };
+      const ps = c.phrases.filter(p => (p.start + p.end) / 2 >= m.offset && (p.start + p.end) / 2 < end);
+      if (!ps.length) return null;
+      const first = ps[0] === c.phrases[0], last = ps[ps.length - 1] === c.phrases[c.phrases.length - 1];
+      const text = ps.length === c.phrases.length ? c.text : ps.map(p => p.text).join('');
+      return { s: first ? (c.asrStart ?? c.start) : ps[0].start, e: last ? (c.asrEnd ?? c.end) : ps[ps.length - 1].end, text };
+    }).filter(Boolean)
       .map(c => ({ start: Math.max(0, c.s - m.offset), end: Math.min(end, c.e) - m.offset, text: c.text }));
     setTimeout(() => self.postMessage({ type: 'result', id: m.id, chunks }), ${killAt.startsWith('asr') ? 4000 : 300});
   }
@@ -179,6 +186,37 @@ try {
       const s = window.amityDebug;
       return `${s.selected.size}場面・${s.units.filter(u => s.selected.has(u.id)).reduce((a, u) => a + u.duration, 0).toFixed(1)}秒`;
     }));
+    if (process.argv.includes('--plan-only')) {
+      // 書き出さずに、選んだ場面の範囲で、途中で切れた文がないかだけ確かめる
+      const pieces = await page.evaluate(() => {
+        const s = window.amityDebug;
+        return s.units.filter(u => s.selected.has(u.id)).flatMap(u => u.pieces.map(p => [p.start, p.end]));
+      });
+      const cov = (a, b) => pieces.reduce((t, [s, e]) => t + Math.max(0, Math.min(b, e) - Math.max(a, s)), 0);
+      const partial = transcript.filter(t => !t.retake).filter(t => {
+        const st = t.phrases.map(p => cov(p.start, p.end) > 0.02);
+        return st.some(Boolean) && !st.every(Boolean);
+      });
+      const missingAll = transcript.filter(t => !t.retake && t.phrases.every(p => cov(p.start, p.end) <= 0.02));
+      report.push(`途中で切れた文: ${partial.length}件 ${partial.map(t => t.start.toFixed(1) + ' ' + t.text).join(' / ')}`);
+      report.push(`まったく入らなかった文（言い直し等を除く）: ${missingAll.length}件 ${missingAll.slice(0, 5).map(t => t.start.toFixed(1) + ' ' + t.text).join(' / ')}`);
+      if (process.env.DUMP_AT) {
+        const t = Number(process.env.DUMP_AT);
+        console.log(JSON.stringify(await page.evaluate(t => {
+          const s = window.amityDebug, near = r => r.end > t - 4 && r.start < t + 6;
+          const f = x => +x.toFixed(2);
+          return {
+            voice: s.speech.voice.filter(near).map(r => [f(r.start), f(r.end)]),
+            sounds: s.speech.sounds.filter(near).map(r => [f(r.start), f(r.end), f(r.density)]),
+            chunks: s.chunks.filter(near).map(c => [f(c.start), f(c.end), c.text]),
+            units: s.units.filter(near).map(u => [u.id, u.kind, f(u.start), f(u.end), u.pieces.map(p => [f(p.start), f(p.end)]), u.text, u.excluded || '']),
+            rms: Array.from(s.rmsDb.slice(Math.floor((t - 1) / 0.05), Math.floor((t + 3) / 0.05))).map(v => Math.round(v)),
+            thr: [f(s.speech.threshold), f(s.speech.low), f(s.speech.floor)],
+          };
+        }, t), null, 0));
+      }
+      throw new Error('PLAN_ONLY_DONE');
+    }
     const tr = Date.now();
     await page.click('#btnRender');
     page.__renderStart = tr;
@@ -261,14 +299,21 @@ try {
       return out;
     });
     report.push('端末内の保存データ: ' + files.join(', '));
-    const b64 = await page.evaluate(async () => {
-      const buf = new Uint8Array(await window.amityDebug.blob.arrayBuffer());
-      let s = '';
-      for (let i = 0; i < buf.length; i += 0x8000) s += String.fromCharCode(...buf.subarray(i, i + 0x8000));
-      return btoa(s);
-    });
+    // 完成したMP4を少しずつ取り出す（一度に取り出すと、テストのためだけにページのメモリを大きく使ってしまう）
+    phase += ':取り出し（テスト用）';
     const outFile = path.join(dir, `out-${tag}.mp4`);
-    fs.writeFileSync(outFile, Buffer.from(b64, 'base64'));
+    const size = await page.evaluate(() => window.amityDebug.blob.size);
+    const fd = fs.openSync(outFile, 'w');
+    for (let off = 0; off < size; off += 4 * 1024 * 1024) {
+      const b64 = await page.evaluate(async ({ off, len }) => {
+        const buf = new Uint8Array(await window.amityDebug.blob.slice(off, off + len).arrayBuffer());
+        let s = '';
+        for (let i = 0; i < buf.length; i += 0x8000) s += String.fromCharCode(...buf.subarray(i, i + 0x8000));
+        return btoa(s);
+      }, { off, len: 4 * 1024 * 1024 });
+      fs.writeSync(fd, Buffer.from(b64, 'base64'));
+    }
+    fs.closeSync(fd);
     const tl = await page.evaluate(() => window.amityDebug.timeline.map(c => ({ outStart: c.outStart, dur: c.outDuration, text: c.text, pieces: c.pieces.map(p => ({ srcStart: p.srcStart, frames: p.frames, outStart: p.outStart })) })));
     fs.writeFileSync(path.join(dir, `timeline-${tag}.json`), JSON.stringify(tl));
     await page.screenshot({ path: path.join(dir, `${tag}-result.png`), fullPage: true });
@@ -285,6 +330,8 @@ try {
     await ctx.close();
     break;
   }
+} catch (err) {
+  if (err.message !== 'PLAN_ONLY_DONE') throw err;
 } finally {
   clearInterval(memTimer);
   killBrowser();

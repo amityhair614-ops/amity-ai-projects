@@ -177,14 +177,33 @@ export function detectSpeech(rmsDb, opts = {}) {
   const merged = [];
   for (const r of raw) {
     const last = merged[merged.length - 1];
-    if (last && r.start - last.end < minGap) { last.end = r.end; last.on += r.on; }
-    else merged.push({ ...r });
+    if (last && r.start - last.end < minGap) { last.end = r.end; last.on += r.on; last.runs.push(r); }
+    else merged.push({ ...r, runs: [r] });
+  }
+  // ハサミの音のすぐ後に話し始めた（ハサミの音と声がつながった）区間は、前後の「短い音（1〜2コマ）が2つ以上続く部分」を
+  // 切り離してから判定する（声の前の短い音が1つだけなら、言葉の出始めかもしれないので残す）
+  const SHORT_RUN = 2;
+  const split = [];
+  for (const r of merged) {
+    const long = r.runs.filter(x => x.on > SHORT_RUN);
+    let a = long.length ? r.runs.indexOf(long[0]) : 0, b = long.length ? r.runs.indexOf(long[long.length - 1]) : r.runs.length - 1;
+    if (a < 2) a = 0;
+    if (r.runs.length - 1 - b < 2) b = r.runs.length - 1;
+    if (!long.length || (a === 0 && b === r.runs.length - 1)) { split.push(r); continue; }
+    const part = runs => ({ start: runs[0].start, end: runs[runs.length - 1].end, on: runs.reduce((s, x) => s + x.on, 0), runs });
+    if (a > 0) split.push(part(r.runs.slice(0, a)));
+    split.push(part(r.runs.slice(a, b + 1)));
+    if (b < r.runs.length - 1) split.push(part(r.runs.slice(b + 1)));
   }
   const voice = [], sounds = [];
-  for (const r of merged.filter(r => r.end - r.start >= minLen)) {
-    // 大きな音の割合が低い区間は、短い音（ハサミなど）がとびとびに鳴っているだけ
+  for (const r of split) {
     const density = r.on * FRAME_SEC / (r.end - r.start);
-    if (density < (opts.minDensity ?? 0.5)) { sounds.push({ start: r.start, end: r.end, density }); continue; }
+    if (r.end - r.start < minLen) {
+      if (density < 1 && r.runs.length > 1) sounds.push({ start: r.start, end: r.end, density });
+      continue;
+    }
+    // 大きな音の割合が低い区間は、短い音（ハサミなど）がとびとびに鳴っているだけ
+    if (density < (opts.minDensity ?? 0.5) || r.runs.every(x => x.on <= SHORT_RUN)) { sounds.push({ start: r.start, end: r.end, density }); continue; }
     let a = Math.round(r.start / FRAME_SEC), b = Math.round(r.end / FRAME_SEC);
     const prevEnd = voice.length ? Math.round(voice[voice.length - 1].end / FRAME_SEC) : 0;
     for (let k = 0; k < 6 && a - 1 > prevEnd && rmsDb[a - 1] > low; k++) a--;       // 出始め: 最大0.3秒
