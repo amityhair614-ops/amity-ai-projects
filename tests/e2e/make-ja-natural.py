@@ -1,6 +1,9 @@
 """自動カットの自然さを測るための、実際の撮影に近い話し方のテスト動画を作る。
 
-  python3 tests/e2e/make-ja-natural.py OUT_DIR [--seed N]
+  python3 tests/e2e/make-ja-natural.py OUT_DIR [--seed N] [--repeat N] [--bitrate 12M] [--size 1920x1080]
+
+--repeat で台本をくり返して長い動画（10〜15分）を作る。--bitrate を付けると映像に細かいノイズを加えて、
+実際の撮影に近いファイルの大きさにする（端末内への保存・読み込みの量を確かめるため）。
 
 make-ja-beauty.py との違い（iPhone で撮った美容師の解説に近づける）:
 - 文の途中に「考えながら切る」長い間（0.6〜1.6秒）が入る。句の間・文の間の長さもばらばら
@@ -18,6 +21,10 @@ import pyopenjtalk
 ap = argparse.ArgumentParser()
 ap.add_argument('out')
 ap.add_argument('--seed', type=int, default=7)
+ap.add_argument('--repeat', type=int, default=1)
+ap.add_argument('--bitrate', default=None)
+ap.add_argument('--size', default='1920x1080', help='記録する大きさ（横長。回転情報で縦に表示する）')
+ap.add_argument('--name', default=None)
 args = ap.parse_args()
 os.makedirs(args.out, exist_ok=True)
 RATE = 48000
@@ -66,7 +73,7 @@ def breath(n):
 
 parts, truth, action, snips = [], [], [], []
 t = 0.9
-for say, text, kind in SCRIPT:
+for say, text, kind in SCRIPT * args.repeat:
     if isinstance(say, tuple):
         action.append((t, t + say[1]))
         k = t + 0.3
@@ -102,7 +109,7 @@ for say, text, kind in SCRIPT:
 DURATION = round(t + 1.2, 2)
 
 # 話している途中のハサミの音（作業しながら説明する）
-for tr in truth[4:6]:
+for tr in truth[4:6] + truth[4 + len(SCRIPT):6 + len(SCRIPT)]:
     snips.append(((tr['start'] + tr['end']) / 2, 0.12))
 
 # Whisper のように少しずれた時刻（出始めは早め、終わりは遅め。次の文とは重ならない）
@@ -124,7 +131,7 @@ for s, a in snips:
     i, m = int(s * RATE), int(0.015 * RATE)
     audio[i:i + m] += (rng.standard_normal(m) * a * np.hanning(m)).astype(np.float32)
 
-name = 'natural'
+name = args.name or ('natural' if args.repeat == 1 else f'natural-x{args.repeat}')
 wav = os.path.join(args.out, name + '.wav')
 with wave.open(wav, 'wb') as w:
     w.setnchannels(2); w.setsampwidth(2); w.setframerate(RATE)
@@ -132,7 +139,7 @@ with wave.open(wav, 'wb') as w:
     w.writeframes(np.repeat(pcm[:, None], 2, axis=1).tobytes())
 
 # 映像: make-ja-beauty.py と同じ（縦 1080×1920・回転情報つき。作業中は手元の図形が大きく動く）
-W, H = 1920, 1080
+W, H = map(int, args.size.split('x'))
 DW, DH = H, W
 moving = '+'.join(f'between(t,{s:.2f},{e:.2f})' for s, e in action)
 amp = f'if({moving},1,0.01)'
@@ -142,7 +149,8 @@ box = DW // 8
 rx, ry = f'{DH}-{dy}-{box}/2', f'{dx}-{box}/6'
 font = '/usr/share/fonts/opentype/ipafont-gothic/ipag.ttf'
 vf = (f"[0][1]overlay=x='{rx}':y='{ry}'"
-      f",drawtext=fontfile={font}:text='%{{pts\\:hms}}':x=20:y=20:fontsize=54:fontcolor=white[v]")
+      + (",noise=alls=12:allf=t" if args.bitrate else "")
+      + f",drawtext=fontfile={font}:text='%{{pts\\:hms}}':x=20:y=20:fontsize=54:fontcolor=white[v]")
 tmp = os.path.join(args.out, name + '.tmp.mov')
 out = os.path.join(args.out, name + '.mov')
 subprocess.run(['ffmpeg', '-v', 'error', '-y',
@@ -150,6 +158,7 @@ subprocess.run(['ffmpeg', '-v', 'error', '-y',
                 '-f', 'lavfi', '-i', f'color=c=0xd8d8e0:s={box}x{box // 3}:r=30:d={DURATION}',
                 '-i', wav, '-filter_complex', vf, '-map', '[v]', '-map', '2:a',
                 '-c:v', 'libx264', '-preset', 'veryfast', '-pix_fmt', 'yuv420p', '-g', '30',
+                *(['-b:v', args.bitrate, '-maxrate', args.bitrate, '-bufsize', args.bitrate] if args.bitrate else []),
                 '-c:a', 'aac', '-b:a', '160k', '-shortest', tmp], check=True)
 subprocess.run(['ffmpeg', '-v', 'error', '-y', '-display_rotation', '90', '-i', tmp, '-c', 'copy', out], check=True)
 os.remove(tmp)

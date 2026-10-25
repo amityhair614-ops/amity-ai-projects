@@ -84,8 +84,15 @@ self.onmessage = e => {
     self.postMessage({ type: 'loaded', device: 'wasm' });
   } else if (m.type === 'run') {
     const end = m.offset + m.audio.length / 16000;
-    const chunks = T.filter(c => c.start < end && c.end > m.offset)
-      .map(c => ({ s: c.asrStart ?? c.start, e: c.asrEnd ?? c.end, text: c.text }))
+    // 区間をまたぐ文は、本物の Whisper と同じく、その区間で話している句だけを返す（phrases がある正解のとき）
+    const chunks = T.filter(c => c.start < end && c.end > m.offset).map(c => {
+      if (!c.phrases) return { s: c.asrStart ?? c.start, e: c.asrEnd ?? c.end, text: c.text };
+      const ps = c.phrases.filter(p => (p.start + p.end) / 2 >= m.offset && (p.start + p.end) / 2 < end);
+      if (!ps.length) return null;
+      const first = ps[0] === c.phrases[0], last = ps[ps.length - 1] === c.phrases[c.phrases.length - 1];
+      const text = ps.length === c.phrases.length ? c.text : ps.map(p => p.text).join('');
+      return { s: first ? (c.asrStart ?? c.start) : ps[0].start, e: last ? (c.asrEnd ?? c.end) : ps[ps.length - 1].end, text };
+    }).filter(Boolean)
       .map(c => ({ start: Math.max(0, c.s - m.offset), end: Math.min(end, c.e) - m.offset, text: c.text }));
     setTimeout(() => self.postMessage({ type: 'result', id: m.id, chunks }), ${reloadAt === 'asr' ? 1500 : 0});
   }
@@ -226,8 +233,10 @@ async function reloadDuring(stage) {
     try { const j = JSON.parse(localStorage.getItem('amity.job.v1')); return j && j.status === 'running' && j.stage === st && (st === 'asr' || j.progress > 0); } catch { return false; }
   }, stage, { timeout: 600000, polling: 50 });
   await page.reload();
-  await page.waitForSelector('#recover:not([hidden])', { timeout: 10000 });
-  const text = await page.$eval('#recoverText', el => el.textContent);
+  // 途中の編集が保存してあれば「途中の編集」の表示、なければ「前回止まった」表示が出る
+  await page.waitForSelector('#recover:not([hidden]), #resumeCard:not([hidden])', { timeout: 10000 });
+  await page.waitForTimeout(500);
+  const text = await page.$eval('#resumeCard', el => (el.hidden ? '' : el.innerText)) || await page.$eval('#recoverText', el => el.textContent);
   const asr = await page.$eval('#optAsr', el => el.checked);
   console.log(`再読み込み後の表示: ${text}`);
   console.log(`字幕の設定: ${asr ? 'ON' : 'OFF'}`);

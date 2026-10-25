@@ -208,3 +208,16 @@ test('言い直した後の発言は残しやすくする', () => {
   assert.ok(redo.redo && redo.reasons.includes('言い直した説明'));
   assert.ok(units[0].excluded && units[1].excluded);
 });
+
+test('ハサミの音のすぐ後に話し始めても、声の区間を失わない（ハサミの音だけを切り離す）', () => {
+  const spans = [];
+  for (let t = 5; t < 8; t += 0.25) spans.push([t, t + 0.05, -18]); // 0.25秒おきのハサミの音
+  spans.push([8.2, 9.5, -20], [9.9, 11, -20]);                        // 0.15秒後に話し始める
+  const { voice, sounds } = detectSpeech(rms(15, spans));
+  assert.ok(voice[0].start >= 8.0 && voice[0].start <= 8.25, JSON.stringify(voice));
+  assert.ok(voice[voice.length - 1].end >= 11, JSON.stringify(voice));
+  assert.ok(sounds.some(s => s.start <= 5.05 && s.end >= 7.7), JSON.stringify(sounds));
+  // 話し始めの前の短い音が1つだけなら（言葉の出始めの可能性）、声の区間に含める
+  const one = detectSpeech(rms(15, [[2.0, 2.1, -20], [2.25, 4, -20]]));
+  assert.ok(one.voice[0].start <= 2.05, JSON.stringify(one.voice));
+});
