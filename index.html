@@ -205,6 +205,13 @@
     .fit.ng { background: var(--warn-soft); color: var(--text); }
     .brief-used { font-size: 13px; color: var(--muted); margin: 8px 0 0; white-space: pre-wrap; }
     .must-tag { font-size: 11px; font-weight: 700; color: var(--accent); background: var(--accent-soft); border-radius: 999px; padding: 1px 8px; white-space: nowrap; }
+    .job { padding: 12px 0; border-top: 1px solid var(--line); }
+    .job:first-child { border-top: 0; padding-top: 0; }
+    .job-head { font-weight: 700; font-size: 15px; word-break: break-all; }
+    .job-meta { font-size: 12px; color: var(--muted); margin-top: 2px; }
+    .job-lines { list-style: none; margin: 6px 0 0; padding: 0; font-size: 13px; }
+    .job-btns { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+    .need-file { font-size: 14px; padding: 10px 12px; border-radius: 10px; background: var(--warn-soft); margin: 10px 0 0; }
     footer { text-align: center; font-size: 12px; color: var(--muted); margin-top: 32px; }
   </style>
 </head>
@@ -215,7 +222,7 @@
     <p class="lead">カット解説動画から、字幕付きのYouTube動画を自動で作ります。動画の内容や完成時間を入力すると、それに合わせて場面を選びます。処理はすべてこのiPhoneの中で行い、動画はどこにも送信しません。</p>
   </header>
 
-  <div class="banner"><b>テスト版です。</b> 編集前に「動画の内容・完成時間・編集スタイル」を入力できるようにしました（入力は任意）。<b>今回の追加は、iPhone実機ではまだ確認できていません。</b>うまく動かない場合は、下の「診断情報」をコピーして送ってください。字幕・ズームはそれぞれOFFにできます。</div>
+  <div class="banner"><b>テスト版です。</b> 編集の途中でSafariを閉じても、もう一度開くと続きから再開できるようにしました（閉じている間は進みません）。<b>今回の追加は、iPhone実機ではまだ確認できていません。</b>うまく動かない場合は、下の「診断情報」をコピーして送ってください。字幕・ズームはそれぞれOFFにできます。</div>
 
   <div class="recover" id="recover" role="alert" hidden>
     <b>前回の処理が途中で止まりました</b>
@@ -223,6 +230,18 @@
     <button class="btn secondary small" id="recoverClose" type="button">閉じる</button>
   </div>
   <p class="error" id="globalError" role="alert" hidden></p>
+  <p class="warnings" id="notice" role="status" hidden></p>
+
+  <section class="card" id="resumeCard" aria-labelledby="resume-title" hidden>
+    <h2 id="resume-title">途中の編集</h2>
+    <p class="note" style="margin-top:0">Safariを閉じたり、ほかのアプリに切り替えたりすると、編集は<b>一時停止</b>します（閉じている間は進みません）。
+      もう一度開いて「続きから再開」を押すと、保存してある所から続けます（解析の済んだ段階・書き終えた区間はやり直しません）。</p>
+    <div id="jobList"></div>
+    <p class="note" id="storageText"></p>
+    <p class="note"><b>保存データは必ず残るとは限りません。</b>iPhoneの空き容量が少ないとき、Safariの「履歴とWebサイトデータを消去」をしたとき、長い間使わなかったときなどに消えることがあります。
+      元の動画は写真アプリに残しておき、完成したら早めに「iPhoneに保存」してください。消えてしまった場合は、元の動画からもう一度編集できます。
+      ホーム画面に追加（共有 →「ホーム画面に追加」）して、そこから開くと消えにくくなります。</p>
+  </section>
 
   <section class="card" aria-labelledby="status-title">
     <h2 id="status-title">機能の状況</h2>
@@ -238,6 +257,7 @@
       <li><span>字幕のデザイン<small>白のゴシック体・最大2行・薄い影・ふわっと表示。手元に重ならない位置に置き、言葉の途中で改行しない</small></span><span class="badge warn">パソコンで確認</span></li>
       <li><span>自然なズーム<small>手元がまとまって動く場面だけ、ゆっくり1.03〜1.08倍。間隔をあけ、手元が切れる場合はしない。色や質感の加工はしません</small></span><span class="badge warn">パソコンで確認</span></li>
       <li><span>動画の内容・完成時間・編集スタイルの入力<small>入力した言葉で場面の点数を上げ、「必ず残したい場面」は時間を超えても残します。収まらないときは理由と予定時間を表示</small></span><span class="badge warn">パソコンで確認</span></li>
+      <li><span>途中から再開<small>Safariを閉じると一時停止し、もう一度開くと続きから再開します（閉じている間は進みません）。解析の結果と書き終えた区間を端末内に保存し、やり直しません。保存データは消えることがあります</small></span><span class="badge warn">パソコンで確認</span></li>
       <li><span>10分の通常動画（横16:9）の自動編集</span><span class="badge pending">準備中</span></li>
     </ul>
   </section>
@@ -259,6 +279,7 @@
         <dt>形式</dt><dd id="codec">-</dd>
       </dl>
     </div>
+    <p class="need-file" id="resumeNeedFile" role="status" hidden></p>
     <p class="error" id="fileError" hidden></p>
   </section>
 
@@ -344,6 +365,7 @@
       <label class="option"><input type="checkbox" id="optZoom" checked><span>自然なズーム<br><small class="note" style="margin:0">手元がまとまって動く場面だけ、ゆっくり1.03〜1.08倍に寄ります（間隔をあけて、ハサミや手元が切れない場合のみ）</small></span></label>
     </div>
     <button class="btn block" id="btnRender">この内容でMP4を書き出す</button>
+    <p class="note">書き出しは数秒ずつの区間に分けて進め、書き終えた区間はこのiPhoneの中に保存します。途中でSafariを閉じた場合は、もう一度開いて「途中の編集」の「続きから再開」を押してください。</p>
     <div class="bar" id="renderBar" hidden><div></div></div>
     <p class="progress-text" id="renderText"></p>
     <p class="error" id="renderError" hidden></p>
@@ -355,6 +377,8 @@
     <dl><dt>長さ</dt><dd id="outDuration">-</dd><dt>サイズ</dt><dd id="outSize">-</dd><dt>形式</dt><dd>MP4（H.264）1080×1920</dd><dt>演出</dt><dd id="outStyle">-</dd></dl>
     <button class="btn block" id="btnSave">iPhoneに保存</button>
     <a class="btn block secondary" id="btnDownload" style="text-align:center;text-decoration:none" download>ファイルとしてダウンロード</a>
+    <p class="note">完成した動画は、このiPhoneの中（Safariの保存領域）にも残しています。消えることがあるので、早めに「iPhoneに保存」してください。保存が済んだら、下のボタンで端末内の保存データを削除できます。</p>
+    <button class="btn block secondary" id="btnCleanup" type="button">端末内の保存データを削除</button>
     <ol class="howto">
       <li>「iPhoneに保存」を押す</li>
       <li>出てきたメニューで「ビデオを保存」を選ぶ → 写真アプリに保存されます</li>
@@ -380,7 +404,7 @@
     </ul>
   </section>
 
-  <footer>Amity AI動画編集 ・ テスト版 v0.7</footer>
+  <footer>Amity AI動画編集 ・ テスト版 v0.8</footer>
 </main>
 <script type="module" src="js/app.js"></script>
 </body>

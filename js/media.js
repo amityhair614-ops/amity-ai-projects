@@ -7,7 +7,7 @@
 // - 音声は区切りながら読み、解析に必要な 16kHz モノラルだけを残す
 import {
   Input, ALL_FORMATS, BlobSource, AudioBufferSink, EncodedPacketSink, EncodedAudioPacketSource,
-  Output, Mp4OutputFormat, BufferTarget, CanvasSource, AudioBufferSource,
+  Output, Mp4OutputFormat, BufferTarget, StreamTarget, CanvasSource, AudioBufferSource, EncodedVideoPacketSource,
   canEncodeAudio, canEncodeVideo,
 } from 'mediabunny';
 import { registerAacEncoder } from '@mediabunny/aac-encoder';
@@ -163,8 +163,9 @@ function massPoint(arr, total, ratio) {
   return arr.length - 1;
 }
 
-// 約1秒ごとにキーフレームだけを展開し、縮小画像で前のコマとの差（手元の動き）を測る
-export async function analyzeMotion(src, onProgress, step = 1) {
+// 約1秒ごとにキーフレームだけを展開し、縮小画像で前のコマとの差（手元の動き）を測る。
+// resume: 前回途中まで解析した結果（{ out, nextT, lastKey }）。onCheckpoint で途中の結果を定期的に渡す（保存用）
+export async function analyzeMotion(src, onProgress, step = 1, { resume = null, onCheckpoint = null, every = 30 } = {}) {
   const packets = new EncodedPacketSink(src.video);
   const landscape = src.width >= src.height;
   const w = landscape ? 96 : 54, h = landscape ? 54 : 96;
@@ -173,9 +174,10 @@ export async function analyzeMotion(src, onProgress, step = 1) {
   const ctx = canvas.getContext('2d', { willReadFrequently: true });
   const painter = new FramePainter(src.rotation, w, h);
   const dec = new FrameDecoder(src.decoderConfig);
-  const out = { times: [], values: [], cx: [], cy: [], box: [] };
+  const out = resume?.out ?? { times: [], values: [], cx: [], cy: [], box: [] };
   const cols = new Float32Array(w), rows = new Float32Array(h);
-  let prev = null, lastKey = -1;
+  // 再開したときは、最初に展開したコマを「前のコマ」にする（そのコマの動きの値だけ欠ける）
+  let prev = null, lastKey = resume?.lastKey ?? -1;
 
   const onFrame = async frame => {
     painter.draw(ctx, frame, full);
@@ -203,7 +205,8 @@ export async function analyzeMotion(src, onProgress, step = 1) {
   };
 
   try {
-    for (let t = 0; t < src.duration; t += step) {
+    let n = 0;
+    for (let t = resume?.nextT ?? 0; t < src.duration; t += step) {
       const kp = await packets.getKeyPacket(t, { verifyKeyPackets: true });
       if (kp && kp.timestamp > lastKey + step * 0.5) {
         lastKey = kp.timestamp;
@@ -212,6 +215,11 @@ export async function analyzeMotion(src, onProgress, step = 1) {
         await dec.drain(onFrame, 1);
       }
       onProgress?.(Math.min(1, (t + step) / src.duration));
+      // 送ったコマがすべて解析済みになった時点の結果を渡す（その次の時刻から再開できる）
+      if (onCheckpoint && ++n % every === 0) {
+        await dec.flush(onFrame);
+        await onCheckpoint({ out, nextT: t + step, lastKey });
+      }
     }
     await dec.flush(onFrame);
   } finally {
@@ -393,18 +401,56 @@ function drawSubtitle(ctx, page, t) {
   ctx.restore();
 }
 
-// timeline: plan.buildTimeline の結果。gainDb: 音量補正
-export async function renderShort(src, timeline, { gainDb = 0, onProgress } = {}) {
+// ---------- 区間ごとの書き出しと、完成したMP4の組み立て ----------
+//
+// 途中でSafariが閉じられても続きから再開できるよう、書き出しを2段階に分ける。
+// 1. 映像を数秒ずつの「区間」に分けて書き出し、区間ごとに端末内のファイルに保存する（renderSegment）
+//    → 途中で止まっても、保存済みの区間はやり直さない（書きかけの区間だけやり直す）
+// 2. 保存した区間の映像を、作り直さずに（再エンコードせずに）つなぎ、
+//    音声は元の動画から最初から最後まで通して作って、1つのMP4にする（assembleOutput）
+//    → 音声を区間ごとに作ると、つなぎ目ごとに AAC の先頭の無音（エンコーダーの遅延）が入って「プツッ」となるため
+// どちらも書き出し先はファイル（StreamTarget）で、動画全体をメモリに持たない（10分の動画でも使うメモリは一定）
+
+async function checkVideoEncoder() {
   if (!(await canEncodeVideo('avc', { width: OUT_W, height: OUT_H }))) {
     throw new Error('この端末では H.264 の書き出しに対応していません。');
   }
-  const withAudio = !!src.audio;
-  if (withAudio && !(await canEncodeAudio('aac'))) {
-    log('AACの書き出しに端末が対応していないため、内蔵のAACエンコーダーを使用');
-    registerAacEncoder();
-  }
+}
 
-  const output = new Output({ format: new Mp4OutputFormat({ fastStart: 'in-memory' }), target: new BufferTarget() });
+// ピース piece のうち、出力のコマ f0〜f1 を描く。コマごとに emit(出力の時刻) を呼ぶ（その時点の画像は base にある）
+async function drawFrames(src, packets, painter, bctx, clip, piece, f0, f1, emit) {
+  const from = piece.srcStart + f0 / FPS;
+  const n = f1 - f0;
+  const end = from + n / FPS;
+  let k = 0;
+  const out = async () => { await emit(piece.outStart + (f0 + k) / FPS); k++; };
+  // 新しいコマが来たら、それより前の時刻の出力コマを直前の画像で埋めてから描き替える
+  const onFrame = async frame => {
+    const ts = frame.timestamp / 1e6;
+    while (k < n && from + k / FPS < ts - 1e-3) await out();
+    // ズーム中は、このコマの出力時刻に合わせた枠で切り抜く
+    if (k < n) painter.draw(bctx, frame, cropAt(clip, piece.outStart + f0 / FPS + Math.max(0, ts - from)));
+  };
+  const dec = new FrameDecoder(src.decoderConfig);
+  try {
+    let p = (await packets.getKeyPacket(from, { verifyKeyPackets: true })) ?? (await packets.getFirstPacket());
+    // B フレームの並べ替えを考えて少し先まで送る
+    while (p && p.timestamp < end + 0.5 && k < n) {
+      dec.decoder.decode(p.toEncodedVideoChunk());
+      await dec.drain(onFrame, 2);
+      p = await packets.getNextPacket(p);
+    }
+    await dec.flush(onFrame);
+  } finally {
+    dec.close();
+  }
+  while (k < n) await out();
+}
+
+// 区間 seg（resume.planSegments の結果の1つ）の映像だけを、stream（ファイル）に MP4 として書き出す
+export async function renderSegment(src, timeline, seg, stream, { onProgress } = {}) {
+  await checkVideoEncoder();
+  const output = new Output({ format: new Mp4OutputFormat({ fastStart: false }), target: new StreamTarget(stream) });
   const canvas = new OffscreenCanvas(OUT_W, OUT_H);
   const ctx = canvas.getContext('2d');
   const base = new OffscreenCanvas(OUT_W, OUT_H); // 字幕を載せる前のコマ
@@ -412,82 +458,102 @@ export async function renderShort(src, timeline, { gainDb = 0, onProgress } = {}
   bctx.fillStyle = '#000';
   bctx.fillRect(0, 0, OUT_W, OUT_H);
   // 髪の質感がつぶれないよう、ビットレートは高め（約 75MB/分）。色の加工はしない
-  const videoSource = new CanvasSource(canvas, { codec: 'avc', bitrate: 10_000_000, keyFrameInterval: 2 });
+  const videoSource = new CanvasSource(canvas, { codec: 'avc', bitrate: VIDEO_BITRATE, keyFrameInterval: 2 });
   output.addVideoTrack(videoSource, { frameRate: FPS });
-  let audioSource = null;
-  if (withAudio) {
-    audioSource = new AudioBufferSource({ codec: 'aac', bitrate: 160_000 });
-    output.addAudioTrack(audioSource);
-  }
   await output.start();
-
-  const gain = Math.pow(10, gainDb / 20);
-  const totalFrames = timeline.reduce((s, c) => s + c.pieces.reduce((a, p) => a + p.frames, 0), 0);
   const packets = new EncodedPacketSink(src.video);
   const painter = new FramePainter(src.rotation, OUT_W, OUT_H);
-  const stitcher = new AudioStitcher();
-  const lastPiece = timeline[timeline.length - 1]?.pieces.at(-1);
   let done = 0;
-
   try {
-    for (const clip of timeline) {
-      for (const piece of clip.pieces) {
-        const dur = piece.frames / FPS;
-        const end = piece.srcStart + dur;
-        let audio = null, sent = 0, k = 0;
-        if (withAudio) {
-          // つなぎ目を重ねるため、少し長めに読む（次のピースの頭と入れ替える）
-          const raw = await readAudioSafe(src, piece.srcStart, dur + AudioStitcher.extra());
-          applyGain(raw.data, gain);
-          const len = Math.round(dur * raw.sr);
-          audio = { sr: raw.sr, data: stitcher.add(raw.data, raw.sr, { len, contiguous: piece.contiguous, last: piece === lastPiece }) };
-        }
-        // 出力の k 番目のコマを、いま base にある画像で作る
-        const emit = async () => {
-          const t = piece.outStart + k / FPS;
-          ctx.drawImage(base, 0, 0);
-          drawSubtitle(ctx, clip.subtitles.find(p => t >= p.start && t < p.end), t);
-          if (audio) {
-            // 音声は映像と交互に少しずつ渡す
-            const until = Math.min(audio.data[0].length, Math.round(((k + 1) / FPS + 0.5) * audio.sr));
-            if (until - sent >= audio.sr * 0.5 || until === audio.data[0].length) {
-              if (until > sent) await audioSource.add(toAudioBuffer(audio.data, audio.sr, sent, until));
-              sent = until;
-            }
-          }
-          await videoSource.add(t, 1 / FPS);
-          k++; done++;
-          onProgress?.(done / totalFrames);
-        };
-        // 新しいコマが来たら、それより前の時刻の出力コマを直前の画像で埋めてから描き替える
-        const onFrame = async frame => {
-          const ts = frame.timestamp / 1e6;
-          while (k < piece.frames && piece.srcStart + k / FPS < ts - 1e-3) await emit();
-          // ズーム中は、このコマの出力時刻に合わせた枠で切り抜く
-          if (k < piece.frames) painter.draw(bctx, frame, cropAt(clip, piece.outStart + Math.max(0, ts - piece.srcStart)));
-        };
-
-        const dec = new FrameDecoder(src.decoderConfig);
-        try {
-          let p = (await packets.getKeyPacket(piece.srcStart, { verifyKeyPackets: true })) ?? (await packets.getFirstPacket());
-          // B フレームの並べ替えを考えて少し先まで送る
-          while (p && p.timestamp < end + 0.5 && k < piece.frames) {
-            dec.decoder.decode(p.toEncodedVideoChunk());
-            await dec.drain(onFrame, 2);
-            p = await packets.getNextPacket(p);
-          }
-          await dec.flush(onFrame);
-        } finally {
-          dec.close();
-        }
-        while (k < piece.frames) await emit();
-        if (audio && sent < audio.data[0].length) await audioSource.add(toAudioBuffer(audio.data, audio.sr, sent, audio.data[0].length));
-      }
+    for (const s of seg.slices) {
+      const clip = timeline[s.c];
+      await drawFrames(src, packets, painter, bctx, clip, clip.pieces[s.p], s.f0, s.f1, async t => {
+        ctx.drawImage(base, 0, 0);
+        drawSubtitle(ctx, clip.subtitles.find(p => t >= p.start && t < p.end), t);
+        await videoSource.add(t - seg.outStart, 1 / FPS);
+        done++;
+        onProgress?.(done / seg.frames);
+      });
     }
     await output.finalize();
   } catch (err) {
     await output.cancel().catch(() => {});
     throw err;
   }
-  return new Blob([output.target.buffer], { type: 'video/mp4' });
+}
+
+export const VIDEO_BITRATE = 10_000_000;
+export const AUDIO_BITRATE = 160_000;
+
+function sameConfig(a, b) {
+  if (!a || !b || a.codec !== b.codec || a.codedWidth !== b.codedWidth || a.codedHeight !== b.codedHeight) return false;
+  const da = a.description ? new Uint8Array(ArrayBuffer.isView(a.description) ? a.description.buffer.slice(a.description.byteOffset, a.description.byteOffset + a.description.byteLength) : a.description) : null;
+  const db = b.description ? new Uint8Array(ArrayBuffer.isView(b.description) ? b.description.buffer.slice(b.description.byteOffset, b.description.byteOffset + b.description.byteLength) : b.description) : null;
+  if (!da || !db) return !da && !db;
+  return da.length === db.length && da.every((v, i) => v === db[i]);
+}
+
+// 保存した区間の映像をつなぎ、音声を通して作って、stream（ファイル）に完成したMP4を書き出す。
+// getSegment(i): i 番目の区間のファイル（File）
+export async function assembleOutput(src, timeline, segments, getSegment, stream, { gainDb = 0, onProgress } = {}) {
+  const withAudio = !!src.audio;
+  if (withAudio && !(await canEncodeAudio('aac'))) {
+    log('AACの書き出しに端末が対応していないため、内蔵のAACエンコーダーを使用');
+    registerAacEncoder();
+  }
+  const output = new Output({ format: new Mp4OutputFormat({ fastStart: false }), target: new StreamTarget(stream) });
+  const videoSource = new EncodedVideoPacketSource('avc');
+  output.addVideoTrack(videoSource, { frameRate: FPS });
+  let audioSource = null;
+  if (withAudio) {
+    audioSource = new AudioBufferSource({ codec: 'aac', bitrate: AUDIO_BITRATE });
+    output.addAudioTrack(audioSource);
+  }
+  await output.start();
+  const gain = Math.pow(10, gainDb / 20);
+  const stitcher = new AudioStitcher();
+  const lastSeg = segments[segments.length - 1];
+  let firstConfig = null;
+  try {
+    for (const seg of segments) {
+      // 音声: この区間の分を、前の区間から続けて作る（つなぎ目のクロスフェードは区間をまたいでも同じ）
+      if (withAudio) {
+        for (const s of seg.slices) {
+          const piece = timeline[s.c].pieces[s.p];
+          const dur = (s.f1 - s.f0) / FPS;
+          const raw = await readAudioSafe(src, piece.srcStart + s.f0 / FPS, dur + AudioStitcher.extra());
+          applyGain(raw.data, gain);
+          const len = Math.round(dur * raw.sr);
+          const last = seg === lastSeg && s === seg.slices[seg.slices.length - 1];
+          const data = stitcher.add(raw.data, raw.sr, { len, contiguous: s.f0 > 0 || piece.contiguous, last });
+          await audioSource.add(toAudioBuffer(data, raw.sr, 0, len));
+        }
+      }
+      // 映像: 保存した区間のデータを、時刻だけずらしてそのまま入れる
+      const file = await getSegment(seg.index);
+      if (!file) throw new Error(`書き出した区間 ${seg.index + 1} の保存データが見つかりません。`);
+      const input = new Input({ source: new BlobSource(file, { maxCacheSize: 4 * 1024 * 1024 }), formats: ALL_FORMATS });
+      try {
+        const track = await input.getPrimaryVideoTrack();
+        const config = await track.getDecoderConfig();
+        if (!firstConfig) firstConfig = config;
+        else if (!sameConfig(firstConfig, config)) {
+          throw Object.assign(new Error('区間ごとの映像の形式が一致しないため、つなげられませんでした。'), { name: 'SegmentMismatch' });
+        }
+        const sink = new EncodedPacketSink(track);
+        let first = seg === segments[0];
+        for (let p = await sink.getFirstPacket(); p; p = await sink.getNextPacket(p)) {
+          await videoSource.add(p.clone({ timestamp: p.timestamp + seg.outStart }), first ? { decoderConfig: config } : undefined);
+          first = false;
+        }
+      } finally {
+        input.dispose();
+      }
+      onProgress?.((seg.index + 1) / segments.length);
+    }
+    await output.finalize();
+  } catch (err) {
+    await output.cancel().catch(() => {});
+    throw err;
+  }
 }

@@ -1,6 +1,13 @@
 import {
-  checkSupport, openVideo, closeVideo, analyzeAudio, analyzeMotion, renderShort, getAudioMode, ASR_RATE,
+  checkSupport, openVideo, closeVideo, analyzeAudio, analyzeMotion, renderSegment, assembleOutput, getAudioMode, ASR_RATE,
 } from './media.js';
+import {
+  openWritable, copyIn, readFile, removeFile, listFiles, storageInfo, requestPersist, isStorageFull,
+  saveJob, loadJob, listJobs, deleteJob,
+} from './jobstore.js';
+import {
+  planSegments, renderBytes, spaceCheck, formatBytes, describeJob, jobIdFor, sameSource, MB,
+} from './resume.js';
 import {
   detectSpeech, transcriptionWindows, buildUnits, selectUnits, buildTimeline, formatTime, FRAME_SEC,
   cleanSubtitle, alignSentences, refineSubtitleTiming, fineSpeech,
@@ -15,6 +22,17 @@ import {
 
 const $ = id => document.getElementById(id);
 const state = {};
+// 端末内に保存するファイルの名前（作業ごとのフォルダの中）
+const SOURCE_NAME = 'source';
+const PCM_NAME = 'pcm.f32';
+const OUTPUT_NAME = 'output.mp4';
+// ほかのアプリに切り替えた・画面を消した回数（書き出しが止められた可能性があるかを判断する）
+let hiddenCount = 0;
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) { hiddenCount++; log('画面を離れました（処理は一時停止します）'); }
+  else log('画面に戻りました');
+});
+Object.defineProperty(state, 'hiddenCount', { get: () => hiddenCount, enumerable: false });
 window.amityDebug = state; // 動作確認用
 
 const STAGE_LABELS = {
@@ -92,11 +110,12 @@ if (previousJob) {
   const label = j.label || STAGE_LABELS[j.stage] || j.stage || '開始直後';
   const file = j.info && j.info.file ? `（${j.info.file}）` : '';
   const lines = [
-    `前回の処理は「${label}${j.progress ? ' ' + j.progress + '%' : ''}」の途中で止まり、ページが再読み込みされました${file}。`,
-    'iPhoneのメモリが足りなくなった可能性が高いです。',
+    `前回の処理は「${label}${j.progress ? ' ' + j.progress + '%' : ''}」の途中で止まりました${file}。`,
+    'Safariを閉じたか、iPhoneのメモリが足りなくなってページが再読み込みされた可能性があります。',
+    '保存してある所までは、下の「途中の編集」の「続きから再開」で続けられます。',
   ];
   if (j.stage === 'asr') {
-    lines.push('字幕（文字起こし）の途中で止まったため、字幕をOFFにしました。まずは字幕なしでお試しください。');
+    lines.push('字幕（文字起こし）の途中で止まったため、新しく編集するときの字幕をOFFにしました。続きから再開しても何度も止まる場合は「字幕なしで再開」をお試しください。');
     $('optAsr').checked = false;
     try { localStorage.setItem('amity.optAsr', 'off'); } catch {}
   } else {
@@ -243,6 +262,17 @@ writeBrief(normalizeBrief({ ...EMPTY_BRIEF, ...(loadJSON(PREFS_KEY) || {}) }));
 $('file').addEventListener('change', async () => {
   const file = $('file').files && $('file').files[0];
   if (!file) return;
+  // 再開のために選び直してもらった動画なら、保存してある作業の続きをする
+  const pending = state.pendingResume;
+  await loadSource(file);
+  if (pending && state.src) {
+    if (sameSource(pending, file, state.src.duration)) await continueJob(pending, { reselected: true });
+    else showError($('fileError'), '保存してある編集とは別の動画のようです（大きさか長さが違います）。同じ動画を選ぶか、新しく編集してください。');
+  }
+});
+
+// 動画を開いて、入力画面を出す。file は選んだ動画、または端末内に保存したコピー
+async function loadSource(file) {
   for (const id of ['fileError', 'analyzeError', 'renderError', 'globalError']) $(id).hidden = true;
   $('stepReview').hidden = true;
   $('stepResult').hidden = true;
@@ -288,8 +318,10 @@ $('file').addEventListener('change', async () => {
   } catch (err) {
     $('duration').textContent = '-';
     showError($('fileError'), err);
+    closeVideo(state.src);
+    state.src = null;
   }
-});
+}
 
 // ---------- 2. 解析 ----------
 function setupSteps(list) {
@@ -323,12 +355,15 @@ function setProgress(ratio, text) {
 
 const ASR_MODEL = 'onnx-community/whisper-base';
 
-function transcribe(pcm, windows, terms = []) {
+// saved: 前回までに文字起こしした区間の結果（{ 区間の番号: chunks }）。onResult(i, chunks) で区間ごとに保存する
+function transcribe(pcm, windows, terms = [], { saved = {}, onResult } = {}) {
+  if (windows.every((_, k) => saved[k])) return Promise.resolve(windows.flatMap((_, k) => saved[k]));
   return new Promise((resolve, reject) => {
     const worker = new Worker('js/transcribe-worker.js', { type: 'module' });
     const files = new Map();
-    const chunks = [];
+    const results = { ...saved };
     let i = 0;
+    const collect = () => windows.flatMap((_, k) => results[k] || []);
     let finished = false;
     const finish = (fn, v) => {
       if (finished) return;
@@ -341,7 +376,8 @@ function transcribe(pcm, windows, terms = []) {
     $('btnSkipAsr').hidden = false;
     $('btnSkipAsr').onclick = () => { log('文字起こしをスキップ'); finish(reject, new Error('スキップしました')); };
     const next = () => {
-      if (i >= windows.length) return finish(resolve, chunks);
+      while (i < windows.length && results[i]) i++; // 保存済みの区間はやり直さない
+      if (i >= windows.length) return finish(resolve, collect());
       const w = windows[i];
       const from = Math.max(0, Math.floor((w.start - 0.2) * ASR_RATE));
       const to = Math.min(pcm.length, Math.ceil((w.end + 0.2) * ASR_RATE));
@@ -372,6 +408,7 @@ function transcribe(pcm, windows, terms = []) {
           fixes: fixes.map(f => f.error ? '確認できず: ' + f.error : `${f.from}→${f.to} ${f.ok ? '採用' : '見送り'}(${f.delta})`),
         });
         const offset = Math.max(0, w.start - 0.2);
+        const chunks = [];
         for (const c of m.chunks) {
           const start = offset + c.start, end = Math.min(offset + c.end, w.end + 0.2);
           const text = cleanSubtitle(c.text);
@@ -379,8 +416,8 @@ function transcribe(pcm, windows, terms = []) {
           // （残さないと、文字起こしのない声として構成に入ってしまう）
           if (end > start && (text || (c.raw || c.text || '').trim())) chunks.push({ start, end, text, raw: c.raw ?? c.text, timed: c.timed });
         }
-        i++;
-        next();
+        results[m.id] = chunks;
+        Promise.resolve(onResult?.(m.id, chunks)).catch(err => log('文字起こしの途中結果を保存できませんでした', errorText(err))).then(() => { i++; next(); });
       } else if (m.type === 'error') {
         finish(reject, new Error(m.message));
       }
@@ -391,12 +428,49 @@ function transcribe(pcm, windows, terms = []) {
   });
 }
 
+// 「自動編集を開始」: 新しい作業として最初から解析する（同じ動画の前の作業は消す。元の動画のコピーは使い回す）
 $('btnAnalyze').addEventListener('click', async () => {
   const src = state.src;
   if (!src) return;
-  const useAsr = $('optAsr').checked && !!src.audio;
-  const brief = readBrief();
+  const id = state.job?.id && state.sourceFromStore ? state.job.id : jobIdFor(state.file);
+  const old = await loadJob(id).catch(() => null);
+  const keepSource = !!old?.sourceSaved && state.sourceFromStore;
+  if (old) {
+    for (const f of await listFiles(id)) if (!(keepSource && f.name === SOURCE_NAME)) await removeFile(id, f.name);
+  }
+  const job = {
+    id, version: 1, createdAt: Date.now(), stage: 'analyze',
+    file: { name: state.file.name, size: state.file.size, type: state.file.type }, duration: src.duration,
+    useAsr: $('optAsr').checked && !!src.audio, brief: readBrief(),
+    sourceSaved: keepSource, analysis: { warnings: [] }, review: null, render: null, output: null,
+  };
+  await runAnalysis(job);
+});
+
+// 端末内に保存する作業の記録。保存に失敗しても編集は続ける（再開できないだけ）
+async function persistJob(job) {
+  state.job = job;
+  try {
+    await saveJob(job);
+    state.saveWarned = false;
+  } catch (err) {
+    if (!state.saveWarned) log('途中経過を保存できませんでした', errorText(err));
+    if (!state.saveWarned) {
+      state.saveWarned = true;
+      showNotice(isStorageFull(err)
+        ? '空き容量が足りないため、途中経過を保存できませんでした。編集は続けますが、途中で止まると最初からになります。'
+        : '途中経過を保存できませんでした（' + errorText(err) + '）。編集は続けますが、途中で止まると最初からになります。');
+    }
+  }
+}
+
+// 解析: 段階ごとに結果を保存しながら進める。保存済みの段階はやり直さない
+async function runAnalysis(job) {
+  const src = state.src;
+  const brief = normalizeBrief(job.brief);
+  writeBrief(brief);
   const bp = briefPlan(brief);
+  const A = job.analysis;
   $('btnReplan').hidden = true;
   $('analyzeError').hidden = true;
   $('globalError').hidden = true;
@@ -404,83 +478,139 @@ $('btnAnalyze').addEventListener('click', async () => {
   $('stepResult').hidden = true;
   $('btnAnalyze').disabled = true;
   $('file').disabled = true;
+  $('resumeCard').hidden = true; // 処理中は「途中の編集」を押せないようにする（終わったら表示し直す）
   unloadVideo($('preview'));
   unloadVideo($('clipPreview'));
   setupSteps([
+    { key: 'store', label: '途中から再開できるよう、元の動画を端末内に保存する' },
     { key: 'audio', label: '音声を読み込み、無音を探す' },
     { key: 'asr', label: '文字起こし（字幕・言い直し）' },
     { key: 'motion', label: '手元の動きを解析する' },
     { key: 'plan', label: `約${fmt(brief.targetSec)}の構成を作る` },
   ]);
   jobStart('解析', {
-    file: state.file.name, sizeMB: +(state.file.size / 1e6).toFixed(1), asr: useAsr, model: useAsr ? ASR_MODEL : null, video: src.info,
+    file: job.file.name, sizeMB: +(job.file.size / 1e6).toFixed(1), asr: job.useAsr, model: job.useAsr ? ASR_MODEL : null, video: src.info,
     brief: { format: brief.format, targetSec: brief.targetSec, style: brief.style, text: hasText(brief), must: bp.mustItems.length, asrTerms: bp.asrTerms.length },
+    resume: !!(A.audio || A.motion),
   });
   const lock = await keepAwake();
   const t0 = performance.now();
-  const warnings = [];
   try {
-    // 音声（失敗しても動きだけで続ける）
-    setStep('audio', 'active');
+    await persistJob(job);
+    await requestPersist();
+
+    // 0. 元の動画のコピー（Safari が閉じられても、選び直さずに再開できるように）
+    if (job.sourceSaved) setStep('store', 'done', '保存済み');
+    else await storeSource(job);
+
+    // 1. 音声（失敗しても動きだけで続ける）
     let pcm = null;
-    state.rmsDb = null;
-    if (src.audio) {
+    const needPcm = job.useAsr && !A.asr?.done && !A.asr?.failed;
+    if (A.audio) {
+      setStep('audio', 'done', '保存済みの結果を使用');
+      state.rmsDb = A.audio.rmsDb;
+      if (needPcm && A.audio.pcmSaved) {
+        const f = await readFile(job.id, PCM_NAME);
+        if (f) pcm = new Float32Array(await f.arrayBuffer());
+      }
+    }
+    if ((!A.audio && src.audio) || (needPcm && !pcm && src.audio && A.audio && !A.audio.failed)) {
+      setStep('audio', 'active');
       try {
         const a = await analyzeAudio(src, r => setProgress(r, `音声を読み込み中… ${Math.round(r * 100)}%`));
-        state.rmsDb = a.rmsDb;
         pcm = a.pcm;
-        state.speech = detectSpeech(a.rmsDb);
-        log('音声の解析完了', { mode: getAudioMode(), speechRegions: state.speech.regions.length, sounds: state.speech.sounds?.length ?? 0 });
+        state.rmsDb = a.rmsDb;
+        A.audio = { rmsDb: a.rmsDb, mode: getAudioMode(), pcmSaved: false };
+        // 文字起こし用の音声も保存しておく（文字起こしの途中で止まったとき、音声を読み直さずに済む）
+        if (needPcm) {
+          try {
+            await copyIn(job.id, PCM_NAME, new Blob([pcm.buffer]));
+            A.audio.pcmSaved = true;
+          } catch (err) {
+            log('文字起こし用の音声を保存できませんでした', errorText(err));
+          }
+        }
+        await persistJob(job);
         setStep('audio', 'done');
       } catch (err) {
         log('音声の解析に失敗', errorText(err));
-        warnings.push('音声を読み込めなかったため、無音カットなし（手元の動きだけ）で構成しました（' + errorText(err) + '）。');
+        A.audio = { failed: true, rmsDb: null };
+        A.warnings.push('音声を読み込めなかったため、無音カットなし（手元の動きだけ）で構成しました（' + errorText(err) + '）。');
+        await persistJob(job);
         setStep('audio', 'warn', '失敗');
       }
-    } else {
+    } else if (!src.audio) {
       setStep('audio', 'skip', '音声なし');
     }
-    if (!state.rmsDb) {
-      state.rmsDb = new Float32Array(Math.ceil(src.duration / FRAME_SEC));
-      state.speech = { regions: [], threshold: 0 };
-    }
+    if (!state.rmsDb) state.rmsDb = new Float32Array(Math.ceil(src.duration / FRAME_SEC));
+    state.speech = state.rmsDb.some(v => v !== 0) ? detectSpeech(state.rmsDb) : { regions: [], voice: [], threshold: 0 };
+    log('音声の解析完了', { mode: A.audio?.mode ?? getAudioMode(), speechRegions: state.speech.regions.length, sounds: state.speech.sounds?.length ?? 0 });
 
-    // 文字起こし（失敗しても続ける）
+    // 2. 文字起こし（区間ごとに保存。失敗しても続ける）
     state.chunks = null;
-    if (useAsr && pcm && state.speech.regions.length) {
+    if (A.asr?.done) {
+      state.chunks = A.asr.chunks;
+      setStep('asr', 'done', '保存済みの結果を使用');
+    } else if (job.useAsr && !A.asr?.failed && pcm && state.speech.regions.length) {
       setStep('asr', 'active');
       try {
-        // 文ごとの時刻は、無音の切れ目に合わせて割り当て直す
-        const sentences = alignSentences(await transcribe(pcm, transcriptionWindows(state.speech.regions), bp.asrTerms), state.speech.regions);
-        // 字幕の表示時刻を、実際の声の出始め・終わりに合わせる（自動カットの区切りは変えない）
-        state.chunks = refineSubtitleTiming(sentences, fineSpeech(state.rmsDb, state.speech.threshold));
+        const windows = A.asr?.windows || transcriptionWindows(state.speech.regions);
+        A.asr = { windows, results: A.asr?.results || {}, done: false };
+        const savedN = Object.keys(A.asr.results).length;
+        if (savedN) log(`保存済みの文字起こしの区間を再利用: ${savedN}/${windows.length}`);
+        const raw = await transcribe(pcm, windows, bp.asrTerms, {
+          saved: A.asr.results,
+          onResult: async (i, chunks) => { A.asr.results[i] = chunks; await persistJob(job); },
+        });
+        // 文ごとの時刻は、無音の切れ目に合わせて割り当て直す。字幕の表示時刻は実際の声の出始め・終わりに合わせる
+        state.chunks = refineSubtitleTiming(alignSentences(raw, state.speech.regions), fineSpeech(state.rmsDb, state.speech.threshold));
+        A.asr = { windows, done: true, chunks: state.chunks };
+        await persistJob(job);
+        await removeFile(job.id, PCM_NAME);
         setStep('asr', 'done');
       } catch (err) {
         log('文字起こしに失敗', errorText(err));
-        warnings.push('文字起こしができなかったため、字幕なし・言い直し検出なしで構成しました（' + errorText(err) + '）。');
+        A.asr = { ...(A.asr || {}), failed: true };
+        A.warnings.push('文字起こしができなかったため、字幕なし・言い直し検出なしで構成しました（' + errorText(err) + '）。');
+        await persistJob(job);
         setStep('asr', 'warn', '失敗・字幕なしで続行');
       }
     } else {
-      setStep('asr', 'skip', useAsr ? '話し声なし' : 'OFF');
+      setStep('asr', 'skip', A.asr?.failed ? '前回失敗' : job.useAsr ? (pcm ? '話し声なし' : '音声なし') : 'OFF');
     }
     pcm = null; // 文字起こし用の音声はここで手放す
 
-    // 手元の動き（失敗しても音声だけで続ける）
-    setStep('motion', 'active');
-    try {
-      state.motion = await analyzeMotion(src, r => setProgress(r, `手元の動きを解析中… ${Math.round(r * 100)}%`));
-      setStep('motion', 'done');
-    } catch (err) {
-      log('動きの解析に失敗', errorText(err));
-      state.motion = null;
-      warnings.push('映像の動きを解析できなかったため、音声だけで構成しました（' + errorText(err) + '）。');
-      setStep('motion', 'warn', '失敗');
+    // 3. 手元の動き（約30秒ぶんごとに保存。失敗しても音声だけで続ける）
+    if (A.motion?.done) {
+      state.motion = A.motion.data;
+      setStep('motion', A.motion.data ? 'done' : 'warn', '保存済みの結果を使用');
+    } else {
+      setStep('motion', 'active', A.motion?.partial ? '途中から再開' : undefined);
+      try {
+        state.motion = await analyzeMotion(src, r => setProgress(r, `手元の動きを解析中… ${Math.round(r * 100)}%`), 1, {
+          resume: A.motion?.partial || null,
+          onCheckpoint: async partial => { A.motion = { partial }; await persistJob(job); },
+        });
+        A.motion = { done: true, data: state.motion };
+        await persistJob(job);
+        setStep('motion', 'done');
+      } catch (err) {
+        log('動きの解析に失敗', errorText(err));
+        state.motion = null;
+        A.motion = { done: true, data: null };
+        A.warnings.push('映像の動きを解析できなかったため、音声だけで構成しました（' + errorText(err) + '）。');
+        await persistJob(job);
+        setStep('motion', 'warn', '失敗');
+      }
     }
 
     setStep('plan', 'active');
-    state.warnings = warnings;
+    state.warnings = A.warnings;
     makePlan(brief);
     if (!state.selected.size) throw new Error('使える場面が見つかりませんでした。音声と映像の両方を読み込めなかった可能性があります。');
+    job.stage = 'review';
+    job.review = { selected: [...state.selected], brief };
+    await persistJob(job);
     setStep('plan', 'done');
     setProgress(1, `完了（${formatSec((performance.now() - t0) / 1000)}）`);
     jobEnd('done');
@@ -493,8 +623,30 @@ $('btnAnalyze').addEventListener('click', async () => {
     $('file').disabled = false;
     $('preview').src = state.url;
     lock?.release?.();
+    refreshJobs();
   }
-});
+}
+
+// 元の動画を端末内にコピーする。空きが足りない・失敗したときはコピーせずに進む（再開時に選び直してもらう）
+async function storeSource(job) {
+  setStep('store', 'active');
+  const info = await storageInfo();
+  const need = job.file.size + (job.useAsr ? job.duration * ASR_RATE * 4 : 0) + 100 * MB;
+  const sc = spaceCheck(info, need);
+  if (!sc.ok) {
+    setStep('store', 'warn', `空きが足りないため保存しません（必要 約${formatBytes(need)}・空き 約${formatBytes(sc.free)}）。再開するときは同じ動画を選び直してください`);
+    return;
+  }
+  try {
+    await copyIn(job.id, SOURCE_NAME, state.file, r => setProgress(r, `元の動画を端末内に保存中… ${Math.round(r * 100)}%`));
+    job.sourceSaved = true;
+    await persistJob(job);
+    setStep('store', 'done');
+  } catch (err) {
+    log('元の動画を保存できませんでした', errorText(err));
+    setStep('store', 'warn', (isStorageFull(err) ? '空き容量が足りないため保存できませんでした' : '保存できませんでした') + '。再開するときは同じ動画を選び直してください');
+  }
+}
 
 // 解析結果（音声・文字起こし・動き）と入力内容から構成を作る。入力を変えたときは解析し直さずにこれだけ行う
 function makePlan(brief) {
@@ -539,6 +691,7 @@ $('btnReplan').addEventListener('click', () => {
   makePlan(readBrief());
   $('btnReplan').hidden = true;
   showReview();
+  saveReview();
 });
 
 // ---------- 3. 構成の確認 ----------
@@ -555,6 +708,7 @@ function clipRow(u) {
     if (cb.checked) state.selected.add(u.id); else state.selected.delete(u.id);
     div.classList.toggle('off', !cb.checked);
     updateTotal();
+    saveReview();
   });
   const time = document.createElement('span');
   time.textContent = `${formatTime(u.start)}〜${formatTime(u.end)}（${u.duration.toFixed(1)}秒）`;
@@ -781,50 +935,167 @@ function computeGainDb(clips) {
 }
 
 // ---------- 4. 書き出し ----------
+// 構成の確認画面で選んだ場面を保存する（再開したときに同じ選択に戻す）
+let reviewTimer = null;
+function saveReview() {
+  const job = state.job;
+  if (!job || job.stage !== 'review') return;
+  clearTimeout(reviewTimer);
+  reviewTimer = setTimeout(() => {
+    job.review = { selected: [...state.selected], brief: readBrief() };
+    job.brief = job.review.brief;
+    persistJob(job);
+  }, 300);
+}
+
+// 「この内容でMP4を書き出す」: 書き出す内容（タイムライン）を決めて保存し、区間ごとに書き出す
 $('btnRender').addEventListener('click', async () => {
   const clips = state.units.filter(u => state.selected.has(u.id));
-  if (!clips.length) return;
+  if (!clips.length || !state.job) return;
+  const useSubs = !!state.chunks && $('optSubs').checked;
+  const useZoom = $('optZoom').checked;
+  const timeline = buildTimeline(clips.map(u => ({ ...u, text: state.chunks ? u.text : '', ...shifted(u, state.subOffset) })), {
+    srcW: state.src.width, srcH: state.src.height, zoom: useZoom, subtitles: useSubs, style: state.brief?.style,
+  });
+  const outSec = timeline.reduce((s, c) => s + c.outDuration, 0);
+  // 保存できる容量を確かめる（区間のファイルと完成したMP4が一時的に両方必要）
+  const need = renderBytes(outSec).total;
+  const sc = spaceCheck(await storageInfo(), need);
+  if (!sc.ok) {
+    showError($('renderError'), `端末内に保存できる容量が足りません（必要 約${formatBytes(need)}・空き 約${formatBytes(sc.free)}）。iPhoneの空き容量を増やすか、上の「途中の編集」から使わない保存データを削除してから、もう一度お試しください。`);
+    return;
+  }
+  const job = state.job;
+  for (const f of await listFiles(job.id)) if (/^seg-|^output/.test(f.name)) await removeFile(job.id, f.name);
+  const segments = planSegments(timeline);
+  job.stage = 'render';
+  job.review = { selected: [...state.selected], brief: readBrief() };
+  job.render = {
+    timeline, segments, done: segments.map(() => false), gainDb: computeGainDb(clips),
+    styleNote: styleSummary(timeline, useSubs, useZoom), outSec, startedAt: Date.now(), elapsed: 0, sessions: 0,
+  };
+  job.output = null;
+  log('演出', job.render.styleNote);
+  log('書き出しの区間', { segments: segments.length, outSec: +outSec.toFixed(1), needMB: Math.round(need / MB), knownSpace: sc.known });
+  await persistJob(job);
+  await runRender(job);
+});
+
+// 区間ごとの書き出しと仕上げ。保存済みの区間はやり直さない
+async function runRender(job) {
+  const R = job.render;
   $('renderError').hidden = true;
   $('globalError').hidden = true;
   $('stepResult').hidden = true;
   $('btnRender').disabled = true;
   $('btnAnalyze').disabled = true;
   $('file').disabled = true;
+  $('resumeCard').hidden = true;
   $('renderBar').hidden = false;
   unloadVideo($('preview'));
   unloadVideo($('clipPreview'));
   unloadVideo($('outVideo'));
   if (state.outUrl) { URL.revokeObjectURL(state.outUrl); state.outUrl = null; }
   state.blob = null;
+  state.timeline = R.timeline;
+  state.styleNote = R.styleNote;
   const bar = $('renderBar').firstElementChild;
-  jobStart('書き出し', { file: state.file.name, clips: clips.length, video: state.src.info, audioMode: getAudioMode() });
+  // 保存済みのはずの区間が消えていないか確かめる（消えていたら、その区間だけ書き出し直す）
+  for (const seg of R.segments) {
+    if (!R.done[seg.index]) continue;
+    const f = await readFile(job.id, `seg-${seg.index}.mp4`);
+    if (!f || !f.size) { R.done[seg.index] = false; log(`保存した区間 ${seg.index + 1} が見つからないため書き出し直します`); }
+  }
+  const total = R.segments.reduce((s, x) => s + x.frames, 0);
+  const doneFrames = () => R.segments.filter((x, i) => R.done[i]).reduce((s, x) => s + x.frames, 0);
+  const reused = R.done.filter(Boolean).length;
+  R.sessions = (R.sessions || 0) + 1;
+  jobStart('書き出し', { file: job.file.name, segments: R.segments.length, reused, session: R.sessions, video: state.src.info, audioMode: getAudioMode() });
   jobStage('render', STAGE_LABELS.render);
+  if (reused) log(`保存済みの区間を再利用: ${reused}/${R.segments.length}`);
   const lock = await keepAwake();
   const t0 = performance.now();
+  const show = (ratio, text) => {
+    bar.style.width = Math.round(ratio * 100) + '%';
+    $('renderText').textContent = text;
+    jobProgress(ratio);
+  };
   try {
-    const useSubs = !!state.chunks && $('optSubs').checked;
-    const useZoom = $('optZoom').checked;
-    const timeline = buildTimeline(clips.map(u => ({ ...u, text: state.chunks ? u.text : '', ...shifted(u, state.subOffset) })), {
-      srcW: state.src.width, srcH: state.src.height, zoom: useZoom, subtitles: useSubs, style: state.brief?.style,
-    });
-    state.timeline = timeline;
-    state.styleNote = styleSummary(timeline, useSubs, useZoom);
-    log('演出', state.styleNote);
-    const blob = await renderShort(state.src, timeline, {
-      gainDb: computeGainDb(clips),
-      onProgress: r => {
-        bar.style.width = Math.round(r * 100) + '%';
-        $('renderText').textContent = `MP4を書き出し中… ${Math.round(r * 100)}%`;
-        jobProgress(r);
-      },
-    });
-    $('renderText').textContent = `書き出し完了（${formatSec((performance.now() - t0) / 1000)}）`;
+    // 1. 映像を区間ごとに書き出して保存する
+    for (const seg of R.segments) {
+      if (R.done[seg.index]) continue;
+      const name = `seg-${seg.index}.mp4`;
+      for (let attempt = 0; ; attempt++) {
+        const hiddenBefore = state.hiddenCount;
+        await removeFile(job.id, name);
+        const w = await openWritable(job.id, name);
+        try {
+          await renderSegment(state.src, R.timeline, seg, w.stream, {
+            onProgress: r => {
+              const all = (doneFrames() + r * seg.frames) / total;
+              show(all * 0.92, `MP4を書き出し中… ${Math.round(all * 92)}%（区間 ${seg.index + 1}/${R.segments.length}・書き終えた区間は端末内に保存済み）`);
+            },
+          });
+          break;
+        } catch (err) {
+          await w.dispose();
+          await removeFile(job.id, name);
+          // 途中でほかのアプリに切り替えた・画面を消したときは、エンコーダーが止められていることがある。1回だけやり直す
+          if (attempt === 0 && state.hiddenCount !== hiddenBefore && !isStorageFull(err)) {
+            log(`区間 ${seg.index + 1} を書き出し直し（画面を離れていたため）`, errorText(err));
+            continue;
+          }
+          throw err;
+        }
+      }
+      R.done[seg.index] = true;
+      await persistJob(job);
+    }
+    // 2. 区間をつないで音声を入れ、完成したMP4にする
+    job.stage = 'assemble';
+    await persistJob(job);
+    show(0.92, 'MP4を仕上げ中…（区間をつないで音声を入れています）');
+    await removeFile(job.id, OUTPUT_NAME);
+    const w = await openWritable(job.id, OUTPUT_NAME);
+    try {
+      await assembleOutput(state.src, R.timeline, R.segments, i => readFile(job.id, `seg-${i}.mp4`), w.stream, {
+        gainDb: R.gainDb,
+        onProgress: r => show(0.92 + 0.08 * r, `MP4を仕上げ中… ${Math.round(92 + 8 * r)}%`),
+      });
+    } catch (err) {
+      await w.dispose();
+      await removeFile(job.id, OUTPUT_NAME);
+      throw err;
+    }
+    const out = await readFile(job.id, OUTPUT_NAME);
+    for (const seg of R.segments) await removeFile(job.id, `seg-${seg.index}.mp4`);
+    R.elapsed = (R.elapsed || 0) + (performance.now() - t0) / 1000;
+    job.stage = 'done';
+    job.output = { size: out.size, finishedAt: Date.now() };
+    await persistJob(job);
+    show(1, `書き出し完了（${formatSec((performance.now() - t0) / 1000)}${R.sessions > 1 ? `・${R.sessions}回に分けて処理、保存済みの区間 ${reused}個を再利用` : ''}）`);
     jobEnd('done');
-    log('書き出し完了', { sizeMB: +(blob.size / 1e6).toFixed(1), sec: Math.round((performance.now() - t0) / 1000) });
-    showResult(blob, timeline);
+    log('書き出し完了', { sizeMB: +(out.size / 1e6).toFixed(1), sec: Math.round((performance.now() - t0) / 1000), sessions: R.sessions, reused });
+    showResult(out, R.timeline);
   } catch (err) {
     jobEnd('error', err);
-    showError($('renderError'), err);
+    R.elapsed = (R.elapsed || 0) + (performance.now() - t0) / 1000;
+    await persistJob(job);
+    if (isStorageFull(err)) {
+      showError($('renderError'), `端末内の空き容量が足りなくなったため、書き出しを一時停止しました。書き終えた区間（${R.done.filter(Boolean).length}/${R.segments.length}）は保存してあります。iPhoneの空き容量を増やしてから、上の「途中の編集」の「続きから再開」を押してください。`);
+    } else if (err.name === 'SegmentMismatch') {
+      // 区間ごとの映像の形式が違う端末では、区間に分けずに書き出し直す（途中から再開はできない）
+      log('区間をつなげないため、区間に分けずに書き出し直します', errorText(err));
+      for (const seg of R.segments) await removeFile(job.id, `seg-${seg.index}.mp4`);
+      R.segments = planSegments(R.timeline, Infinity);
+      R.done = R.segments.map(() => false);
+      R.single = true;
+      job.stage = 'render';
+      await persistJob(job);
+      return runRender(job);
+    } else {
+      showError($('renderError'), err);
+    }
     $('renderText').textContent = '';
   } finally {
     $('btnRender').disabled = false;
@@ -832,19 +1103,20 @@ $('btnRender').addEventListener('click', async () => {
     $('file').disabled = false;
     $('preview').src = state.url;
     lock?.release?.();
+    refreshJobs();
   }
-});
+}
 
-function showResult(blob, timeline) {
+function showResult(file, timeline) {
   const last = timeline[timeline.length - 1];
   const now = new Date();
   const pad = n => String(n).padStart(2, '0');
   state.outName = `amity-short-${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}.mp4`;
-  state.blob = blob;
-  state.outUrl = URL.createObjectURL(blob);
+  state.blob = file;
+  state.outUrl = URL.createObjectURL(file);
   $('outVideo').src = state.outUrl;
   $('outDuration').textContent = formatSec(last.outStart + last.outDuration);
-  $('outSize').textContent = formatSize(blob.size);
+  $('outSize').textContent = formatSize(file.size);
   $('outStyle').textContent = state.styleNote || '-';
   $('btnDownload').href = state.outUrl;
   $('btnDownload').download = state.outName;
@@ -854,6 +1126,7 @@ function showResult(blob, timeline) {
 
 $('btnSave').addEventListener('click', async () => {
   if (!state.blob) return;
+  // 端末内に保存した完成ファイル。中身はディスク上にあり、メモリに読み込まずに共有メニューへ渡す
   const file = new File([state.blob], state.outName, { type: 'video/mp4' });
   if (navigator.canShare && navigator.canShare({ files: [file] })) {
     try {
@@ -868,4 +1141,145 @@ $('btnSave').addEventListener('click', async () => {
   } else {
     $('btnDownload').click();
   }
+});
+
+// ---------- 途中の編集（端末内に保存した作業）の表示と再開 ----------
+
+function showNotice(msg) {
+  $('notice').textContent = msg;
+  $('notice').hidden = !msg;
+}
+
+// 保存してある作業の続きをする。reselected: 元の動画を選び直してもらった（すでに開いてある）
+async function continueJob(job, { reselected = false } = {}) {
+  state.pendingResume = null;
+  $('resumeNeedFile').hidden = true;
+  if (!reselected) {
+    const f = job.sourceSaved ? await readFile(job.id, SOURCE_NAME) : null;
+    if (!f || f.size !== job.file.size) {
+      // 元の動画のコピーがない（保存しなかった・消えた）: 同じ動画を選び直してもらう
+      state.pendingResume = job;
+      job.sourceSaved = false;
+      $('resumeNeedFile').textContent = `続きから再開するには、同じ動画（${job.file.name}・${formatSize(job.file.size)}）を「1. 動画を選ぶ」でもう一度選んでください。保存済みの解析・書き出しの結果はそのまま使います。`;
+      $('resumeNeedFile').hidden = false;
+      $('file').scrollIntoView({ behavior: 'smooth', block: 'center' });
+      return;
+    }
+    await loadSource(new File([f], job.file.name, { type: job.file.type || 'video/quicktime' }));
+    if (!state.src) return;
+    state.sourceFromStore = true;
+  }
+  log('保存してある作業を再開', { stage: job.stage, id: job.id });
+  state.job = job;
+  if (job.stage === 'analyze') return runAnalysis(job);
+
+  // 解析は終わっている: 保存した結果から構成を作り直し、選んだ場面を戻す
+  const A = job.analysis;
+  state.rmsDb = A.audio?.rmsDb || new Float32Array(Math.ceil(state.src.duration / FRAME_SEC));
+  state.speech = A.audio?.rmsDb ? detectSpeech(state.rmsDb) : { regions: [], voice: [], threshold: 0 };
+  state.chunks = A.asr?.done ? A.asr.chunks : null;
+  state.motion = A.motion?.data || null;
+  state.warnings = A.warnings || [];
+  const brief = normalizeBrief(job.review?.brief || job.brief);
+  writeBrief(brief);
+  makePlan(brief);
+  if (job.review?.selected) {
+    const ids = new Set(state.units.map(u => u.id));
+    state.selected = new Set(job.review.selected.filter(id => ids.has(id)));
+  }
+  showReview();
+  if (job.stage === 'render' || job.stage === 'assemble') return runRender(job);
+  if (job.stage === 'done') {
+    const out = await readFile(job.id, OUTPUT_NAME);
+    if (out && out.size) { state.styleNote = job.render?.styleNote; showResult(out, job.render.timeline); return; }
+    showError($('renderError'), '完成した動画の保存データが見つかりませんでした（端末の空き容量不足などで消えた可能性があります）。構成はそのままなので、もう一度「この内容でMP4を書き出す」を押してください。');
+    job.stage = 'review';
+    job.output = null;
+    await persistJob(job);
+  }
+}
+
+// 画面上部の「途中の編集」を作る
+async function refreshJobs() {
+  let jobs = [];
+  try { jobs = (await listJobs()).sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0)); } catch (err) {
+    log('保存データを読み込めませんでした', errorText(err));
+  }
+  const list = $('jobList');
+  list.innerHTML = '';
+  $('resumeCard').hidden = !jobs.length;
+  if (!jobs.length) return;
+  // 途中の編集が保存してあるときは、そちらの表示（端末内に保存した確かな状態）を使う。
+  // 「前回止まった段階」の記録（localStorage）は、強制終了の直前の分が残らないことがあるため
+  if (previousJob && jobs.some(j => j.stage !== 'done')) $('recover').hidden = true;
+  const busy = $('btnAnalyze').disabled && !$('stepAnalyze').hidden || $('btnRender').disabled && !$('stepReview').hidden;
+  for (const job of jobs) {
+    const d = describeJob(job);
+    const files = await listFiles(job.id);
+    const bytes = files.reduce((s, f) => s + f.size, 0);
+    const item = document.createElement('div');
+    item.className = 'job';
+    const head = document.createElement('div');
+    head.className = 'job-head';
+    const when = new Date(job.updatedAt || job.createdAt);
+    head.textContent = `${job.file.name}（${formatSec(job.duration)}）・${d.stage}${job.stage === 'done' ? '' : ` ${d.percent}%`}`;
+    const meta = document.createElement('div');
+    meta.className = 'job-meta';
+    meta.textContent = `${when.getMonth() + 1}/${when.getDate()} ${String(when.getHours()).padStart(2, '0')}:${String(when.getMinutes()).padStart(2, '0')} 保存・端末内の使用量 約${formatBytes(bytes)}${job.sourceSaved ? '' : '・元の動画は保存していません（再開時に選び直し）'}`;
+    const lines = document.createElement('ul');
+    lines.className = 'job-lines';
+    for (const l of d.lines) { const li = document.createElement('li'); li.textContent = l; lines.appendChild(li); }
+    const btns = document.createElement('div');
+    btns.className = 'job-btns';
+    const mk = (label, cls, fn) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'btn small ' + cls;
+      b.textContent = label;
+      b.disabled = busy;
+      b.addEventListener('click', fn);
+      btns.appendChild(b);
+      return b;
+    };
+    if (job.stage === 'done') mk('完成した動画を開く', '', () => continueJob(job));
+    else mk('続きから再開', '', () => continueJob(job));
+    if (job.stage === 'analyze' && job.useAsr && !job.analysis?.asr?.done) {
+      // 文字起こしの途中で何度も止まる（メモリ不足）ときのため
+      mk('字幕なしで再開', 'secondary', () => {
+        job.useAsr = false;
+        job.analysis.asr = { ...(job.analysis.asr || {}), failed: true };
+        job.analysis.warnings = [...(job.analysis.warnings || []), '字幕なしで再開したため、字幕・言い直し検出なしで構成しました。'];
+        continueJob(job);
+      });
+    }
+    mk('保存データを削除', 'secondary', async () => {
+      if (!confirm(`「${job.file.name}」の途中の編集と保存データ（約${formatBytes(bytes)}）を削除しますか？\n元の動画（写真アプリ）は消えません。`)) return;
+      await deleteJob(job.id);
+      if (state.job?.id === job.id) state.job = null;
+      refreshJobs();
+    });
+    item.append(head, meta, lines, btns);
+    list.appendChild(item);
+  }
+  const info = await storageInfo();
+  $('storageText').textContent = info.usage != null
+    ? `このサイトの保存データ: 約${formatBytes(info.usage)}（保存できる上限の目安 約${formatBytes(info.quota)}）${info.persisted ? '・消されにくい設定が有効' : ''}`
+    : '';
+}
+
+refreshJobs();
+
+// 完成した動画をiPhoneに保存した後に、端末内の保存データ（元の動画のコピー・完成したMP4）を消す
+$('btnCleanup').addEventListener('click', async () => {
+  const job = state.job;
+  if (!job) return;
+  if (!confirm('端末内に保存してある、この編集のデータ（元の動画のコピー・完成したMP4）を削除しますか？\n「iPhoneに保存」を済ませてから押してください。元の動画（写真アプリ）は消えません。')) return;
+  unloadVideo($('outVideo'));
+  if (state.outUrl) { URL.revokeObjectURL(state.outUrl); state.outUrl = null; }
+  state.blob = null;
+  await deleteJob(job.id);
+  state.job = null;
+  $('stepResult').hidden = true;
+  showNotice('端末内の保存データを削除しました。');
+  refreshJobs();
 });

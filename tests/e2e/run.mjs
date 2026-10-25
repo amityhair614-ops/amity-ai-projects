@@ -226,8 +226,10 @@ async function reloadDuring(stage) {
     try { const j = JSON.parse(localStorage.getItem('amity.job.v1')); return j && j.status === 'running' && j.stage === st && (st === 'asr' || j.progress > 0); } catch { return false; }
   }, stage, { timeout: 600000, polling: 50 });
   await page.reload();
-  await page.waitForSelector('#recover:not([hidden])', { timeout: 10000 });
-  const text = await page.$eval('#recoverText', el => el.textContent);
+  // 途中の編集が保存してあれば「途中の編集」の表示、なければ「前回止まった」表示が出る
+  await page.waitForSelector('#recover:not([hidden]), #resumeCard:not([hidden])', { timeout: 10000 });
+  await page.waitForTimeout(500);
+  const text = await page.$eval('#resumeCard', el => (el.hidden ? '' : el.innerText)) || await page.$eval('#recoverText', el => el.textContent);
   const asr = await page.$eval('#optAsr', el => el.checked);
   console.log(`再読み込み後の表示: ${text}`);
   console.log(`字幕の設定: ${asr ? 'ON' : 'OFF'}`);
