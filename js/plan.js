@@ -146,7 +146,13 @@ export function percentile(values, p) {
   return arr[i];
 }
 
-// 音量（50msごとの dB）から話している区間を求める
+// 音量（50msごとの dB）から話している区間を求める。
+// regions: 前後に少し余白をつけた区間（文字起こし・字幕の割り当てに使う）
+// voice: 声そのものの区間（余白なし）。自動カットの区切りはこちらから作る
+// sounds: 声ではなく、ハサミのような短い音が続いているだけの区間（話している区間から外す）
+//
+// 声の出始め・語尾は小さな音なので、大きな音（threshold）で見つけた区間を、
+// 小さな音（low）が続くところまで前後に広げる（言葉の頭・消えていく語尾を切らない）
 export function detectSpeech(rmsDb, opts = {}) {
   const minGap = opts.minGap ?? 0.3;      // これより短い無音はつなげる
   const minLen = opts.minLen ?? 0.25;    // これより短い音は無視
@@ -154,8 +160,9 @@ export function detectSpeech(rmsDb, opts = {}) {
   const floor = percentile(rmsDb, 0.1);
   const peak = percentile(rmsDb, 0.95);
   const duration = rmsDb.length * FRAME_SEC;
-  if (peak - floor < 6) return { floor, peak, threshold: peak + 1, regions: [] };
+  if (peak - floor < 6) return { floor, peak, threshold: peak + 1, low: peak + 1, regions: [], voice: [], sounds: [] };
   const threshold = Math.max(floor + 8, floor + (peak - floor) * 0.35);
+  const low = Math.min(threshold - 2, Math.max(floor + 5, floor + (peak - floor) * 0.18));
 
   const raw = [];
   let start = -1;
@@ -163,27 +170,106 @@ export function detectSpeech(rmsDb, opts = {}) {
     const on = i < rmsDb.length && rmsDb[i] > threshold;
     if (on && start < 0) start = i;
     if (!on && start >= 0) {
-      raw.push({ start: start * FRAME_SEC, end: i * FRAME_SEC });
+      raw.push({ start: start * FRAME_SEC, end: i * FRAME_SEC, on: i - start });
       start = -1;
     }
   }
   const merged = [];
   for (const r of raw) {
     const last = merged[merged.length - 1];
-    if (last && r.start - last.end < minGap) last.end = r.end;
+    if (last && r.start - last.end < minGap) { last.end = r.end; last.on += r.on; }
     else merged.push({ ...r });
   }
-  const regions = merged
-    .filter(r => r.end - r.start >= minLen)
-    .map(r => ({ start: Math.max(0, r.start - pad), end: Math.min(duration, r.end + pad) }));
-  // 余白で重なったものをまとめる
-  const out = [];
-  for (const r of regions) {
-    const last = out[out.length - 1];
-    if (last && r.start <= last.end) last.end = Math.max(last.end, r.end);
-    else out.push(r);
+  const voice = [], sounds = [];
+  for (const r of merged.filter(r => r.end - r.start >= minLen)) {
+    // 大きな音の割合が低い区間は、短い音（ハサミなど）がとびとびに鳴っているだけ
+    const density = r.on * FRAME_SEC / (r.end - r.start);
+    if (density < (opts.minDensity ?? 0.5)) { sounds.push({ start: r.start, end: r.end, density }); continue; }
+    let a = Math.round(r.start / FRAME_SEC), b = Math.round(r.end / FRAME_SEC);
+    const prevEnd = voice.length ? Math.round(voice[voice.length - 1].end / FRAME_SEC) : 0;
+    for (let k = 0; k < 6 && a - 1 > prevEnd && rmsDb[a - 1] > low; k++) a--;       // 出始め: 最大0.3秒
+    for (let k = 0; k < 9 && b < rmsDb.length && rmsDb[b] > low; k++) b++;          // 語尾: 最大0.45秒
+    const last = voice[voice.length - 1];
+    if (last && a * FRAME_SEC - last.end < minGap) last.end = b * FRAME_SEC;
+    else voice.push({ start: a * FRAME_SEC, end: b * FRAME_SEC });
   }
-  return { floor, peak, threshold, regions: out };
+  const regions = [];
+  for (const v of voice) {
+    const r = { start: Math.max(0, v.start - pad), end: Math.min(duration, v.end + pad) };
+    const last = regions[regions.length - 1];
+    // 余白で重なったものをまとめる
+    if (last && r.start <= last.end) last.end = Math.max(last.end, r.end);
+    else regions.push(r);
+  }
+  return { floor, peak, threshold, low, regions, voice, sounds };
+}
+
+// ---------- 自然なカット ----------
+
+// 話のテンポごとの「間」の残し方（秒）。
+// lead: 話し始めの前に残す時間 / tail: 話し終わりの後に残す時間（消えていく語尾・息）
+// keepGap: 文の中でこれより短い間はそのまま残す / maxGap: 文の中の長い間は、ここまで縮める
+export const PACES = {
+  natural: { lead: 0.18, tail: 0.32, keepGap: 0.5, minGap: 0.42, maxGap: 0.6 },
+  tempo: { lead: 0.12, tail: 0.24, keepGap: 0.38, minGap: 0.32, maxGap: 0.45 },
+};
+
+// [a, b] の中で一番音の小さい時刻（3コマの平均）。文と文がつながって聞こえる所の区切りに使う
+export function quietestPoint(rmsDb, a, b) {
+  let best = (a + b) / 2, bestDb = Infinity;
+  for (let t = a; t <= b; t += FRAME_SEC) {
+    const i = Math.floor(t / FRAME_SEC);
+    const db = ((rmsDb[i - 1] ?? -120) + (rmsDb[i] ?? -120) + (rmsDb[i + 1] ?? -120)) / 3;
+    if (db < bestDb) { bestDb = db; best = t; }
+  }
+  return best;
+}
+
+// 声の区間 segs（時刻順・余白なし）から、書き出す範囲（pieces）を作る。
+// - 文の中の短い間はそのまま、長い間（考えながら話している間など）は自然な長さまで縮める
+// - 話し始めの前・話し終わりの後に少し余白を残す（語尾や息を切らない）。ただし前後の声には食い込まない
+// before / after: 使える無音の範囲（前の声の終わり・次の声の始まり）
+export function shapePieces(segs, before, after, pace = PACES.natural) {
+  if (!segs.length) return [];
+  const out = [];
+  let cur = { start: Math.max(before, segs[0].start - pace.lead), end: segs[0].end };
+  for (let i = 1; i < segs.length; i++) {
+    const g = segs[i].start - segs[i - 1].end;
+    if (g <= pace.keepGap) { cur.end = segs[i].end; continue; }
+    // 長い間ほど少しだけ長く残す（すべて同じ長さにすると機械的に聞こえる）
+    const keep = pace.minGap + (pace.maxGap - pace.minGap) * Math.min(1, (g - pace.keepGap) / 1.5);
+    cur.end = segs[i - 1].end + keep * 0.6; // 語尾の後を多めに残す
+    out.push(cur);
+    cur = { start: segs[i].start - keep * 0.4, end: segs[i].end };
+  }
+  cur.end = Math.min(after, cur.end + pace.tail);
+  out.push(cur);
+  return out;
+}
+
+// 話し始めの言葉が、前の文に続くことを表すもの（前の文がないと意味が通じない）
+const CONTINUES_PREV_RE = /^(?:なので|ですので|だから|それで|そして|そうすると|すると|そのため|なぜなら|というのも|つまり|ただ、|ただし|でも、|けど|あと、|それから|で、)/;
+// 文が終わっていない（次の文に続く）語尾
+const CONTINUES_NEXT_RE = /(?:[、,]|て|で|ので|から|けど|けれど|けれども|が|と|し)$/;
+
+// 文字起こしがないとき、これより短い間でつながった声は同じ文の続きとみなす（考えながら話す間を含む）
+const SAME_SENTENCE_GAP = 1.2;
+
+// 前後の文とつながっていて、片方だけ残すと話が通じない組み合わせに印をつける（u.linkNext）
+export function linkSentences(units) {
+  const speech = units.filter(u => u.kind === 'speech' && !u.excluded);
+  for (let i = 0; i + 1 < speech.length; i++) {
+    const a = speech[i], b = speech[i + 1];
+    if (b.start - a.end > 4) continue;
+    if (!a.text && !b.text) {
+      // 文字起こしのない声どうし: 短い間でつながっていれば、文の途中で切らないよう一緒に扱う
+      if ((b.voiceStart ?? b.start) - (a.voiceEnd ?? a.end) < SAME_SENTENCE_GAP) a.linkNext = b.id;
+      continue;
+    }
+    if (!a.text || !b.text) continue;
+    const t = a.text.replace(/\s+$/, '');
+    if (CONTINUES_PREV_RE.test(b.text.trim()) || (!/[。！？!?]$/.test(t) && CONTINUES_NEXT_RE.test(t))) a.linkNext = b.id;
+  }
 }
 
 // 文字起こしに送る音声の区切り（無音部分は送らない）
@@ -330,32 +416,66 @@ function motionOver(motion, levels, start, end) {
   return { level: n ? sum / n : 0, cx: cxs.length ? percentile(cxs, 0.5) : 0.5, cy: cys.length ? percentile(cys, 0.5) : 0.5, box };
 }
 
-// 候補となる場面（ユニット）を作り、点数をつける
-export function buildUnits({ duration, rmsDb, speech, chunks, motion }) {
+// 文 [start, end]（Whisper の時刻なので少しずれている）に当たる声の区間を、言葉の途中で切らずに取り出す。
+// 声の区間が文の外まで大きくはみ出している（前後の文と続けて話している）ときだけ、
+// 文の境目の近くの一番静かな所で分ける
+function sentenceVoice(voice, rmsDb, start, end) {
+  const segs = voice.filter(v => overlap(v.start, v.end, start, end) >= Math.min(0.05, (v.end - v.start) / 2)).map(v => ({ ...v }));
+  if (!segs.length) return segs;
+  const first = segs[0], last = segs[segs.length - 1];
+  if (first.start < start - 0.35) first.start = quietestPoint(rmsDb, start - 0.4, Math.min(first.end - 0.1, start + 0.25));
+  if (last.end > end + 0.5) last.end = quietestPoint(rmsDb, Math.max(last.start + 0.1, end - 0.25), end + 0.4);
+  return segs.filter(s => s.end - s.start > 0.05);
+}
+
+// 候補となる場面（ユニット）を作り、点数をつける。
+// pace: 'natural'（初期設定）/ 'tempo'（間を少し短く）。間の残し方は PACES を参照
+export function buildUnits({ duration, rmsDb, speech, chunks, motion, pace }) {
   const regions = speech.regions;
+  // 声の区間（余白なし）。古い形式のデータ（voice がない）では余白つきの区間を使う
+  const voice = speech.voice || regions;
+  const P = PACES[pace] || PACES.natural;
   const levels = motion ? motionLevels(motion) : [];
   const units = [];
+  // 前後の声に食い込まない範囲で、話し始めの前・話し終わりの後の余白をつける
+  // 声の途中（文と文の境目の静かな所）で分けた側には余白をつけない
+  const shape = segs => {
+    const s0 = segs[0].start, s1 = segs[segs.length - 1].end;
+    const inside = t => voice.some(v => v.start < t - 1e-6 && v.end > t + 1e-6);
+    const prevEnd = voice.filter(v => v.end <= s0 + 1e-6).pop()?.end ?? 0;
+    const nextStart = voice.find(v => v.start >= s1 - 1e-6)?.start ?? duration;
+    const before = inside(s0) ? s0 : Math.min(s0, Math.max(0, prevEnd + 0.05, s0 - 1));
+    const after = inside(s1) ? s1 : Math.min(duration, nextStart - 0.05);
+    return shapePieces(segs, before, Math.max(s1, after), P);
+  };
 
   const covered = [];
   if (chunks && chunks.length) {
     const flags = detectRetakes(chunks);
     chunks.forEach((c, i) => {
-      const pieces = speechPieces(regions, c.start, c.end);
-      const speechDur = piecesDuration(pieces);
+      const segs = sentenceVoice(voice, rmsDb, c.start, c.end);
+      const speechDur = piecesDuration(speechPieces(regions, c.start, c.end));
       const len = Math.max(0.01, c.end - c.start);
       const text = (c.text || '').trim();
       // 無音部分の誤認識（文ごとに割り当て直したものは、話している部分に合わせてあるので割合では判定しない）
       if ((!c.aligned && speechDur / len < 0.3) || (HALLUCINATION_RE.test(text) && speechDur / len < 0.6) || isPromptEcho(text)) return;
       covered.push({ start: c.start, end: c.end });
-      if (!pieces.length) return;
-      const u = { kind: 'speech', start: pieces[0].start, end: pieces[pieces.length - 1].end, pieces, text, subStart: c.subStart, subEnd: c.subEnd, fine: c.fine };
+      if (segs.length) covered.push({ start: segs[0].start, end: segs[segs.length - 1].end });
+      if (!segs.length) return;
+      const pieces = shape(segs);
+      const u = {
+        kind: 'speech', start: pieces[0].start, end: pieces[pieces.length - 1].end, pieces, text, subStart: c.subStart, subEnd: c.subEnd, fine: c.fine,
+        voiceStart: segs[0].start, voiceEnd: segs[segs.length - 1].end,
+      };
       if (flags[i]) u.excluded = flags[i];
       else if (!normalizeText(text)) u.excluded = 'つなぎ言葉のみ';
+      // 言い直した後の発言（撮り直してまで伝えたかった説明）
+      else if (flags[i - 1] || (flags[i - 2] && !normalizeText(chunks[i - 1].text))) u.redo = true;
       units.push(u);
     });
   }
   // 文字起こしがない（または取りこぼした）発話
-  for (const r of regions) {
+  for (const r of voice) {
     const restPieces = [];
     let cursor = r.start;
     const cov = covered.filter(c => overlap(c.start, c.end, r.start, r.end) > 0).sort((a, b) => a.start - b.start);
@@ -366,7 +486,8 @@ export function buildUnits({ duration, rmsDb, speech, chunks, motion }) {
     if (r.end - cursor > 0.4) restPieces.push({ start: cursor, end: r.end });
     for (const p of restPieces) {
       for (const s of splitLong(p, rmsDb)) {
-        units.push({ kind: 'speech', start: s.start, end: s.end, pieces: [s], text: '' });
+        const pieces = shape([s]);
+        units.push({ kind: 'speech', start: pieces[0].start, end: pieces[pieces.length - 1].end, pieces, text: '', voiceStart: s.start, voiceEnd: s.end });
       }
     }
   }
@@ -423,11 +544,17 @@ export function buildUnits({ duration, rmsDb, speech, chunks, motion }) {
     if (firstSpeech.includes(u) && u.start < introLimit) { score += 1.5; u.intro = true; reasons.push('冒頭の導入'); }
     if (u.end > duration * 0.92) { score += 2; u.ending = true; reasons.push('仕上がり（最後）'); }
     if (u.kind === 'speech' && !u.text) score += 0.3;
-    if (u.kind === 'action') reasons.push('カット作業の場面');
+    if (u.redo) { score += 1.2; reasons.push('言い直した説明'); }
+    if (u.kind === 'action') {
+      reasons.push('カット作業の場面');
+      // ハサミの音が続いている（実際に切っている）無言の場面は、話していなくても残す価値が高い
+      if ((speech.sounds || []).some(s => overlap(s.start, s.end, u.start, u.end) > 0.5)) { score += 0.3; reasons.push('ハサミの音'); }
+    }
     if (u.duration < 0.8) score -= 2;
     u.score = score;
     u.reasons = reasons;
   });
+  linkSentences(units);
   return units;
 }
 
@@ -438,7 +565,28 @@ export function selectUnits(units, duration, target = 58, max = 60, opts = {}) {
   const cands = units.filter(u => !u.excluded && u.duration >= 0.5);
   const chosen = new Set();
   let total = 0;
-  const add = u => { if (!chosen.has(u) && total + u.duration <= max) { chosen.add(u); total += u.duration; } };
+  // 前後の文とつながっている場面（linkNext）は、まとめて残すか、まとめて外す（話の前後関係を崩さない）
+  const byId = new Map(cands.map(u => [u.id, u]));
+  const prevOf = new Map();
+  for (const u of cands) if (u.linkNext && byId.has(u.linkNext)) prevOf.set(u.linkNext, u);
+  const group = u => {
+    const g = [u];
+    for (let p = prevOf.get(u.id); p && g.length < 4; p = prevOf.get(p.id)) g.unshift(p);
+    for (let n = byId.get(u.linkNext); n && g.length < 4; n = byId.get(n.linkNext)) g.push(n);
+    return g.filter(x => !chosen.has(x));
+  };
+  // 話していない作業場面は、目標の時間の actionShare（初期 40%）までにする（説明が削られすぎないように）
+  const actionCap = target * (opts.actionShare ?? 0.4);
+  let actionTotal = 0;
+  const take = (u, limit, capAction = true) => {
+    if (chosen.has(u)) return;
+    const g = group(u);
+    const d = g.reduce((s, x) => s + x.duration, 0);
+    const da = g.filter(x => x.kind === 'action').reduce((s, x) => s + x.duration, 0);
+    if (capAction && da && actionTotal + da > actionCap) return;
+    if (total + d <= limit) for (const x of g) { chosen.add(x); total += x.duration; if (x.kind === 'action') actionTotal += x.duration; }
+  };
+  const add = u => take(u, max);
 
   for (const u of cands) if (u.mustKeep && !chosen.has(u)) { chosen.add(u); total += u.duration; }
   // 冒頭と最後
@@ -451,16 +599,16 @@ export function selectUnits(units, duration, target = 58, max = 60, opts = {}) {
   for (let k = 0; k < K; k++) {
     const s = (duration * k) / K, e = (duration * (k + 1)) / K;
     const best = cands.filter(u => u.start >= s && u.start < e).sort((a, b) => b.score - a.score)[0];
-    if (best && total + best.duration <= target) add(best);
+    if (best) take(best, target);
   }
   // 残りは点数の高い順
   for (const u of [...cands].sort((a, b) => b.score - a.score)) {
     if (total >= target) break;
-    if (total + u.duration <= target) add(u);
+    take(u, target);
   }
   // 目標よりかなり短いときは、上限までの範囲で場面を足す（短い目標ほど1場面の長さの影響が大きいため）
   if (total < max - Math.max(3, max * 0.1)) {
-    for (const u of [...cands].sort((a, b) => b.score - a.score)) add(u);
+    for (const u of [...cands].sort((a, b) => b.score - a.score)) take(u, max, false);
   }
   return [...chosen].sort((a, b) => a.start - b.start);
 }
@@ -629,12 +777,25 @@ function bandHit(b, band) {
 export function buildTimeline(clips, opts = {}) {
   const { srcW = 1080, srcH = 1920, zoom = false, subtitles = true } = opts;
   const zs = ZOOM_STYLES[opts.style] || ZOOM_STYLES.simple;
-  let t = 0;
+  // 続けて選んだ場面の余白が元の動画で重なっている場合は、同じ部分を2回使わないよう後ろの場面を詰める
+  // （その間はカットせず、元の動画のまま自然につながる）
+  let srcEnd = -Infinity;
+  clips = clips.map(c => {
+    const pieces = [];
+    for (const p of c.pieces) {
+      const start = Math.max(p.start, srcEnd);
+      if (p.end - start >= 1 / FPS) { pieces.push({ ...p, start }); srcEnd = p.end; }
+    }
+    return { ...c, pieces };
+  }).filter(c => c.pieces.length);
+  let t = 0, prevEnd = -Infinity;
   const tl = clips.map(c => {
     const pieces = c.pieces.map(p => {
       const frames = Math.max(1, Math.round((p.end - p.start) * FPS));
-      const piece = { srcStart: p.start, frames, outStart: t };
+      // contiguous: 元の動画で前のピースの続き（音声のつなぎ方を変える）
+      const piece = { srcStart: p.start, frames, outStart: t, contiguous: Math.abs(p.start - prevEnd) < 1.5 / FPS };
       t += frames / FPS;
+      prevEnd = p.start + frames / FPS;
       return piece;
     });
     const outStart = pieces[0].outStart;
