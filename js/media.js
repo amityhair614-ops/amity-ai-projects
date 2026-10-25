@@ -14,6 +14,7 @@ import { registerAacEncoder } from '@mediabunny/aac-encoder';
 import { FRAME_SEC, FPS, OUT_W, OUT_H, SUB_ZONES, cropAt, subtitleAlpha } from './plan.js';
 import { log } from './diag.js';
 import { Resampler } from './resample.js';
+import { AudioStitcher, applyGain } from './audiomix.js';
 
 export const ASR_RATE = 16000;
 
@@ -351,21 +352,6 @@ async function readAudioSafe(src, start, duration) {
   }
 }
 
-// 音量をそろえ、つなぎ目の「プチッ」を防ぐ
-function processAudio(data, sr, gain) {
-  const fade = Math.min(Math.round(sr * 0.012), Math.floor(data[0].length / 2));
-  for (const ch of data) {
-    for (let i = 0; i < ch.length; i++) {
-      let y = ch[i] * gain;
-      const a = Math.abs(y);
-      if (a > 0.9) y = Math.sign(y) * (0.9 + 0.1 * Math.tanh((a - 0.9) / 0.1));
-      if (i < fade) y *= i / fade;
-      else if (i >= ch.length - fade) y *= (ch.length - 1 - i) / fade;
-      ch[i] = y;
-    }
-  }
-}
-
 function toAudioBuffer(data, sr, from, to) {
   const b = new AudioBuffer({ length: to - from, numberOfChannels: data.length, sampleRate: sr });
   data.forEach((d, c) => b.copyToChannel(d.subarray(from, to), c));
@@ -439,6 +425,8 @@ export async function renderShort(src, timeline, { gainDb = 0, onProgress } = {}
   const totalFrames = timeline.reduce((s, c) => s + c.pieces.reduce((a, p) => a + p.frames, 0), 0);
   const packets = new EncodedPacketSink(src.video);
   const painter = new FramePainter(src.rotation, OUT_W, OUT_H);
+  const stitcher = new AudioStitcher();
+  const lastPiece = timeline[timeline.length - 1]?.pieces.at(-1);
   let done = 0;
 
   try {
@@ -448,8 +436,11 @@ export async function renderShort(src, timeline, { gainDb = 0, onProgress } = {}
         const end = piece.srcStart + dur;
         let audio = null, sent = 0, k = 0;
         if (withAudio) {
-          audio = await readAudioSafe(src, piece.srcStart, dur);
-          processAudio(audio.data, audio.sr, gain);
+          // つなぎ目を重ねるため、少し長めに読む（次のピースの頭と入れ替える）
+          const raw = await readAudioSafe(src, piece.srcStart, dur + AudioStitcher.extra());
+          applyGain(raw.data, gain);
+          const len = Math.round(dur * raw.sr);
+          audio = { sr: raw.sr, data: stitcher.add(raw.data, raw.sr, { len, contiguous: piece.contiguous, last: piece === lastPiece }) };
         }
         // 出力の k 番目のコマを、いま base にある画像で作る
         const emit = async () => {

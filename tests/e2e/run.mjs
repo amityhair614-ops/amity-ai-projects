@@ -14,7 +14,8 @@
 //     --replan=秒     構成の確認画面で長さを変えて「構成し直す」を押す
 //
 // 事前に `python3 -m http.server 8123` をリポジトリ直下で起動しておく。
-// H.264 を扱えるブラウザが必要（Chrome for Testing など。Playwright 同梱の Chromium は不可）。
+// H.264 を扱えるブラウザが必要（Chrome for Testing、または H.264 に対応した Playwright 同梱の Chromium）。
+// APP_URL で開くページを変えられる（前の版と比べるとき）。
 // 文字起こし（Whisper）はネットワークからモデルを取得するため、ここでは
 // sample-transcript.json を返す偽のワーカーに差し替える。
 import { chromium } from 'playwright-core';
@@ -73,7 +74,8 @@ const memTimer = setInterval(async () => {
 }, 500);
 
 const fakeWorker = `
-const T = ${JSON.stringify(transcript)};
+// asrStart / asrEnd があれば、Whisper のように少しずれた時刻を返す（make-ja-natural.py）
+const T = ${JSON.stringify(transcript)}.filter(c => c.start < c.end);
 self.onmessage = e => {
   const m = e.data;
   if (m.type === 'load') {
@@ -83,7 +85,8 @@ self.onmessage = e => {
   } else if (m.type === 'run') {
     const end = m.offset + m.audio.length / 16000;
     const chunks = T.filter(c => c.start < end && c.end > m.offset)
-      .map(c => ({ start: Math.max(0, c.start - m.offset), end: Math.min(end, c.end) - m.offset, text: c.text }));
+      .map(c => ({ s: c.asrStart ?? c.start, e: c.asrEnd ?? c.end, text: c.text }))
+      .map(c => ({ start: Math.max(0, c.s - m.offset), end: Math.min(end, c.e) - m.offset, text: c.text }));
     setTimeout(() => self.postMessage({ type: 'result', id: m.id, chunks }), ${reloadAt === 'asr' ? 1500 : 0});
   }
 };`;
@@ -237,7 +240,7 @@ async function reloadDuring(stage) {
 }
 
 try {
-  await page.goto('http://127.0.0.1:8123/' + (webaudio ? '?audio=webaudio' : ''));
+  await page.goto((process.env.APP_URL || 'http://127.0.0.1:8123/') + (webaudio ? '?audio=webaudio' : ''));
   await page.setInputFiles('#file', path.join(dir, sample));
   await page.waitForSelector('#stepAnalyze:not([hidden]), #fileError:not([hidden])', { timeout: 60000 });
   const fileErr = await page.$eval('#fileError', el => (el.hidden ? null : el.textContent));
@@ -370,7 +373,7 @@ try {
     console.log(`MP4の字幕に手直しが反映: ${subs.replace(/[、。]/g, '').includes(editExpect.text) ? 'はい' : 'いいえ'}`);
   }
   console.log('演出: ' + (await page.$eval('#outStyle', el => el.textContent)));
-  const tl = await page.evaluate(() => window.amityDebug.timeline.map(c => ({ outStart: +c.outStart.toFixed(2), dur: +c.outDuration.toFixed(2), pos: c.subPos, zoom: c.zoom && { z: c.zoom.z, rect: c.zoom.rect }, crop: c.crop, inCrop: c.inCrop, subs: c.subtitles.map(p => p.lines.join('／')) })));
+  const tl = await page.evaluate(() => window.amityDebug.timeline.map(c => ({ outStart: +c.outStart.toFixed(2), dur: +c.outDuration.toFixed(2), pos: c.subPos, zoom: c.zoom && { z: c.zoom.z, rect: c.zoom.rect }, crop: c.crop, inCrop: c.inCrop, text: c.text, pieces: c.pieces.map(p => ({ srcStart: p.srcStart, frames: p.frames, outStart: p.outStart })), subs: c.subtitles.map(p => p.lines.join('／')) })));
   fs.writeFileSync(path.join(dir, `timeline-${tag}.json`), JSON.stringify(tl, null, 1));
 } catch (err) {
   if (err.message !== 'RELOAD_CHECK_DONE') throw err;

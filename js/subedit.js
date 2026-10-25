@@ -34,12 +34,29 @@ export function collectEdits(units, offset) {
   return { offset: round1(offset || 0), edits };
 }
 
+// 場面の区切り方が変わった（アプリの更新で前後の余白が変わった等）ときも、0.5秒以内の近い場面に当てはめる。
+// ほかの場面とぴったり合う保存データは、その場面のために残しておく
+function findEdit(edits, u, used, exact) {
+  const k = unitKey(u);
+  if (edits[k]) return used.has(k) ? null : k;
+  let best = null, bestD = 0.5;
+  for (const key of Object.keys(edits)) {
+    const d = Math.abs(parseFloat(key) - u.start);
+    if (!used.has(key) && !exact.has(key) && d < bestD) { bestD = d; best = key; }
+  }
+  return best;
+}
+
 // 保存してあった修正を当てはめる。当てはめた数を返す
 export function applyEdits(units, saved) {
   let n = 0;
+  const used = new Set();
+  const exact = new Set(units.map(unitKey));
   for (const u of units) {
     if (u.aiText === undefined) { u.aiText = u.text; u.aiSubStart = u.subStart; u.aiSubEnd = u.subEnd; }
-    const e = saved && saved.edits && saved.edits[unitKey(u)];
+    const key = saved && saved.edits && u.kind === 'speech' ? findEdit(saved.edits, u, used, exact) : null;
+    if (key) used.add(key);
+    const e = key && saved.edits[key];
     if (!e || u.kind !== 'speech') continue;
     if (typeof e.text === 'string') u.text = e.text;
     if (typeof e.subStart === 'number' && typeof e.subEnd === 'number' && u.subStart != null) {

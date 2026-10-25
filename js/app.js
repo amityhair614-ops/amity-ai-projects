@@ -375,7 +375,9 @@ function transcribe(pcm, windows, terms = []) {
         for (const c of m.chunks) {
           const start = offset + c.start, end = Math.min(offset + c.end, w.end + 0.2);
           const text = cleanSubtitle(c.text);
-          if (end > start && text) chunks.push({ start, end, text, raw: c.raw, timed: c.timed });
+          // つなぎ言葉だけの発言（えーと 等）も残す。場面の候補では「つなぎ言葉のみ」として除外される
+          // （残さないと、文字起こしのない声として構成に入ってしまう）
+          if (end > start && (text || (c.raw || c.text || '').trim())) chunks.push({ start, end, text, raw: c.raw ?? c.text, timed: c.timed });
         }
         i++;
         next();
@@ -428,7 +430,7 @@ $('btnAnalyze').addEventListener('click', async () => {
         state.rmsDb = a.rmsDb;
         pcm = a.pcm;
         state.speech = detectSpeech(a.rmsDb);
-        log('音声の解析完了', { mode: getAudioMode(), speechRegions: state.speech.regions.length });
+        log('音声の解析完了', { mode: getAudioMode(), speechRegions: state.speech.regions.length, sounds: state.speech.sounds?.length ?? 0 });
         setStep('audio', 'done');
       } catch (err) {
         log('音声の解析に失敗', errorText(err));
@@ -501,6 +503,7 @@ function makePlan(brief) {
   state.brief = bp.brief;
   state.units = buildUnits({
     duration: src.duration, rmsDb: state.rmsDb, speech: state.speech, chunks: state.chunks, motion: state.motion,
+    pace: bp.brief.style === 'tempo' ? 'tempo' : 'natural',
   });
   const { must } = applyBrief(state.units, bp);
   applyStyle(state.units, bp.brief.style);
@@ -732,6 +735,9 @@ function showReview() {
     `元の動画 ${formatSec(state.src.duration)} のうち、話している部分は約${formatSec(speechSec)}でした。`,
     `その中から${chosen.length}場面を選びました。`,
   ];
+  // 文の中の長い間を縮めた数（すべての無音を消すのではなく、自然な長さを残している）
+  const shortened = chosen.reduce((n, u) => n + Math.max(0, u.pieces.length - 1), 0);
+  if (shortened) parts.push(`話の途中の長い間${shortened}か所を、自然な長さ（約${state.brief?.style === 'tempo' ? '0.3〜0.45' : '0.4〜0.6'}秒）に縮めました。`);
   if (state.chunks) parts.push(`文字起こし: ${state.chunks.length}件。`);
   else parts.push('字幕なしで構成しました。');
   if (!state.src.audio) parts.push('音声がないため、手元の動きだけで選びました。');
