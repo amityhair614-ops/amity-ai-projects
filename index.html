@@ -224,7 +224,7 @@
     <p class="lead">カット解説動画から、字幕付きのYouTube動画を自動で作ります。動画の内容や完成時間を入力すると、それに合わせて場面を選びます。処理はすべてこのiPhoneの中で行い、動画はどこにも送信しません。</p>
   </header>
 
-  <div class="banner"><b>テスト版です。</b> 編集の途中でSafariを閉じても、もう一度開くと続きから再開できるようにしました（閉じている間は進みません）。<b>今回の追加は、iPhone実機ではまだ確認できていません。</b>うまく動かない場合は、下の「診断情報」をコピーして送ってください。字幕・ズームはそれぞれOFFにできます。</div>
+  <div class="banner"><b>テスト版です。</b> iPhoneで書き出しが途中で止まる不具合（Decoder failure）と、続きから再開できない不具合への対策をしました。言い直し・くり返しは、話した内容から判断して取り除きます（確かでないものは確認画面に「候補」として出します）。<b>今回の修正は、iPhone実機ではまだ確認できていません。</b>うまく動かない場合は、下の「診断情報」をコピーして送ってください。字幕・ズームはそれぞれOFFにできます。</div>
 
   <div class="recover" id="recover" role="alert" hidden>
     <b>前回の処理が途中で止まりました</b>
@@ -255,7 +255,7 @@
       <li><span>約60秒・縦9:16（1080×1920）に編集</span><span class="badge warn">パソコンで確認</span></li>
       <li><span>MP4の書き出し・iPhoneへの保存</span><span class="badge warn">パソコンで確認</span></li>
       <li><span>カット技術の重要場面を残す<small>手元の動きの量と美容の用語で判定する簡易版。映像の内容までは理解しません</small></span><span class="badge warn">簡易版</span></li>
-      <li><span>言い直しの検出<small>文字起こしが必要。似た発言のくり返し等を検出する簡易版</small></span><span class="badge warn">簡易版</span></li>
+      <li><span>言い直し・くり返しの判断<small>文字起こしが必要。「いや、〜じゃなくて」などの訂正・同じ説明のくり返し・文の中のくり返しを取り除きます。用語が違う説明は外さず、確かでないものは候補として出します</small></span><span class="badge warn">パソコンで確認</span></li>
       <li><span>日本語字幕の自動生成<small>端末内のAI（Whisper）。美容用語の辞書を使い、音声と合うときだけ用語に直します。表示は声に合わせます。書き出し前に文字・タイミングを直せます</small></span><span class="badge warn">パソコンで確認</span></li>
       <li><span>字幕のデザイン<small>白のゴシック体・最大2行・薄い影・ふわっと表示。手元に重ならない位置に置き、言葉の途中で改行しない</small></span><span class="badge warn">パソコンで確認</span></li>
       <li><span>自然なズーム<small>手元がまとまって動く場面だけ、ゆっくり1.03〜1.08倍。間隔をあけ、手元が切れる場合はしない。色や質感の加工はしません</small></span><span class="badge warn">パソコンで確認</span></li>

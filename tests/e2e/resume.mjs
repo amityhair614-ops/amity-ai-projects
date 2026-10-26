@@ -226,10 +226,24 @@ try {
       });
       const cov = (a, b) => pieces.reduce((t, [s, e]) => t + Math.max(0, Math.min(b, e) - Math.max(a, s)), 0);
       const partial = transcript.filter(t => !t.retake).filter(t => {
-        const st = t.phrases.map(p => cov(p.start, p.end) > 0.02);
+        const st = t.phrases.filter(p => !p.del).map(p => cov(p.start, p.end) > 0.02);
         return st.some(Boolean) && !st.every(Boolean);
       });
       const missingAll = transcript.filter(t => !t.retake && t.phrases.every(p => cov(p.start, p.end) <= 0.02));
+      if (transcript.some(t => t.phrases?.some(p => 'del' in p))) {
+        // 正解のラベル（取り除くべき句・残すべき句）と比べる
+        const ph = transcript.flatMap(t => t.phrases.map(p => ({ ...p, kind: t.kind, sent: t.spoken || t.text })));
+        const isIn = p => cov(p.start, p.end) > (p.end - p.start) * 0.5;
+        const cats = {};
+        for (const p of ph) {
+          const c = p.del ? p.cat : 'keep';
+          (cats[c] ||= { n: 0, removed: 0, items: [] }).n++;
+          if (!isIn(p)) { cats[c].removed++; cats[c].items.push(p.text); }
+        }
+        for (const [c, v] of Object.entries(cats)) report.push(`  ${c}: ${v.removed}/${v.n} 句を取り除いた${c === 'keep' || c === 'similar' ? '（残すべき句）' : ''} ${v.items.join(' / ')}`);
+        const units = await page.evaluate(() => window.amityDebug.units.map(u => ({ start: u.start, text: u.text, excluded: u.excluded || null, candidate: u.candidate || null, trimmed: u.trimmed?.reason || null })));
+        for (const u of units.filter(u => u.excluded || u.candidate || u.trimmed)) report.push(`  [${u.excluded ? '除外: ' + u.excluded : u.trimmed ? '一部を取り除いた: ' + u.trimmed : '候補: ' + u.candidate}] ${u.start.toFixed(1)} ${u.text}`);
+      }
       report.push(`途中で切れた文: ${partial.length}件 ${partial.map(t => t.start.toFixed(1) + ' ' + t.text).join(' / ')}`);
       report.push(`まったく入らなかった文（言い直し等を除く）: ${missingAll.length}件 ${missingAll.slice(0, 5).map(t => t.start.toFixed(1) + ' ' + t.text).join(' / ')}`);
       if (process.env.DUMP_AT) {

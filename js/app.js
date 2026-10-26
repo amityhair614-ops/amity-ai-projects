@@ -765,7 +765,8 @@ function clipRow(u) {
   play.addEventListener('click', () => playRange(u.start, u.end));
   head.append(label, play);
   div.appendChild(head);
-  const reasons = [u.excluded, ...u.reasons].filter(Boolean);
+  // 取り除いた部分は下の枠（元に戻すボタンつき）に出すので、理由の行には重ねて出さない
+  const reasons = [u.excluded, ...u.reasons.filter(r => !r.endsWith('を取り除きました'))].filter(Boolean);
   if (reasons.length) {
     const r = document.createElement('div');
     r.className = 'reasons';

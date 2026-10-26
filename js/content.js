@@ -27,13 +27,21 @@ export function contentTerms(text) {
   return out;
 }
 
-// b が a と同じ用語だけで話しているか（a の用語がすべて b にあり、b に新しい用語が多すぎない）
-function sameTerms(a, b) {
+// a の用語がすべて b にあれば、b にだけある用語の数を返す（a にしかない用語があれば -1 = 別の説明）
+function extraTerms(a, b) {
   const A = contentTerms(a), B = contentTerms(b);
-  for (const x of A) if (![...B].some(y => y.includes(x) || x.includes(y))) return false;
+  for (const x of A) if (![...B].some(y => y.includes(x) || x.includes(y))) return -1;
   let extra = 0;
   for (const y of B) if (![...A].some(x => y.includes(x) || x.includes(y))) extra++;
-  return extra <= 1;
+  return extra;
+}
+
+// a にだけある用語が、すべて b のどれかと「同じ長さで1文字違い」か（数字を含む用語は違う説明とみなす）
+function lookAlikeTerms(a, b) {
+  const A = [...contentTerms(a)], B = [...contentTerms(b)];
+  const only = A.filter(x => !B.some(y => y.includes(x) || x.includes(y)));
+  if (!only.length) return false;
+  return only.every(x => !/[0-9]/.test(x) && B.some(y => y.length === x.length && [...x].filter((c, k) => c !== y[k]).length === 1));
 }
 
 // 2つの文の述語（語尾の4文字）が同じか。「ここを軽くします」と「耳後ろを軽くします」は同じ「軽くします」
@@ -46,36 +54,51 @@ function samePredicate(a, b) {
 // 文の先頭の訂正の部分（「いや、ここじゃなくて、」）の長さ。訂正の部分がなければ 0
 function correctionHeadLength(text) {
   if (!CORRECTION_HEAD_RE.test(text)) return 0;
-  // 合図の言葉を含む読点までを、訂正の部分とする（最大20文字）
-  let end = 0;
+  // 合図の言葉を含む句（読点で区切られた部分）が続くところまでを、訂正の部分とする（最大20文字）。
+  // 先頭の「あ、」「あっ、」は合図の一部として含める
+  const inter = text.match(/^(?:あっ?|えっ?)[、,]\s*/);
+  let end = inter ? inter[0].length : 0;
   const re = /[、,]/g;
   let m;
   while ((m = re.exec(text)) && m.index <= 20) {
-    if (CUE_WORD_RE.test(text.slice(0, m.index))) end = m.index + 1;
+    if (CUE_WORD_RE.test(text.slice(end, m.index))) end = m.index + 1;
     else break;
   }
-  if (!end) {
-    // 読点がない「いや耳後ろを…」: 合図の言葉だけ
+  if (!end || (inter && end === inter[0].length)) {
+    // 読点がない「いや耳後ろを…」: 合図の言葉だけ（すぐ後の読点も含める）
     const c = text.match(CORRECTION_HEAD_RE);
     end = c ? c[0].length : 0;
+    if (/^[、,]/.test(text.slice(end))) end++;
   }
   return text.slice(end).replace(/[、。\s]/g, '').length >= 4 ? end : 0;
 }
 
-// 文の途中の訂正（「ここを軽くします、いや、耳後ろを…」「ここを、じゃなくて耳後ろを」）の位置。
-// 返り値は { cut: 残す部分の始まりの文字位置, before: 取り消された部分 }。なければ null
+// 文の途中の訂正（「ここを軽くします、いや、耳後ろを…」「スライスは、一センチ、すみません、二センチの幅で」）。
+// 合図の直前の句（言い間違えた部分）と合図を取り除き、その前の句は残す。
+// 返り値は { from, cut, before, after }（from〜cut の文字を取り除く）。なければ null
 function midCorrection(text) {
-  const m = text.slice(4).match(CORRECTION_MID_RE);
+  const m = text.slice(2).match(CORRECTION_MID_RE);
   if (!m) return null;
-  const at = m.index + 4;
-  // 合図を含む読点まで（「じゃなくて、」）を取り除く
+  const at = m.index + 2;
+  // 合図の後ろの読点まで（「じゃなくて、」「すみません、」）を取り除く
   let cut = at + m[0].length;
   const comma = text.slice(cut, cut + 3).search(/[、,]/);
   if (comma >= 0) cut += comma + 1;
-  const before = text.slice(0, at).replace(/[、,\s]+$/, '');
-  const rest = text.slice(cut);
-  if (normalizeText(before).length < 2 || normalizeText(rest).length < 4) return null;
-  return { cut, before };
+  // 言い間違えた句: 合図の直前の句（直前の読点の後から）
+  const head = text.slice(0, at).replace(/[、,\s]+$/, '');
+  const prevComma = Math.max(head.lastIndexOf('、'), head.lastIndexOf(','));
+  const from = prevComma + 1;
+  const before = head.slice(from);
+  const after = text.slice(cut).split(/[、,。]/)[0];
+  if (normalizeText(before).length < 2 || normalizeText(text.slice(cut)).length < 2) return null;
+  return { from, cut, before, after };
+}
+
+// 言い間違えた句と正しい句が、同じ形をしているか（同じ助詞で終わる・どちらも数と単位・語尾が同じ）
+function parallel(a, b) {
+  const tail = x => (x.match(/[をにでがはもへとからまで]+$/) || [''])[0];
+  const num = x => /[0-9０-９一二三四五六七八九十]+\s*(?:度|センチ|ミリ|cm|mm|本|個|つ)/.test(x);
+  return (tail(a) && tail(a) === tail(b)) || (num(a) && num(b)) || samePredicate(a, b) || [...contentTerms(a)].some(x => b.includes(x));
 }
 
 // 文の中のくり返し（「このパネルを、このパネルを45度で」）。返り値は { cut } か null
@@ -118,7 +141,10 @@ export function analyzeContent(chunks) {
       set(i, { trim: { cut: head, reason: `冒頭の訂正「${t.slice(0, head).replace(/[、,]$/, '')}」`, high: true } });
       if (i > 0 && near(i - 1, i, 6) && !out[i - 1]?.drop) {
         const prev = text[i - 1];
-        if (samePredicate(prev, kept) || [...contentTerms(prev)].some(x => kept.includes(x))) set(i - 1, { drop: '言い直し前の発言（すぐ後で訂正）' });
+        const pred = samePredicate(prev, kept), term = [...contentTerms(prev)].some(x => x.length >= 2 && kept.includes(x)) || parallel(prev, kept);
+        // 「すみません」「ごめん」は、訂正でなく普通のおわびのこともあるので、語尾と用語の両方が合うときだけ自動で外す
+        const apology = /^(?:あ[、,]?\s*)?(?:すみません|すいません|ごめん|失礼)/.test(t);
+        if (apology ? pred && term : pred || term) set(i - 1, { drop: '言い直し前の発言（すぐ後で訂正）' });
         else set(i - 1, { candidate: '直後に訂正の言葉があります（言い直し前の発言かもしれません）' });
       }
       continue;
@@ -126,9 +152,8 @@ export function analyzeContent(chunks) {
     // 3. 文の途中の訂正
     const mid = midCorrection(t);
     if (mid) {
-      const kept = t.slice(mid.cut);
-      const high = samePredicate(mid.before, kept) || [...contentTerms(mid.before)].some(x => kept.includes(x));
-      set(i, { trim: { cut: mid.cut, reason: `言い直し前の「${mid.before}」`, high } });
+      const high = parallel(mid.before, mid.after) || samePredicate(mid.before, t.slice(mid.cut));
+      set(i, { trim: { from: mid.from, cut: mid.cut, reason: `言い直し前の「${mid.before}」`, high } });
       continue;
     }
     // 4. 文の中のくり返し
@@ -148,9 +173,17 @@ export function analyzeContent(chunks) {
       const sim = similarity(a, b);
       const prefix = a.slice(0, Math.min(6, a.length));
       const restart = prefix.length >= 5 && b.startsWith(prefix) && a.length <= b.length + 3;
-      if (!sameTerms(text[i], text[j])) continue;
-      if (sim >= 0.8 || (restart && near(i, j, 12))) { set(i, { drop: restart && sim < 0.8 ? '言い直し（あとの発言を採用）' : '同じ説明のくり返し（あとの発言を採用）' }); break; }
-      if (sim >= 0.55 && near(i, j, 12)) { set(i, { candidate: 'あとで似た説明をしています（くり返しかもしれません）' }); break; }
+      const extra = extraTerms(text[i], text[j]);
+      if (extra < 0) {
+        // 用語が違う: 別の説明。ただし文全体がほぼ同じで、違う用語が「1文字違い」（猛量／毛量など）なら、
+        // 文字起こしの間違いかもしれないので候補にする（サイド／バック、0度／45度 は別の説明）
+        if (sim >= 0.85 && near(i, j, 12) && lookAlikeTerms(text[i], text[j])) { set(i, { candidate: 'あとでほぼ同じ説明をしています（用語の文字が違うため、自動では外していません）' }); break; }
+        continue;
+      }
+      // 用語がまったく同じときだけ自動で外す。あとの文に用語が加わっている（「サイドは、…」）ときは、くわしく言い直したのか、
+      // 別の部位の説明なのか確かでないので候補にする
+      if (extra === 0 && (sim >= 0.8 || (restart && near(i, j, 12)))) { set(i, { drop: restart && sim < 0.8 ? '言い直し（あとの発言を採用）' : '同じ説明のくり返し（あとの発言を採用）' }); break; }
+      if ((sim >= 0.55 || restart) && near(i, j, 12)) { set(i, { candidate: 'あとで似た説明をしています（くり返しかもしれません）' }); break; }
     }
   }
   return out;

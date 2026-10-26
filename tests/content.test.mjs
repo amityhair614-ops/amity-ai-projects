@@ -114,3 +114,61 @@ test('声の切れ目がなければ、文の途中では切らずに候補に�
   assert.ok(u.text.startsWith('いや'));
   assert.ok(u.candidate && u.candidate.includes('切っていません'));
 });
+
+test('訂正の言葉は、訂正の句だけを取り除く（後ろの説明まで削らない）', () => {
+  const t = 'いや、ここじゃなくて、耳後ろを、軽くします。';
+  const r = analyzeContent(C([t]));
+  assert.equal(t.slice(r[0].trim.cut), '耳後ろを、軽くします。');
+});
+
+test('あとの文に用語が加わっているときは自動で外さない（候補にする）', () => {
+  const r = analyzeContent(C(['パネルを45度に引き出して、カットします。', 'サイドは、パネルを45度に引き出して、カットします。']));
+  assert.ok(!r[0]?.drop);
+  assert.ok(r[0]?.candidate);
+});
+
+test('文の途中の訂正: 言い間違えた句だけを取り除き、前の句は残す', async () => {
+  const t = 'スライスは、一センチ、すみません、二センチの幅で取ります。';
+  const r = analyzeContent(C([t]));
+  assert.equal(t.slice(0, r[0].trim.from) + t.slice(r[0].trim.cut), 'スライスは、二センチの幅で取ります。');
+  assert.ok(r[0].trim.high, '数と単位どうしの訂正なので確か');
+  const { FRAME_SEC, detectSpeech, buildUnits } = await import('../js/plan.js');
+  const N = s => Math.round(s / FRAME_SEC);
+  const rm = new Float32Array(N(20)).fill(-60);
+  // 「スライスは、」1.0〜1.8 /「一センチ、すみません、」2.0〜3.4 /「二センチの幅で取ります」3.65〜5.6
+  const spans = [[1.0, 1.8], [2.0, 3.4], [3.65, 5.6]];
+  for (const [a, b] of spans) for (let i = N(a); i < N(b); i++) rm[i] = -20;
+  const units = buildUnits({
+    duration: 20, rmsDb: rm, speech: detectSpeech(rm), motion: null,
+    chunks: [{ start: 1, end: 5.6, text: t, fine: spans.map(([start, end]) => ({ start, end })), subStart: 1, subEnd: 5.6 }],
+  });
+  const u = units.find(x => x.text);
+  assert.ok(u.trimmed, JSON.stringify(u.candidate));
+  assert.equal(u.text, 'スライスは、二センチの幅で取ります。');
+  assert.equal(u.pieces.length, 2);
+  assert.ok(u.pieces[0].end <= 2.0 && u.pieces[1].start >= 3.4 && u.pieces[0].start <= 1.0, JSON.stringify(u.pieces));
+});
+
+test('「ブラシで、ではなくて、コームで」は同じ形の言い直しなので確か', () => {
+  const t = 'ブラシで、ではなくて、コームで、とかします。';
+  const r = analyzeContent(C([t]));
+  assert.equal(t.slice(0, r[0].trim.from) + t.slice(r[0].trim.cut), 'コームで、とかします。');
+  assert.ok(r[0].trim.high);
+});
+
+test('「あ、違う、」の訂正の言葉を、読点ごと取り除く', () => {
+  const t = 'あ、違う、襟足から、切っていきます。';
+  const r = analyzeContent(C(['最初に、前髪から切ります。', t]));
+  assert.equal(t.slice(r[1].trim.cut), '襟足から、切っていきます。');
+  assert.ok(r[0].drop);
+});
+
+test('文字起こしの間違い（1文字違いの用語）でほぼ同じ文は、候補にする', () => {
+  const r = analyzeContent(C(['ここで、猛量を半分くらいに減らします。', 'ここで、毛量を、半分くらいに減らします。']));
+  assert.ok(!r[0]?.drop && r[0]?.candidate);
+});
+
+test('「すみません、」で始まる普通のおわびでは、前の説明を外さない', () => {
+  const r = analyzeContent(C(['パネルを45度で引き出します。', 'すみません、ちょっと見えにくいので、角度を変えます。']));
+  assert.ok(!r[0]?.drop);
+});

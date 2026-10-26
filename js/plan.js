@@ -420,15 +420,12 @@ function sentenceVoice(voice, rmsDb, start, end) {
   return segs.filter(s => s.end - s.start > 0.05);
 }
 
-// 文の一部を取り除く位置を、声の区間から探す。trim.cut は残す部分の始まりの文字位置。
+// 文の中の文字の位置 at に当たる声の切れ目を、声の区間から探す。
 // 文字の位置を読みの長さで時刻に直し、その近く（±0.6秒）の声の切れ目（0.08秒以上）を探す。見つからなければ null
-export function findTrim(u, spans, trim) {
+function findGap(u, sp, at) {
   const text = u.text || '';
-  const sp = spans.filter(r => r.end > u.voiceStart - 0.05 && r.start < u.voiceEnd + 0.05)
-    .map(r => ({ start: Math.max(r.start, u.voiceStart), end: Math.min(r.end, u.voiceEnd) })).filter(r => r.end > r.start);
-  if (sp.length < 2) return null;
   const total = sp.reduce((a, r) => a + r.end - r.start, 0);
-  const f = moraCount(text.slice(0, trim.cut)) / (moraCount(text) || 1);
+  const f = moraCount(text.slice(0, at)) / (moraCount(text) || 1);
   let rest = f * total, t = sp[sp.length - 1].end;
   for (const r of sp) { if (rest <= r.end - r.start) { t = r.start + rest; break; } rest -= r.end - r.start; }
   let best = null, bestCost = Infinity;
@@ -437,23 +434,55 @@ export function findTrim(u, spans, trim) {
     const mid = (sp[k].end + sp[k + 1].start) / 2;
     if (gap < 0.08 || Math.abs(mid - t) > 0.6) continue;
     const cost = Math.abs(mid - t) / (1 + 2 * gap);
-    if (cost < bestCost) { bestCost = cost; best = { gapStart: sp[k].end, voiceStart: sp[k + 1].start, text: text.slice(trim.cut).trim(), reason: trim.reason }; }
+    if (cost < bestCost) { bestCost = cost; best = { gapStart: sp[k].end, voiceStart: sp[k + 1].start }; }
   }
   return best;
 }
 
-// 文の冒頭の部分を取り除く（元に戻せるよう、もとの状態を u.trimmed.original に残す）
+// 文の一部を取り除く位置を探す。trim.cut は残す部分の始まり、trim.from（あれば）は取り除く部分の始まりの文字位置。
+// 冒頭を取り除く（from なし）か、文の途中を取り除く（from あり）。どちらも声の切れ目が見つかったときだけ
+export function findTrim(u, spans, trim) {
+  const text = u.text || '';
+  const sp = spans.filter(r => r.end > u.voiceStart - 0.05 && r.start < u.voiceEnd + 0.05)
+    .map(r => ({ start: Math.max(r.start, u.voiceStart), end: Math.min(r.end, u.voiceEnd) })).filter(r => r.end > r.start);
+  if (sp.length < 2) return null;
+  const b = findGap(u, sp, trim.cut);
+  if (!b) return null;
+  const kept = (trim.from ? text.slice(0, trim.from) : '') + text.slice(trim.cut);
+  if (!trim.from) return { gapStart: b.gapStart, voiceStart: b.voiceStart, text: kept.trim(), reason: trim.reason };
+  const a = findGap(u, sp, trim.from);
+  if (!a || a.voiceStart >= b.voiceStart) return null;
+  return { mid: true, keepEnd: a.gapStart, gapStart: b.gapStart, voiceStart: b.voiceStart, text: kept.trim(), reason: trim.reason };
+}
+
+// 文の一部を取り除く（元に戻せるよう、もとの状態を u.trimmed.original に残す）
 export function trimUnit(u, cut, pace = PACES.natural) {
   const original = { pieces: u.pieces.map(p => ({ ...p })), start: u.start, text: u.text, subStart: u.subStart, fine: u.fine, voiceStart: u.voiceStart };
   const from = Math.max(cut.gapStart + 0.02, cut.voiceStart - pace.lead);
-  const pieces = u.pieces.filter(p => p.end > from + 0.05).map(p => ({ ...p, start: Math.max(p.start, from) }));
+  let pieces;
+  if (cut.mid) {
+    // 途中を取り除く: 前の部分は語尾の後に短い間を残して切り、後ろの部分は話し始めの少し前から
+    const to = Math.min(cut.keepEnd + pace.lead, from);
+    pieces = [];
+    for (const p of u.pieces) {
+      if (p.end <= to || p.start >= from) { pieces.push({ ...p }); continue; }
+      if (p.start < to) pieces.push({ start: p.start, end: to });
+      if (p.end > from) pieces.push({ start: from, end: p.end });
+    }
+    pieces = pieces.filter(p => p.end - p.start > 0.05);
+    if (u.fine) u.fine = u.fine.filter(r => r.end <= cut.keepEnd + 0.01 || r.start >= cut.voiceStart - 0.01);
+  } else {
+    pieces = u.pieces.filter(p => p.end > from + 0.05).map(p => ({ ...p, start: Math.max(p.start, from) }));
+    if (pieces.length) {
+      u.voiceStart = cut.voiceStart;
+      if (u.subStart != null) u.subStart = Math.max(u.subStart, cut.voiceStart);
+      if (u.fine) u.fine = u.fine.filter(r => r.end > cut.voiceStart).map(r => ({ start: Math.max(r.start, cut.voiceStart), end: r.end }));
+    }
+  }
   if (!pieces.length) return false;
   u.pieces = pieces;
   u.start = pieces[0].start;
-  u.voiceStart = cut.voiceStart;
   u.text = cut.text;
-  if (u.subStart != null) u.subStart = Math.max(u.subStart, cut.voiceStart);
-  if (u.fine) u.fine = u.fine.filter(r => r.end > cut.voiceStart).map(r => ({ start: Math.max(r.start, cut.voiceStart), end: r.end }));
   u.duration = piecesDuration(u.pieces);
   u.trimmed = { reason: cut.reason, cut, original };
   delete u.trimOption;
