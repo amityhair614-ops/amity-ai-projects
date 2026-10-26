@@ -1,15 +1,16 @@
 import {
   checkSupport, openVideo, closeVideo, analyzeAudio, analyzeMotion, renderSegment, assembleOutput, getAudioMode, ASR_RATE,
+  createRenderContext, RenderPaused,
 } from './media.js';
 import {
   openWritable, copyIn, readFile, removeFile, listFiles, storageInfo, requestPersist, isStorageFull,
-  saveJob, loadJob, listJobs, deleteJob,
+  saveJob, loadJob, listJobs, deleteJob, getWriteMode,
 } from './jobstore.js';
 import {
   planSegments, renderBytes, spaceCheck, formatBytes, describeJob, jobIdFor, sameSource, MB,
 } from './resume.js';
 import {
-  detectSpeech, transcriptionWindows, buildUnits, selectUnits, buildTimeline, formatTime, FRAME_SEC,
+  detectSpeech, transcriptionWindows, buildUnits, selectUnits, buildTimeline, formatTime, FRAME_SEC, trimUnit, untrimUnit,
   cleanSubtitle, alignSentences, refineSubtitleTiming, fineSpeech,
 } from './plan.js';
 import {
@@ -22,10 +23,21 @@ import {
 
 const $ = id => document.getElementById(id);
 const state = {};
+// Safari で開いたか、ホーム画面に追加したアプリから開いたか。iPhone では2つの保存場所が別になる
+const OPENED_FROM = (navigator.standalone || matchMedia('(display-mode: standalone)').matches) ? 'home' : 'safari';
+const FROM_LABEL = { home: 'ホーム画面のアプリ', safari: 'Safari' };
 // 端末内に保存するファイルの名前（作業ごとのフォルダの中）
 const SOURCE_NAME = 'source';
 const PCM_NAME = 'pcm.f32';
 const OUTPUT_NAME = 'output.mp4';
+// 画面に表示されるまで待つ
+function waitVisible() {
+  if (!document.hidden) return Promise.resolve();
+  return new Promise(resolve => {
+    const on = () => { if (!document.hidden) { document.removeEventListener('visibilitychange', on); resolve(); } };
+    document.addEventListener('visibilitychange', on);
+  });
+}
 // ほかのアプリに切り替えた・画面を消した回数（書き出しが止められた可能性があるかを判断する）
 let hiddenCount = 0;
 document.addEventListener('visibilitychange', () => {
@@ -442,19 +454,39 @@ $('btnAnalyze').addEventListener('click', async () => {
     id, version: 1, createdAt: Date.now(), stage: 'analyze',
     file: { name: state.file.name, size: state.file.size, type: state.file.type }, duration: src.duration,
     useAsr: $('optAsr').checked && !!src.audio, brief: readBrief(),
-    sourceSaved: keepSource, analysis: { warnings: [] }, review: null, render: null, output: null,
+    sourceSaved: keepSource, analysis: { warnings: [] }, review: null, render: null, output: null, from: OPENED_FROM,
   };
   await runAnalysis(job);
 });
 
 // 端末内に保存する作業の記録。保存に失敗しても編集は続ける（再開できないだけ）
+// 保存した作業の一覧を localStorage にも控えておく（IndexedDB から読めなかったときに、理由を表示するため）
+const JOB_INDEX_KEY = 'amity.jobindex.v1';
+function indexJob(job, saveError) {
+  try {
+    const idx = loadJSON(JOB_INDEX_KEY) || {};
+    if (job === null) { delete idx[saveError]; }
+    else {
+      const prev = idx[job.id] || {};
+      idx[job.id] = {
+        id: job.id, name: job.file.name, size: job.file.size, duration: job.duration, stage: job.stage, from: job.from || OPENED_FROM,
+        saved: job.render ? `${job.render.done.filter(Boolean).length}/${job.render.segments.length}` : null,
+        updatedAt: Date.now(), saveError: saveError || null, lastSaved: saveError ? prev.lastSaved || null : Date.now(),
+      };
+    }
+    localStorage.setItem(JOB_INDEX_KEY, JSON.stringify(idx));
+  } catch {}
+}
+
 async function persistJob(job) {
   state.job = job;
   try {
     await saveJob(job);
     state.saveWarned = false;
+    indexJob(job);
   } catch (err) {
-    if (!state.saveWarned) log('途中経過を保存できませんでした', errorText(err));
+    indexJob(job, errorText(err));
+    if (!state.saveWarned) log('途中経過を保存できませんでした', { error: errorText(err), stage: job.stage, saved: job.render ? job.render.done.filter(Boolean).length : null });
     if (!state.saveWarned) {
       state.saveWarned = true;
       showNotice(isStorageFull(err)
@@ -623,7 +655,9 @@ async function runAnalysis(job) {
     $('file').disabled = false;
     $('preview').src = state.url;
     lock?.release?.();
-    refreshJobs();
+    $('renderContext').textContent = `今は${FROM_LABEL[OPENED_FROM]}で開いています。再開するときも${FROM_LABEL[OPENED_FROM]}から開いてください（iPhoneでは保存場所が別です）。`;
+refreshJobs();
+storageInfo().then(info => setEnv('保存', { ...info, openedFrom: OPENED_FROM, idb: typeof indexedDB !== 'undefined' }));
   }
 }
 
@@ -657,6 +691,7 @@ function makePlan(brief) {
     duration: src.duration, rmsDb: state.rmsDb, speech: state.speech, chunks: state.chunks, motion: state.motion,
     pace: bp.brief.style === 'tempo' ? 'tempo' : 'natural',
   });
+  state.trims = {};
   const { must } = applyBrief(state.units, bp);
   applyStyle(state.units, bp.brief.style);
   const { target, max } = targetRange(bp.brief.targetSec);
@@ -737,8 +772,36 @@ function clipRow(u) {
     r.textContent = reasons.join(' / ');
     div.appendChild(r);
   }
+  // 話した内容から判断した、言い直し・くり返しの扱い（取り除いた部分は元に戻せる。確かでないものは候補として出す）
+  if (u.trimmed || u.trimOption || u.candidate) div.appendChild(contentTools(u));
   if (u.kind === 'speech' && state.chunks) div.appendChild(subtitleEditor(u));
   return div;
+}
+
+function contentTools(u) {
+  const box = document.createElement('div');
+  box.className = 'cand';
+  const note = document.createElement('span');
+  note.textContent = u.trimmed ? `${u.trimmed.reason}を取り除きました` : `候補: ${u.candidate}`;
+  box.appendChild(note);
+  const act = (label, fn) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'link-btn';
+    b.textContent = label;
+    b.addEventListener('click', () => {
+      const untouched = u.text === u.aiText; // 字幕を手直ししていなければ、AIの字幕として扱う
+      fn();
+      if (untouched) u.aiText = u.text;
+      state.trims[u.id] = u.trimmed ? 'on' : 'off';
+      saveReview();
+      showReview();
+    });
+    box.appendChild(b);
+  };
+  if (u.trimmed) act('元に戻す', () => untrimUnit(u));
+  else if (u.trimOption) act('この部分を取り除く', () => trimUnit(u, u.trimOption));
+  return box;
 }
 
 // 字幕の手直し: 文字はタップして直す。表示の開始・終了は 0.1 秒ずつ動かし、その部分の音声を再生して確かめる
@@ -942,7 +1005,7 @@ function saveReview() {
   if (!job || job.stage !== 'review') return;
   clearTimeout(reviewTimer);
   reviewTimer = setTimeout(() => {
-    job.review = { selected: [...state.selected], brief: readBrief() };
+    job.review = { selected: [...state.selected], brief: readBrief(), trims: { ...state.trims } };
     job.brief = job.review.brief;
     persistJob(job);
   }, 300);
@@ -969,7 +1032,7 @@ $('btnRender').addEventListener('click', async () => {
   for (const f of await listFiles(job.id)) if (/^seg-|^output/.test(f.name)) await removeFile(job.id, f.name);
   const segments = planSegments(timeline);
   job.stage = 'render';
-  job.review = { selected: [...state.selected], brief: readBrief() };
+  job.review = { selected: [...state.selected], brief: readBrief(), trims: { ...state.trims } };
   job.render = {
     timeline, segments, done: segments.map(() => false), gainDb: computeGainDb(clips),
     styleNote: styleSummary(timeline, useSubs, useZoom), outSec, startedAt: Date.now(), elapsed: 0, sessions: 0,
@@ -1010,7 +1073,10 @@ async function runRender(job) {
   const doneFrames = () => R.segments.filter((x, i) => R.done[i]).reduce((s, x) => s + x.frames, 0);
   const reused = R.done.filter(Boolean).length;
   R.sessions = (R.sessions || 0) + 1;
-  jobStart('書き出し', { file: job.file.name, segments: R.segments.length, reused, session: R.sessions, video: state.src.info, audioMode: getAudioMode() });
+  jobStart('書き出し', {
+    file: job.file.name, segments: R.segments.length, reused, session: R.sessions, video: state.src.info, audioMode: getAudioMode(),
+    decoder: state.src.decoderConfig?.codec, openedFrom: OPENED_FROM, writeMode: getWriteMode(), sourceFromStore: !!state.sourceFromStore,
+  });
   jobStage('render', STAGE_LABELS.render);
   if (reused) log(`保存済みの区間を再利用: ${reused}/${R.segments.length}`);
   const lock = await keepAwake();
@@ -1022,15 +1088,22 @@ async function runRender(job) {
   };
   try {
     // 1. 映像を区間ごとに書き出して保存する
+    const rc = createRenderContext(state.src);
+    // 失敗したときのやり直し方（1回目: 同じ設定で作り直したデコーダー、2回目: 低遅延モードなし・1つ前のキーフレームから）
+    const DECODE_MODES = [{}, {}, { lowLatency: false, earlierKey: true }];
+    R.failures = R.failures || [];
     for (const seg of R.segments) {
       if (R.done[seg.index]) continue;
       const name = `seg-${seg.index}.mp4`;
-      for (let attempt = 0; ; attempt++) {
+      for (let attempt = 0; ; ) {
+        await waitVisible(); // 画面に出ていない間は始めない（iPhone は裏でデコーダーを止める）
         const hiddenBefore = state.hiddenCount;
         await removeFile(job.id, name);
         const w = await openWritable(job.id, name);
         try {
           await renderSegment(state.src, R.timeline, seg, w.stream, {
+            rc, decode: DECODE_MODES[attempt],
+            shouldPause: () => document.hidden,
             onProgress: r => {
               const all = (doneFrames() + r * seg.frames) / total;
               show(all * 0.92, `MP4を書き出し中… ${Math.round(all * 92)}%（区間 ${seg.index + 1}/${R.segments.length}・書き終えた区間は端末内に保存済み）`);
@@ -1040,12 +1113,21 @@ async function runRender(job) {
         } catch (err) {
           await w.dispose();
           await removeFile(job.id, name);
-          // 途中でほかのアプリに切り替えた・画面を消したときは、エンコーダーが止められていることがある。1回だけやり直す
-          if (attempt === 0 && state.hiddenCount !== hiddenBefore && !isStorageFull(err)) {
-            log(`区間 ${seg.index + 1} を書き出し直し（画面を離れていたため）`, errorText(err));
+          // 画面を離れた: 失敗ではない。戻ってきたら、この区間を最初から書き出し直す
+          if (err instanceof RenderPaused || (state.hiddenCount !== hiddenBefore && !isStorageFull(err))) {
+            log(`区間 ${seg.index + 1} を一時停止（画面を離れたため）。戻ったら書き出し直します`, err instanceof RenderPaused ? undefined : errorText(err));
+            show(doneFrames() / total * 0.92, '一時停止中…（画面に戻ると、この区間から書き出しを続けます）');
             continue;
           }
-          throw err;
+          // 原因を調べられるよう、失敗した区間・コマの位置・入力の形式・デコーダーの状態を記録する
+          const failure = { at: new Date().toISOString(), attempt, error: errorText(err), detail: err.detail || null, codec: state.src.info.video, decoder: state.src.decoderConfig?.codec };
+          R.failures.push(failure);
+          if (R.failures.length > 20) R.failures.splice(0, R.failures.length - 20);
+          log(`区間 ${seg.index + 1} の書き出しに失敗（${attempt + 1}回目）`, failure);
+          await persistJob(job);
+          if (isStorageFull(err) || attempt >= DECODE_MODES.length - 1) throw Object.assign(err, { segment: seg.index });
+          attempt++;
+          await new Promise(r => setTimeout(r, 500)); // 使い終わったデコーダー・エンコーダーが解放されるのを少し待つ
         }
       }
       R.done[seg.index] = true;
@@ -1055,17 +1137,29 @@ async function runRender(job) {
     job.stage = 'assemble';
     await persistJob(job);
     show(0.92, 'MP4を仕上げ中…（区間をつないで音声を入れています）');
-    await removeFile(job.id, OUTPUT_NAME);
-    const w = await openWritable(job.id, OUTPUT_NAME);
-    try {
-      await assembleOutput(state.src, R.timeline, R.segments, i => readFile(job.id, `seg-${i}.mp4`), w.stream, {
-        gainDb: R.gainDb,
-        onProgress: r => show(0.92 + 0.08 * r, `MP4を仕上げ中… ${Math.round(92 + 8 * r)}%`),
-      });
-    } catch (err) {
-      await w.dispose();
+    for (;;) {
+      await waitVisible();
+      const hiddenBefore = state.hiddenCount;
       await removeFile(job.id, OUTPUT_NAME);
-      throw err;
+      const w = await openWritable(job.id, OUTPUT_NAME);
+      try {
+        await assembleOutput(state.src, R.timeline, R.segments, i => readFile(job.id, `seg-${i}.mp4`), w.stream, {
+          gainDb: R.gainDb,
+          onProgress: r => show(0.92 + 0.08 * r, `MP4を仕上げ中… ${Math.round(92 + 8 * r)}%`),
+        });
+        break;
+      } catch (err) {
+        await w.dispose();
+        await removeFile(job.id, OUTPUT_NAME);
+        // 画面を離れていた間に音声のエンコーダーが止められた: 戻ってから仕上げだけやり直す（区間は残っている）
+        if (state.hiddenCount !== hiddenBefore && !isStorageFull(err) && err.name !== 'SegmentMismatch') {
+          log('仕上げを一時停止（画面を離れたため）。戻ったらやり直します', errorText(err));
+          continue;
+        }
+        R.failures = [...(R.failures || []), { at: new Date().toISOString(), stage: 'assemble', error: errorText(err) }].slice(-20);
+        log('仕上げに失敗', errorText(err));
+        throw err;
+      }
     }
     const out = await readFile(job.id, OUTPUT_NAME);
     for (const seg of R.segments) await removeFile(job.id, `seg-${seg.index}.mp4`);
@@ -1094,7 +1188,8 @@ async function runRender(job) {
       await persistJob(job);
       return runRender(job);
     } else {
-      showError($('renderError'), err);
+      const seg = err.segment != null ? `区間 ${err.segment + 1}/${R.segments.length} の` : '';
+      showError($('renderError'), `${seg}書き出しに失敗しました（${errorText(err)}）。\n書き終えた区間（${R.done.filter(Boolean).length}/${R.segments.length}）と編集の設定は端末内に保存してあります。上の「途中の編集」の「続きから再開」で、失敗した区間からやり直せます。\n何度も同じ所で失敗する場合は、下の「診断情報」をコピーして送ってください（失敗した区間・コマの位置・動画の形式を記録しています）。`);
     }
     $('renderText').textContent = '';
   } finally {
@@ -1187,6 +1282,16 @@ async function continueJob(job, { reselected = false } = {}) {
     const ids = new Set(state.units.map(u => u.id));
     state.selected = new Set(job.review.selected.filter(id => ids.has(id)));
   }
+  // 確認画面で「元に戻す」「取り除く」を選んだ場面を戻す
+  for (const [id, v] of Object.entries(job.review?.trims || {})) {
+    const u = state.units.find(x => x.id === id);
+    if (!u) continue;
+    const untouched = u.text === u.aiText;
+    if (v === 'off' && u.trimmed) untrimUnit(u);
+    if (v === 'on' && !u.trimmed && u.trimOption) trimUnit(u, u.trimOption);
+    if (untouched) u.aiText = u.text;
+    state.trims[id] = v;
+  }
   showReview();
   if (job.stage === 'render' || job.stage === 'assemble') return runRender(job);
   if (job.stage === 'done') {
@@ -1201,13 +1306,45 @@ async function continueJob(job, { reselected = false } = {}) {
 
 // 画面上部の「途中の編集」を作る
 async function refreshJobs() {
-  let jobs = [];
+  let jobs = [], readError = null;
   try { jobs = (await listJobs()).sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0)); } catch (err) {
-    log('保存データを読み込めませんでした', errorText(err));
+    readError = errorText(err);
+    log('保存データを読み込めませんでした', readError);
   }
   const list = $('jobList');
   list.innerHTML = '';
-  $('resumeCard').hidden = !jobs.length;
+  $('resumeContext').textContent = `今は${FROM_LABEL[OPENED_FROM]}で開いています。iPhoneでは、Safariとホーム画面に追加したアプリは保存場所が別なので、` +
+    '途中から再開するときは、編集を始めたときと同じ方法（Safari／ホーム画面のアイコン）で開いてください。';
+  // 控えの一覧にあるのに読めない作業: 理由を表示する（勝手に消さない）
+  const idx = loadJSON(JOB_INDEX_KEY) || {};
+  const missing = Object.values(idx).filter(e => !jobs.some(j => j.id === e.id));
+  if (missing.length) log('復元できなかった作業', missing.map(e => ({ name: e.name, stage: e.stage, saved: e.saved, saveError: e.saveError, readError })));
+  for (const e of missing) {
+    const item = document.createElement('div');
+    item.className = 'job';
+    const head = document.createElement('div');
+    head.className = 'job-head';
+    head.textContent = `${e.name}（${formatSec(e.duration || 0)}）・続きから再開できません`;
+    const meta = document.createElement('div');
+    meta.className = 'job-meta';
+    meta.textContent = readError
+      ? `保存データを読み込めませんでした（${readError}）。`
+      : e.saveError
+        ? `途中経過の保存に失敗していました（${e.saveError}）。`
+        : '保存データが見つかりませんでした（iPhoneの空き容量不足や「履歴とWebサイトデータを消去」で消えた可能性があります）。';
+    meta.textContent += ' 元の動画からもう一度編集してください。';
+    const btns = document.createElement('div');
+    btns.className = 'job-btns';
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'btn small secondary';
+    b.textContent = 'この表示を消す';
+    b.addEventListener('click', () => { indexJob(null, e.id); refreshJobs(); });
+    btns.appendChild(b);
+    item.append(head, meta, btns);
+    list.appendChild(item);
+  }
+  $('resumeCard').hidden = !jobs.length && !missing.length;
   if (!jobs.length) return;
   // 途中の編集が保存してあるときは、そちらの表示（端末内に保存した確かな状態）を使う。
   // 「前回止まった段階」の記録（localStorage）は、強制終了の直前の分が残らないことがあるため
@@ -1255,6 +1392,7 @@ async function refreshJobs() {
     mk('保存データを削除', 'secondary', async () => {
       if (!confirm(`「${job.file.name}」の途中の編集と保存データ（約${formatBytes(bytes)}）を削除しますか？\n元の動画（写真アプリ）は消えません。`)) return;
       await deleteJob(job.id);
+      indexJob(null, job.id);
       if (state.job?.id === job.id) state.job = null;
       refreshJobs();
     });
@@ -1278,6 +1416,7 @@ $('btnCleanup').addEventListener('click', async () => {
   if (state.outUrl) { URL.revokeObjectURL(state.outUrl); state.outUrl = null; }
   state.blob = null;
   await deleteJob(job.id);
+  indexJob(null, job.id);
   state.job = null;
   $('stepResult').hidden = true;
   showNotice('端末内の保存データを削除しました。');

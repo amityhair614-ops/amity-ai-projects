@@ -1,4 +1,5 @@
 // 編集プランを作る純粋関数（ブラウザAPIを使わないので Node でテストできる）
+import { analyzeContent } from './content.js';
 
 export const FRAME_SEC = 0.05; // 音量を測る単位（50ms）
 export const OUT_W = 1080;
@@ -15,9 +16,6 @@ export const KEYWORDS = [
 ];
 const DEGREE_RE = /[0-9０-９]+\s*度/;
 
-// 言い直しの合図になる言葉（「もう一回」はカット説明でも普通に使うので含めない）
-// Whisper はひらがなや聞き間違いで書くことがある（例: いい直します、いいなをします）
-const RETAKE_RE = /言い直|いい直|言いなお|いいなお|いいなをし|撮り直|とり直|間違えました|間違えた|ごめんなさい|失礼しました/;
 
 // 文字起こしに先に与える「話題と用語」。Whisper はこれに引っぱられて専門用語を正しく書きやすくなる
 export const ASR_PROMPT = '美容師のカット解説です。ブロッキング、スライス、パネル、0度、45度、90度、ガイド、毛先、前下がり、ボブ、レイヤー、グラデーション、セニング、量感、軽さ、重さ、丸み、シルエット、襟足、もみあげ、前髪、ドライ、ブロー。';
@@ -339,34 +337,9 @@ export function keywordHits(text) {
   return hits;
 }
 
-// 言い直しの検出。後の発言を残し、前の発言を除外する
+// 言い直しの検出。後の発言を残し、前の発言を除外する（自動で外すものだけ。詳しくは content.js）
 export function detectRetakes(chunks) {
-  const flags = chunks.map(() => null);
-  const norm = chunks.map(c => normalizeText(c.text));
-  for (let i = 0; i < chunks.length; i++) {
-    if (RETAKE_RE.test(chunks[i].text)) {
-      flags[i] = '言い直しの合図';
-      // 合図だけの短い発言なら、その直前の発言が言い直し前のもの。
-      // 合図の前に内容がある（「…スライスで、すみません、言い直します」）なら、この発言自体が言い直し前
-      const before = normalizeText(chunks[i].text.split(RETAKE_RE)[0].replace(/すみません|すいません|ごめんなさい/g, ''));
-      if (before.length < 6 && i > 0 && chunks[i].start - chunks[i - 1].end < 10 && !flags[i - 1]) flags[i - 1] = '言い直し前の発言';
-    }
-  }
-  for (let i = 0; i < chunks.length; i++) {
-    if (flags[i]) continue;
-    const a = norm[i];
-    if (a.length < 4) continue;
-    for (let j = i + 1; j < Math.min(chunks.length, i + 4); j++) {
-      if (chunks[j].start - chunks[i].end > 12) break;
-      const b = norm[j];
-      const prefix = a.slice(0, Math.min(6, a.length));
-      if (similarity(a, b) >= 0.55 || (prefix.length >= 5 && b.startsWith(prefix) && a.length <= b.length + 3)) {
-        flags[i] = '言い直し（あとの発言を採用）';
-        break;
-      }
-    }
-  }
-  return flags;
+  return analyzeContent(chunks).map(r => r?.drop || null);
 }
 
 function overlap(a0, a1, b0, b1) {
@@ -447,6 +420,56 @@ function sentenceVoice(voice, rmsDb, start, end) {
   return segs.filter(s => s.end - s.start > 0.05);
 }
 
+// 文の一部を取り除く位置を、声の区間から探す。trim.cut は残す部分の始まりの文字位置。
+// 文字の位置を読みの長さで時刻に直し、その近く（±0.6秒）の声の切れ目（0.08秒以上）を探す。見つからなければ null
+export function findTrim(u, spans, trim) {
+  const text = u.text || '';
+  const sp = spans.filter(r => r.end > u.voiceStart - 0.05 && r.start < u.voiceEnd + 0.05)
+    .map(r => ({ start: Math.max(r.start, u.voiceStart), end: Math.min(r.end, u.voiceEnd) })).filter(r => r.end > r.start);
+  if (sp.length < 2) return null;
+  const total = sp.reduce((a, r) => a + r.end - r.start, 0);
+  const f = moraCount(text.slice(0, trim.cut)) / (moraCount(text) || 1);
+  let rest = f * total, t = sp[sp.length - 1].end;
+  for (const r of sp) { if (rest <= r.end - r.start) { t = r.start + rest; break; } rest -= r.end - r.start; }
+  let best = null, bestCost = Infinity;
+  for (let k = 0; k + 1 < sp.length; k++) {
+    const gap = sp[k + 1].start - sp[k].end;
+    const mid = (sp[k].end + sp[k + 1].start) / 2;
+    if (gap < 0.08 || Math.abs(mid - t) > 0.6) continue;
+    const cost = Math.abs(mid - t) / (1 + 2 * gap);
+    if (cost < bestCost) { bestCost = cost; best = { gapStart: sp[k].end, voiceStart: sp[k + 1].start, text: text.slice(trim.cut).trim(), reason: trim.reason }; }
+  }
+  return best;
+}
+
+// 文の冒頭の部分を取り除く（元に戻せるよう、もとの状態を u.trimmed.original に残す）
+export function trimUnit(u, cut, pace = PACES.natural) {
+  const original = { pieces: u.pieces.map(p => ({ ...p })), start: u.start, text: u.text, subStart: u.subStart, fine: u.fine, voiceStart: u.voiceStart };
+  const from = Math.max(cut.gapStart + 0.02, cut.voiceStart - pace.lead);
+  const pieces = u.pieces.filter(p => p.end > from + 0.05).map(p => ({ ...p, start: Math.max(p.start, from) }));
+  if (!pieces.length) return false;
+  u.pieces = pieces;
+  u.start = pieces[0].start;
+  u.voiceStart = cut.voiceStart;
+  u.text = cut.text;
+  if (u.subStart != null) u.subStart = Math.max(u.subStart, cut.voiceStart);
+  if (u.fine) u.fine = u.fine.filter(r => r.end > cut.voiceStart).map(r => ({ start: Math.max(r.start, cut.voiceStart), end: r.end }));
+  u.duration = piecesDuration(u.pieces);
+  u.trimmed = { reason: cut.reason, cut, original };
+  delete u.trimOption;
+  return true;
+}
+
+// 取り除いた部分を元に戻す（もう一度取り除けるよう、位置は u.trimOption に残す）
+export function untrimUnit(u) {
+  if (!u.trimmed) return;
+  const o = u.trimmed.original;
+  Object.assign(u, { pieces: o.pieces, start: o.start, text: o.text, subStart: o.subStart, fine: o.fine, voiceStart: o.voiceStart });
+  u.duration = piecesDuration(u.pieces);
+  u.trimOption = u.trimmed.cut;
+  delete u.trimmed;
+}
+
 // 候補となる場面（ユニット）を作り、点数をつける。
 // pace: 'natural'（初期設定）/ 'tempo'（間を少し短く）。間の残し方は PACES を参照
 export function buildUnits({ duration, rmsDb, speech, chunks, motion, pace }) {
@@ -470,7 +493,8 @@ export function buildUnits({ duration, rmsDb, speech, chunks, motion, pace }) {
 
   const covered = [];
   if (chunks && chunks.length) {
-    const flags = detectRetakes(chunks);
+    const ca = analyzeContent(chunks);
+    const flags = ca.map(r => r?.drop || null);
     chunks.forEach((c, i) => {
       const segs = sentenceVoice(voice, rmsDb, c.start, c.end);
       const speechDur = piecesDuration(speechPieces(regions, c.start, c.end));
@@ -490,6 +514,14 @@ export function buildUnits({ duration, rmsDb, speech, chunks, motion, pace }) {
       else if (!normalizeText(text)) u.excluded = 'つなぎ言葉のみ';
       // 言い直した後の発言（撮り直してまで伝えたかった説明）
       else if (flags[i - 1] || (flags[i - 2] && !normalizeText(chunks[i - 1].text))) u.redo = true;
+      if (!u.excluded && ca[i]?.candidate) u.candidate = ca[i].candidate;
+      // 文の一部（冒頭の訂正・言い直し前の部分・くり返し）を取り除く。声の切れ目が見つかったときだけ
+      if (!u.excluded && ca[i]?.trim) {
+        const cut = findTrim(u, c.fine && c.fine.length ? c.fine : segs, ca[i].trim);
+        if (cut && ca[i].trim.high) trimUnit(u, cut, P);
+        else if (cut) { u.trimOption = cut; u.candidate = `${ca[i].trim.reason}は取り除けます（確かでないため、そのまま残しています）`; }
+        else u.candidate = `${ca[i].trim.reason}が残っています（声の切れ目が見つからないため、文の途中では切っていません）`;
+      }
       units.push(u);
     });
   }
@@ -564,6 +596,8 @@ export function buildUnits({ duration, rmsDb, speech, chunks, motion, pace }) {
     if (u.end > duration * 0.92) { score += 2; u.ending = true; reasons.push('仕上がり（最後）'); }
     if (u.kind === 'speech' && !u.text) score += 0.3;
     if (u.redo) { score += 1.2; reasons.push('言い直した説明'); }
+    if (u.candidate) score -= 0.3;
+    if (u.trimmed) reasons.push(u.trimmed.reason + 'を取り除きました');
     if (u.kind === 'action') {
       reasons.push('カット作業の場面');
       // ハサミの音が続いている（実際に切っている）無言の場面は、話していなくても残す価値が高い

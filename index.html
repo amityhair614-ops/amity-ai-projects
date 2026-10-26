@@ -204,6 +204,8 @@
     .fit.ok { background: var(--ok-soft); color: var(--ok); }
     .fit.ng { background: var(--warn-soft); color: var(--text); }
     .brief-used { font-size: 13px; color: var(--muted); margin: 8px 0 0; white-space: pre-wrap; }
+    .cand { margin: 6px 0 0 30px; font-size: 12px; padding: 6px 10px; border-radius: 10px; background: var(--warn-soft); display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: center; }
+    .cand .link-btn { font-size: 12px; color: var(--accent); }
     .must-tag { font-size: 11px; font-weight: 700; color: var(--accent); background: var(--accent-soft); border-radius: 999px; padding: 1px 8px; white-space: nowrap; }
     .job { padding: 12px 0; border-top: 1px solid var(--line); }
     .job:first-child { border-top: 0; padding-top: 0; }
@@ -236,6 +238,7 @@
     <h2 id="resume-title">途中の編集</h2>
     <p class="note" style="margin-top:0">Safariを閉じたり、ほかのアプリに切り替えたりすると、編集は<b>一時停止</b>します（閉じている間は進みません）。
       もう一度開いて「続きから再開」を押すと、保存してある所から続けます（解析の済んだ段階・書き終えた区間はやり直しません）。</p>
+    <p class="note" id="resumeContext"></p>
     <div id="jobList"></div>
     <p class="note" id="storageText"></p>
     <p class="note"><b>保存データは必ず残るとは限りません。</b>iPhoneの空き容量が少ないとき、Safariの「履歴とWebサイトデータを消去」をしたとき、長い間使わなかったときなどに消えることがあります。
@@ -365,7 +368,8 @@
       <label class="option"><input type="checkbox" id="optZoom" checked><span>自然なズーム<br><small class="note" style="margin:0">手元がまとまって動く場面だけ、ゆっくり1.03〜1.08倍に寄ります（間隔をあけて、ハサミや手元が切れない場合のみ）</small></span></label>
     </div>
     <button class="btn block" id="btnRender">この内容でMP4を書き出す</button>
-    <p class="note">書き出しは数秒ずつの区間に分けて進め、書き終えた区間はこのiPhoneの中に保存します。途中でSafariを閉じた場合は、もう一度開いて「途中の編集」の「続きから再開」を押してください。</p>
+    <p class="note">書き出しは数秒ずつの区間に分けて進め、書き終えた区間はこのiPhoneの中に保存します。途中でSafariを閉じた場合は、もう一度開いて「途中の編集」の「続きから再開」を押してください。
+      書き出し中にほかのアプリに切り替えたり画面を消したりすると一時停止し、戻ると続きから進みます。<span id="renderContext"></span></p>
     <div class="bar" id="renderBar" hidden><div></div></div>
     <p class="progress-text" id="renderText"></p>
     <p class="error" id="renderError" hidden></p>
@@ -404,7 +408,7 @@
     </ul>
   </section>
 
-  <footer>Amity AI動画編集 ・ テスト版 v0.8</footer>
+  <footer>Amity AI動画編集 ・ テスト版 v0.8.1</footer>
 </main>
 <script type="module" src="js/app.js"></script>
 </body>
