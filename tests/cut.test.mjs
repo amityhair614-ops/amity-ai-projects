@@ -55,7 +55,7 @@ test('間の整理: 文の中の短い間は残し、長い間は自然な長さ
   assert.ok((t[0].end - 3) + (5 - t[1].start) < kept);
 });
 
-test('すべての無音をなくさない: 文と文の間は約0.5秒残る', () => {
+test('すべての無音をなくさない: 文と文の間は手動編集のお手本と同じ約0.3〜0.4秒残る', () => {
   const r = rms(20, [[1, 3, -20], [6, 8, -20], [8.6, 10, -20]]);
   const speech = detectSpeech(r);
   const chunks = [
@@ -72,9 +72,9 @@ test('すべての無音をなくさない: 文と文の間は約0.5秒残る', 
     const voiceStart = b.outStart + (speech.voice[i].start - units[i].start);
     gaps.push(voiceStart - voiceEnd);
   }
-  assert.ok(gaps[0] > 0.4 && gaps[0] < 0.6, '3秒の間 → ' + gaps[0]);
-  // 元の動画で 0.6 秒しかない間は、ほとんど詰めない
-  assert.ok(gaps[1] > 0.45 && gaps[1] <= 0.6, '0.6秒の間 → ' + gaps[1]);
+  assert.ok(gaps[0] >= 0.28 && gaps[0] <= 0.45, '3秒の間 → ' + gaps[0]);
+  // 元の動画で 0.6 秒の間も、お手本の間（0.2〜0.4秒）まで詰める
+  assert.ok(gaps[1] >= 0.28 && gaps[1] <= 0.45, '0.6秒の間 → ' + gaps[1]);
 });
 
 test('Whisper の時刻が語尾より早く終わっても、声の区間ごと残す（語尾を切らない）', () => {

@@ -28,7 +28,7 @@ test('全部無音なら話し区間なし', () => {
 
 test('文字起こし用の区切りは28秒以内', () => {
   const w = transcriptionWindows([{ start: 0, end: 10 }, { start: 12, end: 25 }, { start: 26, end: 40 }]);
-  assert.deepEqual(w, [{ start: 0, end: 25 }, { start: 26, end: 40 }]);
+  assert.deepEqual(w, [{ start: 0, end: 25, speech: 23 }, { start: 26, end: 40, speech: 14 }]);
 });
 
 test('言い直しを検出する（似た発言・合図の言葉）', () => {
@@ -80,14 +80,14 @@ function fakeVideo() {
   return { duration, rmsDb, speech: detectSpeech(rmsDb), chunks, motion };
 }
 
-test('約60秒以内に収まり、時系列順・冒頭と最後を含む', () => {
+test('約60秒（55〜65秒）に収まり、時系列順・冒頭と最後を含む', () => {
   const v = fakeVideo();
   const units = buildUnits(v);
   assert.ok(!units.some(u => u.text.includes('ご視聴')), '無音部分の誤認識は除外');
   assert.ok(units.some(u => u.kind === 'action' && u.start > 195 && u.end < 235), '動きの多い場面が候補になる');
   const sel = selectUnits(units, v.duration);
   const total = sel.reduce((s, u) => s + u.duration, 0);
-  assert.ok(total <= 60 && total >= 45, 'total=' + total);
+  assert.ok(total <= 65 && total >= 55, 'total=' + total);
   for (let i = 1; i < sel.length; i++) assert.ok(sel[i].start >= sel[i - 1].start);
   assert.ok(sel.some(u => u.intro));
   assert.ok(sel.some(u => u.ending));
@@ -99,7 +99,7 @@ test('文字起こしなしでも構成できる', () => {
   const units = buildUnits({ ...v, chunks: null });
   const sel = selectUnits(units, v.duration);
   const total = sel.reduce((s, u) => s + u.duration, 0);
-  assert.ok(total > 40 && total <= 60);
+  assert.ok(total >= 55 && total <= 65, 'total=' + total);
 });
 
 test('字幕の折り返しとページ分け', () => {
@@ -202,7 +202,7 @@ test('文の区切りは、話す速さが違っても無音の切れ目に合�
   assert.ok(Math.abs(out[2].start - 54.9) < 0.01);
 });
 
-test('演出: 手元が下で動く動画では字幕を上に、ズームは間隔をあけて手元が切れない範囲で', async () => {
+test('演出: 字幕はいつも下（お手本と同じ）、ズームは間隔をあけて手元が切れない範囲で', async () => {
   const { buildTimeline, cropAt, subtitleAlpha, ZOOM_MIN, ZOOM_MAX } = await import('../js/plan.js');
   const clip = (s, e, text, motion, box) => ({ pieces: [{ start: s, end: e }], text, motion, cx: 0.5, box });
   const low = [0.35, 0.65, 0.62, 0.8];   // 手元が画面の下の方（縦動画）
@@ -215,8 +215,7 @@ test('演出: 手元が下で動く動画では字幕を上に、ズームは間
     clip(40, 43, '', 0.9, [0.05, 0.95, 0.1, 0.9]), // 画面いっぱいに動く → ズームしない
   ];
   const tl = buildTimeline(clips, { srcW: 1080, srcH: 1920, zoom: true, subtitles: true });
-  assert.equal(tl[1].subPos, 'top');
-  assert.equal(tl[4].subPos, 'top');
+  assert.ok(tl.every(c => c.subPos === 'bottom'), '場面ごとに上下が入れ替わらない');
   const zoomed = tl.filter(c => c.zoom);
   assert.ok(zoomed.length >= 1);
   for (let i = 1; i < tl.length; i++) assert.ok(!(tl[i].zoom && tl[i - 1].zoom), '続けてズームしない');
@@ -227,7 +226,7 @@ test('演出: 手元が下で動く動画では字幕を上に、ズームは間
     assert.ok(r.top <= b[2] * 1920 && r.top + r.height >= b[3] * 1920, '手元が縦に切れない');
     assert.ok(Math.abs(r.width / r.height - 1080 / 1920) < 1e-6, '9:16 のまま');
   }
-  for (let i = 1; i < zoomed.length; i++) assert.ok(zoomed[i].outStart - (zoomed[i - 1].outStart + zoomed[i - 1].outDuration) >= 10);
+  for (let i = 1; i < zoomed.length; i++) assert.ok(zoomed[i].outStart - (zoomed[i - 1].outStart + zoomed[i - 1].outDuration) >= 15);
   assert.equal(tl[5].zoom, null);
   // ズームはゆっくり始まりゆっくり止まる（始まりは等倍）
   const z = zoomed[0];
@@ -250,7 +249,7 @@ test('横長の動画: 切り抜き枠は手元が入るようにずらす', () 
 });
 
 test('字幕の改行: 言葉の途中で切らず、1文字だけ残さない', async () => {
-  const { subtitlePages } = await import('../js/plan.js');
+  const { subtitlePages, SUB_MAX_CHARS } = await import('../js/plan.js');
   const cases = [
     'まずは、耳後ろでブロッキングを取っていきます。',
     'バックは、指一本分のスライスで、パネルを0度に引き出します。',
@@ -263,7 +262,7 @@ test('字幕の改行: 言葉の途中で切らず、1文字だけ残さない',
     const pages = subtitlePages(text, 6);
     for (const p of pages) {
       assert.ok(p.lines.length <= 2);
-      for (const l of p.lines) assert.ok(l.length >= 2 && l.length <= 14, `${l}（${text}）`);
+      for (const l of p.lines) assert.ok(l.length >= 2 && l.length <= SUB_MAX_CHARS, `${l}（${text}）`);
     }
     const all = pages.flatMap(p => p.lines);
     for (let i = 1; i < all.length; i++) {

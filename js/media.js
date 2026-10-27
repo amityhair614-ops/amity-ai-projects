@@ -11,10 +11,10 @@ import {
   canEncodeAudio, canEncodeVideo,
 } from 'mediabunny';
 import { registerAacEncoder } from '@mediabunny/aac-encoder';
-import { FRAME_SEC, FPS, OUT_W, OUT_H, SUB_ZONES, cropAt, subtitleAlpha } from './plan.js';
+import { FRAME_SEC, FPS, OUT_W, OUT_H, SUB_ZONES, cropAt, subtitleAlpha, openingAlpha, endFadeAlpha } from './plan.js';
 import { log } from './diag.js';
 import { Resampler } from './resample.js';
-import { AudioStitcher, applyGain } from './audiomix.js';
+import { AudioStitcher, applyGain, applyEndFade } from './audiomix.js';
 
 export const ASR_RATE = 16000;
 
@@ -368,11 +368,55 @@ function toAudioBuffer(data, sr, from, to) {
 
 // ---------- 書き出し ----------
 
-// 字幕: 白の読みやすいゴシック体・最大2行・薄い黒の影。文字は動かさず、不透明度だけで出し入れする
+// 字幕: 白の読みやすいゴシック体・最大2行・薄い黒の影。文字は動かさず、不透明度だけで出し入れする。
+// 大きさは手動編集のお手本（画面の幅に対して小さめ）に近づけ、髪や手元を隠す面積を減らしている
 const FONT_FAMILY = '"Hiragino Sans", "Hiragino Kaku Gothic ProN", "Noto Sans JP", "IPAGothic", sans-serif';
-const FONT_SIZE = 58;
-const LINE_HEIGHT = 1.42;
+const FONT_SIZE = 50;
+const LINE_HEIGHT = 1.4;
 const MAX_TEXT_W = OUT_W * 0.86;
+
+// 冒頭のテキスト: 白の太いゴシック体・大きめ・薄い黒の影（背景の帯はつけない）
+const TITLE_SIZE = 104;
+const TITLE_LINE_HEIGHT = 1.28;
+const TITLE_MAX_W = OUT_W * 0.84;
+
+function drawOpening(ctx, op, t) {
+  const alpha = openingAlpha(op, t);
+  if (alpha <= 0) return;
+  ctx.save();
+  let size = TITLE_SIZE;
+  ctx.font = `800 ${size}px ${FONT_FAMILY}`;
+  const widest = Math.max(...op.lines.map(l => ctx.measureText(l).width));
+  if (widest > TITLE_MAX_W) {
+    size = Math.floor(size * TITLE_MAX_W / widest);
+    ctx.font = `800 ${size}px ${FONT_FAMILY}`;
+  }
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.globalAlpha = alpha;
+  ctx.fillStyle = '#ffffff';
+  const lh = size * TITLE_LINE_HEIGHT;
+  const firstY = OUT_H * op.y - ((op.lines.length - 1) * lh) / 2;
+  // 影は2重（近くの薄い影で輪郭を読みやすく、広い影で明るい背景でも浮かせる）
+  for (const [color, blur, dy] of [['rgba(0, 0, 0, 0.35)', 18, 4], ['rgba(0, 0, 0, 0.45)', 4, 2]]) {
+    ctx.shadowColor = color;
+    ctx.shadowBlur = blur;
+    ctx.shadowOffsetY = dy;
+    op.lines.forEach((line, i) => ctx.fillText(line, OUT_W / 2, firstY + i * lh));
+  }
+  ctx.restore();
+}
+
+// 最後のフェードアウト（映像をなめらかに黒くする）
+function drawEndFade(ctx, t, total) {
+  const a = endFadeAlpha(t, total);
+  if (a <= 0) return;
+  ctx.save();
+  ctx.globalAlpha = a;
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, OUT_W, OUT_H);
+  ctx.restore();
+}
 
 function drawSubtitle(ctx, page, t) {
   if (!page) return;
@@ -381,18 +425,18 @@ function drawSubtitle(ctx, page, t) {
   ctx.save();
   // 1行が長すぎるときだけ、そのページの文字を少し小さくする
   let size = FONT_SIZE;
-  ctx.font = `600 ${size}px ${FONT_FAMILY}`;
+  ctx.font = `700 ${size}px ${FONT_FAMILY}`;
   const widest = Math.max(...page.lines.map(l => ctx.measureText(l).width));
   if (widest > MAX_TEXT_W) {
     size = Math.floor(size * MAX_TEXT_W / widest);
-    ctx.font = `600 ${size}px ${FONT_FAMILY}`;
+    ctx.font = `700 ${size}px ${FONT_FAMILY}`;
   }
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   ctx.globalAlpha = alpha;
   ctx.fillStyle = '#ffffff';
-  ctx.shadowColor = 'rgba(0, 0, 0, 0.42)';
-  ctx.shadowBlur = 10;
+  ctx.shadowColor = 'rgba(0, 0, 0, 0.5)';
+  ctx.shadowBlur = 8;
   ctx.shadowOffsetY = 2;
   const lh = size * LINE_HEIGHT;
   const centerY = OUT_H * (SUB_ZONES[page.pos] ?? SUB_ZONES.bottom);
@@ -503,7 +547,8 @@ async function drawFrames(src, packets, rc, clip, piece, f0, f1, emit, opts = {}
 
 // 区間 seg（resume.planSegments の結果の1つ）の映像だけを、stream（ファイル）に MP4 として書き出す。
 // rc: createRenderContext の結果（区間をまたいで使い回す）。shouldPause() が true になったら、きりのよい所で RenderPaused を投げる
-export async function renderSegment(src, timeline, seg, stream, { onProgress, rc, shouldPause, decode } = {}) {
+// overlay: { opening: 冒頭のテキスト（openingPlan の結果）, total: 完成動画の長さ（最後のフェード用）}
+export async function renderSegment(src, timeline, seg, stream, { onProgress, rc, shouldPause, decode, overlay } = {}) {
   await checkVideoEncoder();
   rc = rc || createRenderContext(src);
   const output = new Output({ format: new Mp4OutputFormat({ fastStart: false }), target: new StreamTarget(stream) });
@@ -524,6 +569,8 @@ export async function renderSegment(src, timeline, seg, stream, { onProgress, rc
         if (shouldPause?.()) throw new RenderPaused();
         rc.ctx.drawImage(rc.base, 0, 0);
         drawSubtitle(rc.ctx, clip.subtitles.find(p => t >= p.start && t < p.end), t);
+        if (overlay?.opening) drawOpening(rc.ctx, overlay.opening, t);
+        if (overlay?.total) drawEndFade(rc.ctx, t, overlay.total);
         try {
           await videoSource.add(t - seg.outStart, 1 / FPS);
         } catch (err) {
@@ -564,7 +611,7 @@ function sameConfig(a, b) {
 
 // 保存した区間の映像をつなぎ、音声を通して作って、stream（ファイル）に完成したMP4を書き出す。
 // getSegment(i): i 番目の区間のファイル（File）
-export async function assembleOutput(src, timeline, segments, getSegment, stream, { gainDb = 0, onProgress } = {}) {
+export async function assembleOutput(src, timeline, segments, getSegment, stream, { gainDb = 0, onProgress, endFade = 0 } = {}) {
   const withAudio = !!src.audio;
   // 音声は、ブラウザの AAC エンコーダーではなく、内蔵の AAC エンコーダー（FFmpeg の WASM 版）で作る。
   // WebKit（Safari と同じエンジン）のエンコーダーは、1回に渡した音声から作られる AAC のフレームすべてに
@@ -582,6 +629,7 @@ export async function assembleOutput(src, timeline, segments, getSegment, stream
   const gain = Math.pow(10, gainDb / 20);
   const stitcher = new AudioStitcher();
   const lastSeg = segments[segments.length - 1];
+  const outTotal = timeline.reduce((sum, c) => sum + c.outDuration, 0);
   let firstConfig = null;
   try {
     for (const seg of segments) {
@@ -595,6 +643,8 @@ export async function assembleOutput(src, timeline, segments, getSegment, stream
           const len = Math.round(dur * raw.sr);
           const last = seg === lastSeg && s === seg.slices[seg.slices.length - 1];
           const data = stitcher.add(raw.data, raw.sr, { len, contiguous: s.f0 > 0 || piece.contiguous, last });
+          // 最後のフェードアウト（映像が黒くなるのと同じ時間で、音声も小さくする）
+          if (endFade) applyEndFade(data, raw.sr, piece.outStart + s.f0 / FPS, outTotal, endFade);
           await audioSource.add(toAudioBuffer(data, raw.sr, 0, len));
         }
       }

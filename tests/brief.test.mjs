@@ -46,14 +46,14 @@ function plan(v, brief) {
   return { bp, units, must, sel, fit: fitReport({ targetSec: bp.brief.targetSec, selected: sel, units, sourceDuration: v.duration }) };
 }
 
-test('入力なしでも、これまでどおり約60秒の構成になる', () => {
+test('入力なしでも、約60秒（55〜65秒）の構成になる', () => {
   const v = fakeVideo();
   const a = plan(v, {});
   const units = buildUnits(v);
   const b = selectUnits(units, v.duration);
   assert.deepEqual(a.sel.map(u => u.start), b.map(u => u.start), '入力なしの選び方は従来と同じ');
   assert.ok(a.fit.ok);
-  assert.ok(total(a.sel) <= 60 && total(a.sel) >= 50, String(total(a.sel)));
+  assert.ok(total(a.sel) <= 65 && total(a.sel) >= 55, String(total(a.sel)));
 });
 
 test('入力値の正規化: 不正な値・範囲外は安全な値にする', () => {
@@ -71,9 +71,11 @@ test('希望時間 30秒・45秒・60秒・自由入力（20秒）に合わせ�
   for (const sec of [20, 30, 45, 60]) {
     const { sel, fit } = plan(v, { targetSec: sec });
     const t = total(sel);
-    assert.ok(t <= sec + 1e-6, `${sec}: ${t}`);
-    assert.ok(t >= sec - Math.max(3, sec * 0.1), `${sec}: ${t}`);
-    assert.ok(fit.ok, fit.reason);
+    const { lo, max } = targetRange(sec);
+    // 上限を少し（許容幅の半分まで）超えるだけなら、説明の文を外さずに残す
+    assert.ok(t <= max + (max - sec) / 2 + 1e-6, `${sec}: ${t}`);
+    assert.ok(t >= lo, `${sec}: ${t}`);
+    assert.ok(fit.ok || /内容と自然な流れを優先/.test(fit.reason), fit.reason);
     for (let i = 1; i < sel.length; i++) assert.ok(sel[i].start > sel[i - 1].start, '元の動画の順番のまま');
   }
 });

@@ -74,3 +74,19 @@ export class AudioStitcher {
     return out;
   }
 }
+
+// 最後のフェードアウト: 完成動画の最後の sec 秒で、音量をなめらかに 0 にする（映像が黒くなるのと同じ曲線）。
+// data は出力の時刻 outStart から始まる音声。total は完成動画の長さ
+export function applyEndFade(data, sr, outStart, total, sec) {
+  const d = Math.min(sec, total * 0.2);
+  if (d <= 0) return;
+  const from = total - d;
+  for (const ch of data) {
+    for (let i = 0; i < ch.length; i++) {
+      const t = outStart + i / sr;
+      if (t < from) continue;
+      const x = Math.min(1, (t - from) / d);
+      ch[i] *= 1 - x * x * (3 - 2 * x);
+    }
+  }
+}

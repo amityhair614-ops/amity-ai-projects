@@ -154,6 +154,11 @@
     .sub-edit { margin: 6px 0 0 30px; }
     .sub-edit textarea { margin: 0; width: 100%; }
     .sub-edit.edited textarea { border-color: var(--accent); }
+    .sub-edit.needs-check textarea { border-color: #e08a1e; background: rgba(224, 138, 30, .08); }
+    .sub-check { font-size: 12px; color: var(--warn); margin: 4px 0 0; }
+    .opening-edit { margin: -4px 0 12px 32px; }
+    .opening-edit textarea { width: 100%; font-weight: 700; }
+    .field.engine { margin-top: 8px; }
     .sub-time { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; margin-top: 6px; font-size: 13px; }
     .sub-adj { display: inline-flex; align-items: center; gap: 4px; }
     .sub-adj button, .sub-time > button {
@@ -224,7 +229,7 @@
     <p class="lead">カット解説動画から、字幕付きのYouTube動画を自動で作ります。動画の内容や完成時間を入力すると、それに合わせて場面を選びます。処理はすべてこのiPhoneの中で行い、動画はどこにも送信しません。</p>
   </header>
 
-  <div class="banner"><b>テスト版です。</b> iPhoneで書き出しが途中で止まる不具合（Decoder failure）と、続きから再開できない不具合への対策をしました。言い直し・くり返しは、話した内容から判断して取り除きます（確かでないものは確認画面に「候補」として出します）。<b>今回の修正は、iPhone実機ではまだ確認できていません。</b>うまく動かない場合は、下の「診断情報」をコピーして送ってください。字幕・ズームはそれぞれOFFにできます。</div>
+  <div class="banner"><b>テスト版です（v0.9.0）。</b> 手動編集のお手本に近づけるため、①話の途中で切らずに説明を残すカット（間は0.2〜0.4秒）②冒頭のタイトル文字 ③画面下の小さめの字幕 ④日本語専用の字幕AI（ReazonSpeech）と原稿からの字幕 ⑤最後の0.7秒のフェードアウト を入れました。<b>これらは iPhone 実機ではまだ確認できていません。</b>うまく動かない場合は、下の「診断情報」をコピーして送ってください。</div>
 
   <div class="recover" id="recover" role="alert" hidden>
     <b>前回の処理が途中で止まりました</b>
@@ -251,14 +256,14 @@
     <p class="note" style="margin:0 0 12px">「パソコンで確認」は、パソコン上のブラウザでのテストで動作を確認した機能です。iPhone実機での動作は、修正後まだ確認できていません。</p>
     <ul class="status">
       <li><span>動画の読み込み（端末内）<small>MOV・MP4、H.264・HEVC</small></span><span class="badge warn">パソコンで確認</span></li>
-      <li><span>無音・長い間の自動カット<small>声の区間を音量で判定。語尾を切らず、長い間は自然な長さ（約0.5秒）に縮め、つなぎ目の音はなめらかに入れ替えます。ハサミの音だけの場面は作業場面として残します</small></span><span class="badge warn">パソコンで確認</span></li>
-      <li><span>約60秒・縦9:16（1080×1920）に編集</span><span class="badge warn">パソコンで確認</span></li>
+      <li><span>無音・長い間の自動カット<small>声の区間を音量で判定。語尾を切らず、文と文の間は手動編集のお手本に合わせて約0.3〜0.45秒に縮め、つなぎ目の音はなめらかに入れ替えます。ハサミの音だけの場面は作業場面として残します</small></span><span class="badge warn">パソコンで確認</span></li>
+      <li><span>約60秒・縦9:16（1080×1920）に編集<small>話の内容を優先し、文の途中では切りません。60秒なら55〜65秒が目安で、説明を削らないと収まらないときは少し長くなり、理由を表示します</small></span><span class="badge warn">パソコンで確認</span></li>
       <li><span>MP4の書き出し・iPhoneへの保存</span><span class="badge warn">パソコンで確認</span></li>
       <li><span>カット技術の重要場面を残す<small>手元の動きの量と美容の用語で判定する簡易版。映像の内容までは理解しません</small></span><span class="badge warn">簡易版</span></li>
       <li><span>言い直し・くり返しの判断<small>文字起こしが必要。「いや、〜じゃなくて」などの訂正・同じ説明のくり返し・文の中のくり返しを取り除きます。用語が違う説明は外さず、確かでないものは候補として出します</small></span><span class="badge warn">パソコンで確認</span></li>
-      <li><span>日本語字幕の自動生成<small>端末内のAI（Whisper）。美容用語の辞書を使い、音声と合うときだけ用語に直します。表示は声に合わせます。書き出し前に文字・タイミングを直せます</small></span><span class="badge warn">パソコンで確認</span></li>
-      <li><span>字幕のデザイン<small>白のゴシック体・最大2行・薄い影・ふわっと表示。手元に重ならない位置に置き、言葉の途中で改行しない</small></span><span class="badge warn">パソコンで確認</span></li>
-      <li><span>自然なズーム<small>手元がまとまって動く場面だけ、ゆっくり1.03〜1.08倍。間隔をあけ、手元が切れる場合はしない。色や質感の加工はしません</small></span><span class="badge warn">パソコンで確認</span></li>
+      <li><span>日本語字幕の自動生成<small>端末内のAI。初期は日本語専用の ReazonSpeech（1文字ごとの時刻で声に合わせる）、軽い Whisper base も選べます。入力した用語で書き間違いを直し、自信のない言葉はオレンジ色で知らせます。原稿を貼り付けると、原稿の文字で字幕を出します</small></span><span class="badge warn">パソコンで確認</span></li>
+      <li><span>字幕・冒頭のテキスト・最後のフェード<small>字幕は白のゴシック体・最大2行・薄い影で画面の下に。冒頭は動画タイトルから作った太字のテキストを約2秒（直せます）。最後の0.7秒で映像が黒くなり、音声も小さくなります</small></span><span class="badge warn">パソコンで確認</span></li>
+      <li><span>自然なズーム<small>手元がまとまって動く場面を中心に、ゆっくり1.03〜1.08倍で寄る・引く。15秒以上あけ、手元が切れる場合はしない。色や質感の加工はしません</small></span><span class="badge warn">パソコンで確認</span></li>
       <li><span>動画の内容・完成時間・編集スタイルの入力<small>入力した言葉で場面の点数を上げ、「必ず残したい場面」は時間を超えても残します。収まらないときは理由と予定時間を表示</small></span><span class="badge warn">パソコンで確認</span></li>
       <li><span>途中から再開<small>Safariを閉じると一時停止し、もう一度開くと続きから再開します（閉じている間は進みません）。解析の結果と書き終えた区間を端末内に保存し、やり直しません。保存データは消えることがあります</small></span><span class="badge warn">パソコンで確認</span></li>
       <li><span>10分の通常動画（横16:9）の自動編集</span><span class="badge pending">準備中</span></li>
@@ -323,13 +328,24 @@
       <label class="field"><span>動画の流れ<small>「、」や改行で区切る</small></span><textarea id="bFlow" rows="2" maxlength="2000" placeholder="例: 冒頭、ブロッキング、バックのカット、サイド、仕上がり"></textarea></label>
       <label class="field"><span>必ず残したい説明や場面<small>1行に1つ</small></span><textarea id="bMust" rows="3" maxlength="2000" placeholder="例:&#10;45度で引き出す説明&#10;襟足をセニングするところ"></textarea></label>
       <p class="note">「必ず残したい説明」は、話した内容（文字起こし）と照らし合わせて探します。字幕をOFFにすると照合できません。</p>
+      <label class="field"><span>使用アイテム・専門用語<small>「、」や改行で区切る</small></span><textarea id="bItems" rows="2" maxlength="2000" placeholder="例: ヘアカッター、すきバサミ、100均"></textarea></label>
+      <p class="note">字幕の書き間違いを直すのに使います（例: 「アカッター」→「ヘアカッター」）。直した所は、確認画面で印をつけて知らせます。</p>
+      <label class="field"><span>原稿（話す内容が決まっている場合）<small>任意</small></span><textarea id="bScript" rows="4" maxlength="20000" placeholder="話す内容の原稿を貼り付けると、字幕は原稿の文字で表示し、表示のタイミングだけを音声に合わせます"></textarea></label>
+      <p class="note">原稿にない発言（言い直し・余談など）は、確認画面で「候補」として知らせます。原稿の文を勝手に足すことはありません（話していない部分の文字は表示しません）。</p>
       <button type="button" class="link-btn" id="briefClear">入力内容をクリア</button>
     </div>
   </section>
 
   <section class="card" id="stepAnalyze" aria-labelledby="analyze-title" hidden>
     <h2 id="analyze-title"><span class="step-no">3</span>自動編集する</h2>
-    <label class="option"><input type="checkbox" id="optAsr"><span>字幕を作る・言い直しを探す（文字起こし・試験中）<br><small class="note" style="margin:0">OFFでも無音カット・場面選び・MP4書き出しはできます。ONにすると初回にAIモデル（目安100MB前後）をダウンロードし、メモリを多く使います。失敗した場合は字幕なしで続けます。</small></span></label>
+    <label class="option"><input type="checkbox" id="optAsr"><span>字幕を作る・言い直しを探す（文字起こし・試験中）<br><small class="note" style="margin:0">OFFでも無音カット・場面選び・MP4書き出しはできます。ONにすると初回にAIモデルをダウンロードし、メモリを多く使います。失敗した場合は字幕なしで続けます。</small></span></label>
+    <label class="field engine"><span>字幕AI</span>
+      <select id="optEngine">
+        <option value="reazon">ReazonSpeech（日本語専用・高精度）</option>
+        <option value="whisper">Whisper base（軽い・従来）</option>
+      </select>
+    </label>
+    <p class="note" style="margin-top:0">ReazonSpeech（初回に約160MBをダウンロード）は日本語の会話だけで学習した無料のモデルで、美容の言葉や「100均」なども正しく書きやすく、1文字ごとの時刻で字幕を声に合わせます。<b>iPhone実機での動作（メモリ・速さ）は未確認です。</b>途中で止まった場合は、次から自動で Whisper base（約80MB）に切り替えます。どちらも音声は端末の外に送りません。</p>
     <button class="btn block" id="btnAnalyze">自動編集を開始</button>
     <ul class="steps" id="steps" hidden></ul>
     <div class="bar" id="bar" hidden><div></div></div>
@@ -364,8 +380,14 @@
     <details id="otherWrap"><summary id="otherSummary">ほかの候補</summary><div class="clips" id="others"></div></details>
     <details id="retakeWrap"><summary id="retakeSummary">言い直しとして除外した場面</summary><div class="clips" id="retakes"></div></details>
     <div class="render-options">
-      <label class="option"><input type="checkbox" id="optSubs" checked><span>字幕を入れる <small class="note" id="optSubsNote" style="margin:0"></small><br><small class="note" style="margin:0">白のゴシック体・最大2行。手元に重ならない位置に、ふわっと表示します</small></span></label>
-      <label class="option"><input type="checkbox" id="optZoom" checked><span>自然なズーム<br><small class="note" style="margin:0">手元がまとまって動く場面だけ、ゆっくり1.03〜1.08倍に寄ります（間隔をあけて、ハサミや手元が切れない場合のみ）</small></span></label>
+      <label class="option"><input type="checkbox" id="optOpening" checked><span>冒頭にタイトルの文字を入れる <small class="note" id="openingNote" style="margin:0"></small><br><small class="note" style="margin:0">白の太いゴシック体・最大3行・薄い影（黒い帯なし）。最初の約2秒、ふわっと出て消えます</small></span></label>
+      <div class="opening-edit">
+        <textarea id="openingText" rows="3" maxlength="60" aria-label="冒頭に出す文字（改行で行を分ける）" placeholder="例:&#10;ハサミ&#10;すきバサミ&#10;以外にもある"></textarea>
+        <button type="button" class="link-btn" id="openingReset">動画タイトルから作り直す</button>
+      </div>
+      <label class="option"><input type="checkbox" id="optSubs" checked><span>字幕を入れる <small class="note" id="optSubsNote" style="margin:0"></small><br><small class="note" style="margin:0">白のゴシック体・最大2行・薄い影。画面の下に、ふわっと表示します（用語の途中では改行しません）</small></span></label>
+      <label class="option"><input type="checkbox" id="optZoom" checked><span>自然なズーム<br><small class="note" style="margin:0">手元がまとまって動く場面だけ、ゆっくり1.03〜1.08倍に寄る・引く（15秒以上あけて、ハサミや手元が切れない場合のみ）</small></span></label>
+      <p class="note" style="margin-top:0">最後の約0.7秒は、映像がなめらかに黒くなり、音声も同時に小さくなります。</p>
     </div>
     <button class="btn block" id="btnRender">この内容でMP4を書き出す</button>
     <p class="note">書き出しは数秒ずつの区間に分けて進め、書き終えた区間はこのiPhoneの中に保存します。途中でSafariを閉じた場合は、もう一度開いて「途中の編集」の「続きから再開」を押してください。
@@ -408,7 +430,7 @@
     </ul>
   </section>
 
-  <footer>Amity AI動画編集 ・ テスト版 v0.8.1</footer>
+  <footer>Amity AI動画編集 ・ テスト版 v0.9.0</footer>
 </main>
 <script type="module" src="js/app.js"></script>
 </body>

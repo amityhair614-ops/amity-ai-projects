@@ -226,9 +226,11 @@ export function detectSpeech(rmsDb, opts = {}) {
 // 話のテンポごとの「間」の残し方（秒）。
 // lead: 話し始めの前に残す時間 / tail: 話し終わりの後に残す時間（消えていく語尾・息）
 // keepGap: 文の中でこれより短い間はそのまま残す / maxGap: 文の中の長い間は、ここまで縮める
+// natural は手動編集のお手本（文と文の間 0.2〜0.4秒、長くても0.6秒前後）に合わせている。
+// 語尾は detectSpeech で消えていく小さな音まで含めてから tail を足すので、間を詰めても語尾は切れない
 export const PACES = {
-  natural: { lead: 0.18, tail: 0.32, keepGap: 0.5, minGap: 0.42, maxGap: 0.6 },
-  tempo: { lead: 0.12, tail: 0.24, keepGap: 0.38, minGap: 0.32, maxGap: 0.45 },
+  natural: { lead: 0.12, tail: 0.22, keepGap: 0.4, minGap: 0.3, maxGap: 0.45 },
+  tempo: { lead: 0.1, tail: 0.18, keepGap: 0.32, minGap: 0.24, maxGap: 0.36 },
 };
 
 // [a, b] の中で一番音の小さい時刻（3コマの平均）。文と文がつながって聞こえる所の区切りに使う
@@ -265,7 +267,7 @@ export function shapePieces(segs, before, after, pace = PACES.natural) {
 }
 
 // 話し始めの言葉が、前の文に続くことを表すもの（前の文がないと意味が通じない）
-const CONTINUES_PREV_RE = /^(?:なので|ですので|だから|それで|そして|そうすると|すると|そのため|なぜなら|というのも|つまり|ただ、|ただし|でも、|けど|あと、|それから|で、)/;
+const CONTINUES_PREV_RE = /^(?:なので|ですので|だから|それで|そして|そうすると|すると|そのため|なぜなら|というのも|つまり|ただ、|ただし|でも|けど|あと、|それから|で、|そうならない|そうしないと)/;
 // 文が終わっていない（次の文に続く）語尾
 const CONTINUES_NEXT_RE = /(?:[、,]|て|で|ので|から|けど|けれど|けれども|が|と|し)$/;
 
@@ -290,14 +292,15 @@ export function linkSentences(units) {
 }
 
 // 文字起こしに送る音声の区切り（無音部分は送らない）
+// speech: 区間の中で話している時間（文字起こしの結果が短すぎないかを確かめるのに使う）
 export function transcriptionWindows(regions, maxLen = 28) {
   const windows = [];
   let cur = null;
   for (const r of regions) {
-    if (cur && r.end - cur.start <= maxLen) cur.end = r.end;
+    if (cur && r.end - cur.start <= maxLen) { cur.end = r.end; cur.speech += r.end - r.start; }
     else {
       if (cur) windows.push(cur);
-      cur = { start: r.start, end: r.end };
+      cur = { start: r.start, end: r.end, speech: r.end - r.start };
     }
   }
   if (cur) windows.push(cur);
@@ -428,6 +431,8 @@ function findGap(u, sp, at) {
   const f = moraCount(text.slice(0, at)) / (moraCount(text) || 1);
   let rest = f * total, t = sp[sp.length - 1].end;
   for (const r of sp) { if (rest <= r.end - r.start) { t = r.start + rest; break; } rest -= r.end - r.start; }
+  // 1文字ごとの時刻がわかる（ReazonSpeech）ときは、その時刻を使う（文字の時刻は声より少し早めに出るので少し足す）
+  if (u.times && u.times.length === text.length && u.times[at] != null) t = u.times[at] + 0.15;
   let best = null, bestCost = Infinity;
   for (let k = 0; k + 1 < sp.length; k++) {
     const gap = sp[k + 1].start - sp[k].end;
@@ -536,7 +541,7 @@ export function buildUnits({ duration, rmsDb, speech, chunks, motion, pace }) {
       if (!segs.length) return;
       const pieces = shape(segs);
       const u = {
-        kind: 'speech', start: pieces[0].start, end: pieces[pieces.length - 1].end, pieces, text, subStart: c.subStart, subEnd: c.subEnd, fine: c.fine,
+        kind: 'speech', start: pieces[0].start, end: pieces[pieces.length - 1].end, pieces, text, subStart: c.subStart, subEnd: c.subEnd, fine: c.fine, times: c.times,
         voiceStart: segs[0].start, voiceEnd: segs[segs.length - 1].end,
       };
       if (flags[i]) u.excluded = flags[i];
@@ -623,7 +628,12 @@ export function buildUnits({ duration, rmsDb, speech, chunks, motion, pace }) {
     if (u.keywords.length) { score += 1.2 * Math.min(3, u.keywords.length); reasons.push('用語: ' + u.keywords.slice(0, 3).join('・')); }
     if (firstSpeech.includes(u) && u.start < introLimit) { score += 1.5; u.intro = true; reasons.push('冒頭の導入'); }
     if (u.end > duration * 0.92) { score += 2; u.ending = true; reasons.push('仕上がり（最後）'); }
-    if (u.kind === 'speech' && !u.text) score += 0.3;
+    // 文字起こしのない声: 文字起こしをしていないときは少し残しやすく、
+    // 文字起こしをしたのに文字にならなかった声（言いよどみ・聞き取れない声）は外しやすくする
+    if (u.kind === 'speech' && !u.text) {
+      if (chunks && chunks.length) { score -= 0.6; u.candidate = u.candidate || '文字にならなかった声です（言いよどみの可能性があります。必要なら残してください）'; }
+      else score += 0.3;
+    }
     if (u.redo) { score += 1.2; reasons.push('言い直した説明'); }
     if (u.candidate) score -= 0.3;
     if (u.trimmed) reasons.push(u.trimmed.reason + 'を取り除きました');
@@ -640,57 +650,83 @@ export function buildUnits({ duration, rmsDb, speech, chunks, motion, pace }) {
   return units;
 }
 
-// 目標の長さになるように場面を選ぶ。
-// opts.buckets: 動画全体を何区間に分けて、それぞれから選ぶか（入力した流れの段階数）
-// 必ず残す場面（u.mustKeep）は、上限を超えても残す（重要な説明を時間のために削らない）
-export function selectUnits(units, duration, target = 58, max = 60, opts = {}) {
-  const cands = units.filter(u => !u.excluded && u.duration >= 0.5);
-  const chosen = new Set();
-  let total = 0;
-  // 前後の文とつながっている場面（linkNext）は、まとめて残すか、まとめて外す（話の前後関係を崩さない）
-  const byId = new Map(cands.map(u => [u.id, u]));
-  const prevOf = new Map();
-  for (const u of cands) if (u.linkNext && byId.has(u.linkNext)) prevOf.set(u.linkNext, u);
-  const group = u => {
-    const g = [u];
-    for (let p = prevOf.get(u.id); p && g.length < 4; p = prevOf.get(p.id)) g.unshift(p);
-    for (let n = byId.get(u.linkNext); n && g.length < 4; n = byId.get(n.linkNext)) g.push(n);
-    return g.filter(x => !chosen.has(x));
-  };
-  // 話していない作業場面は、目標の時間の actionShare（初期 40%）までにする（説明が削られすぎないように）
-  const actionCap = target * (opts.actionShare ?? 0.4);
-  let actionTotal = 0;
-  const take = (u, limit, capAction = true) => {
-    if (chosen.has(u)) return;
-    const g = group(u);
-    const d = g.reduce((s, x) => s + x.duration, 0);
-    const da = g.filter(x => x.kind === 'action').reduce((s, x) => s + x.duration, 0);
-    if (capAction && da && actionTotal + da > actionCap) return;
-    if (total + d <= limit) for (const x of g) { chosen.add(x); total += x.duration; if (x.kind === 'action') actionTotal += x.duration; }
-  };
-  const add = u => take(u, max);
+// 選んだ場面を書き出したときの長さ。続けて選んだ場面の余白が重なる分は1回だけ数える（buildTimeline と同じ数え方）
+export function outputLength(list) {
+  const ps = list.flatMap(u => u.pieces || [{ start: u.start, end: u.end }]).sort((x, y) => x.start - y.start);
+  let sum = 0, end = -Infinity;
+  for (const p of ps) { const s0 = Math.max(p.start, end); if (p.end > s0) sum += p.end - s0; end = Math.max(end, p.end); }
+  return sum;
+}
 
-  for (const u of cands) if (u.mustKeep && !chosen.has(u)) { chosen.add(u); total += u.duration; }
-  // 冒頭と最後
-  const intro = cands.filter(u => u.intro).sort((a, b) => b.score - a.score)[0];
-  const ending = cands.filter(u => u.ending).sort((a, b) => b.score - a.score)[0];
-  if (intro) add(intro);
-  if (ending) add(ending);
-  // 動画全体からまんべんなく
-  const K = opts.buckets || 5;
-  for (let k = 0; k < K; k++) {
-    const s = (duration * k) / K, e = (duration * (k + 1)) / K;
-    const best = cands.filter(u => u.start >= s && u.start < e).sort((a, b) => b.score - a.score)[0];
-    if (best) take(best, target);
+// 目標時間の許容幅（60秒なら ±5秒 → 55〜65秒）
+export function targetTolerance(sec) {
+  return Math.max(3, Math.round(sec / 12));
+}
+
+// 場面を選ぶ（話の内容を優先する）。手動編集のお手本と同じく、話している場面は言い直し・くり返し・
+// つなぎ言葉を除いてすべて元の順番で残し、目標時間（target、上限 max）を大きく超えるときだけ、
+// 点数の低い文を「文ごと」外す。前後の文とつながっている文（linkNext）はまとめて外す（文の途中から始めない）。
+// 冒頭・最後・必ず残す場面は外さない（重要な説明を時間のために削らない）。
+// 話している部分が目標より短いときだけ、手元の作業場面を足す（無音で水増しはしない）
+// opts.lo: 目標の下限（既定は target − 許容幅）/ opts.buckets: 動画全体を何区間に分けて見るか（外す場面が偏らないように）
+export function selectUnits(units, duration, target = 60, max = target + targetTolerance(target), opts = {}) {
+  const lo = opts.lo ?? target - Math.max(max - target, targetTolerance(target));
+  const cands = units.filter(u => !u.excluded && u.duration >= 0.5);
+  const byId = new Map(cands.map(u => [u.id, u]));
+  // 話している場面を、つながった文のまとまり（グループ）に分ける
+  const speech = cands.filter(u => u.kind === 'speech');
+  const linked = new Set(speech.filter(u => u.linkNext && byId.has(u.linkNext)).map(u => u.linkNext));
+  const groups = [];
+  for (const u of speech) {
+    if (linked.has(u.id)) continue; // 前の文の続き（前の文のグループに入る）
+    const g = [u];
+    for (let n = byId.get(u.linkNext); n && g.length < 8; n = byId.get(n.linkNext)) g.push(n);
+    groups.push(g);
   }
-  // 残りは点数の高い順
-  for (const u of [...cands].sort((a, b) => b.score - a.score)) {
-    if (total >= target) break;
-    take(u, target);
+  const dur = g => g.reduce((s, x) => s + x.duration, 0);
+  const keep = new Set(groups);
+  const extra = cands.filter(u => u.kind !== 'speech' && u.mustKeep);
+  const totalOf = set => outputLength([...[...set].flat(), ...extra]);
+  let total = totalOf(keep);
+  const K = Math.max(1, opts.buckets || 5);
+  const bucket = g => Math.min(K - 1, Math.floor((g[0].start / Math.max(1, duration)) * K));
+  const isProtected = g => g.some(u => u.mustKeep || u.intro || u.ending);
+  // 長すぎるとき: 点数の低いグループから外す。区間に1つしか残っていないグループは外しにくくする（流れが飛ばないように）。
+  // 上限を少し（許容幅の半分まで）超えるだけなら、説明の文を外すより内容を優先して残す。
+  // 外した後に下限を下回るものは外さない
+  const slack = opts.slack ?? targetTolerance(target) / 2;
+  while (total > max + slack) {
+    const left = new Map();
+    for (const g of keep) left.set(bucket(g), (left.get(bucket(g)) || 0) + 1);
+    const value = g => Math.max(...g.map(u => u.score ?? 1)) + (left.get(bucket(g)) <= 1 ? 0.8 : 0);
+    const removable = [...keep].filter(g => !isProtected(g)).sort((x, y) => value(x) - value(y) || dur(y) - dur(x));
+    const options = removable.map(g => {
+      const rest = new Set(keep);
+      rest.delete(g);
+      return { g, after: totalOf(rest) };
+    }).filter(o => o.after >= lo);
+    if (!options.length) break;
+    // 外すと目安の範囲に収まるものがあれば、その中で失う内容（点数×長さ）が一番少ないもの。
+    // なければ一番点数の低いもの（長い説明を、少しの時間のために丸ごと外さない）
+    const fit = options.filter(o => o.after <= max + slack);
+    const loss = o => value(o.g) * dur(o.g);
+    const pick = fit.length ? fit.sort((x, y) => loss(x) - loss(y))[0] : options[0];
+    keep.delete(pick.g);
+    total = pick.after;
   }
-  // 目標よりかなり短いときは、上限までの範囲で場面を足す（短い目標ほど1場面の長さの影響が大きいため）
-  if (total < max - Math.max(3, max * 0.1)) {
-    for (const u of [...cands].sort((a, b) => b.score - a.score)) take(u, max, false);
+  const chosen = new Set([...keep].flat());
+  for (const u of cands) if (u.mustKeep) chosen.add(u);
+  // 短いとき: 手元の作業場面（話していない場面）を、点数の高い順に足す。作業場面は目標の actionShare（初期 40%）まで
+  if (total < lo) {
+    const cap = target * (opts.actionShare ?? 0.4);
+    let actionTotal = [...chosen].filter(u => u.kind === 'action').reduce((s, u) => s + u.duration, 0);
+    for (const u of cands.filter(x => x.kind === 'action' && !chosen.has(x)).sort((a, b) => b.score - a.score)) {
+      if (total >= lo) break;
+      if (total + u.duration > max || actionTotal + u.duration > cap) continue;
+      chosen.add(u);
+      total += u.duration;
+      actionTotal += u.duration;
+    }
   }
   return [...chosen].sort((a, b) => a.start - b.start);
 }
@@ -709,10 +745,34 @@ function charType(c) {
   return 'other';
 }
 
-// text の i 文字目の前で区切るときの「自然さ」
-function breakScore(text, i) {
+// 改行・ページの区切りで分けない言葉（美容用語・入力された用語）。setBreakTerms で入力された用語を足す
+const BASE_TERMS = [...new Set([...KEYWORDS, ...BEAUTY_TERMS.map(t => t.term), 'すきバサミ', 'ハサミ', 'ヘアカッター'])];
+let breakTerms = BASE_TERMS;
+export function setBreakTerms(extra = []) {
+  breakTerms = [...new Set([...BASE_TERMS, ...extra.filter(w => typeof w === 'string' && w.length >= 2)])];
+}
+
+// text の中で、用語の途中にあたる位置（その前で区切ってはいけない位置）。inside.ends は用語の終わりの位置（区切りやすい）
+function insideTerms(text) {
+  const inside = new Set();
+  inside.ends = new Set();
+  for (const w of breakTerms) {
+    for (let i = text.indexOf(w); i >= 0; i = text.indexOf(w, i + 1)) {
+      for (let k = i + 1; k < i + w.length; k++) inside.add(k);
+      inside.ends.add(i + w.length);
+    }
+  }
+  for (const k of inside) inside.ends.delete(k);
+  return inside;
+}
+
+// text の i 文字目の前で区切るときの「自然さ」。inside: 用語の途中の位置
+function breakScore(text, i, inside) {
   const prev = text[i - 1], next = text[i];
   if (!prev || !next || NO_LINE_START.includes(next)) return -Infinity;
+  if (inside && inside.has(i)) return -6; // 「すき／バサミ」のように用語の途中では切らない
+  // 用語のすぐ後（「すきバサミ／以外に」）は、助詞が続かなければ区切りやすい
+  if (inside?.ends?.has(i) && !PARTICLES.includes(next)) return 3;
   if ('、。！？!? '.includes(prev)) return 4;
   // 助詞の後（「…を」「…に」）。ただし「の」は名詞のつながりが多いので低め
   if (PARTICLES.includes(prev) && charType(next) !== 'hira') return prev === 'の' ? 1.5 : 3;
@@ -728,8 +788,9 @@ function breakScore(text, i) {
 // [lo, hi] の範囲で、中央 target に近く、自然な区切り位置を選ぶ
 function bestBreak(text, lo, hi, target) {
   let best = -1, bestScore = -Infinity;
+  const inside = insideTerms(text);
   for (let i = Math.max(1, lo); i <= Math.min(text.length - 1, hi); i++) {
-    const sc = breakScore(text, i) * 2 - Math.abs(i - target) * 0.35;
+    const sc = breakScore(text, i, inside) * 2 - Math.abs(i - target) * 0.35;
     if (sc > bestScore) { bestScore = sc; best = i; }
   }
   return best > 0 ? best : Math.min(text.length - 1, Math.max(1, Math.round(target)));
@@ -755,7 +816,8 @@ export function wrapLines(text, maxChars) {
 // 2行に分けるとき、自然な区切りが見つかるか
 function canWrap(t, maxChars) {
   if (t.length <= maxChars) return true;
-  for (let i = t.length - maxChars; i <= maxChars; i++) if (breakScore(t, i) >= 1) return true;
+  const inside = insideTerms(t);
+  for (let i = t.length - maxChars; i <= maxChars; i++) if (breakScore(t, i, inside) >= 1) return true;
   return false;
 }
 
@@ -777,7 +839,8 @@ function pageTexts(text, maxChars, maxLines) {
   return out;
 }
 
-export function subtitlePages(text, duration, maxChars = 14, maxLines = 2) {
+export const SUB_MAX_CHARS = 16;
+export function subtitlePages(text, duration, maxChars = SUB_MAX_CHARS, maxLines = 2) {
   const clean = (text || '').replace(/\s+/g, ' ').trim();
   if (!clean || duration <= 0) return [];
   const pages = [];
@@ -824,16 +887,16 @@ export function cropRect(srcW, srcH, cx = 0.5, box = null) {
 }
 
 // 字幕の位置（文字の中心の高さ。画面の高さに対する割合）。
-// YouTube ショートの画面下部（タイトル・ボタン）と上部を避けた高さにしている
-export const SUB_ZONES = { top: 0.2, bottom: 0.745 };
-const ZONE_BANDS = { top: [0.12, 0.29], bottom: [0.65, 0.84] };
+// 手動編集のお手本と同じく画面の下に固定する（場面ごとに上下が入れ替わると目が追いにくいため）。
+// お手本（約0.88）より少しだけ上げて、YouTube ショートの下部の表示（チャンネル名・説明）と重なりにくくしている
+export const SUB_ZONES = { top: 0.2, bottom: 0.82 };
 export const ZOOM_MIN = 1.03;
 export const ZOOM_MAX = 1.08;
-const ZOOM_SPACING = 10; // ズームとズームの間は最低この秒数あける
-// 編集スタイルごとのズーム。テンポ重視は間隔を短く、少しだけ強く（それでも 1.10 倍まで）
+const ZOOM_SPACING = 15; // ズームとズームの間は最低この秒数あける（頻繁に動かさない）
+// 編集スタイルごとのズーム。テンポ重視は間隔を少し短く（倍率は同じ 1.03〜1.08 倍）
 export const ZOOM_STYLES = {
   simple: { spacing: ZOOM_SPACING, max: ZOOM_MAX },
-  tempo: { spacing: 6, max: 1.10 },
+  tempo: { spacing: 9, max: ZOOM_MAX },
 };
 const FADE = 0.2;       // 字幕のフェード（秒）
 const FADE_SHORT = 0.1; // 字幕が切れ目なく続くときのフェード
@@ -847,11 +910,6 @@ function boxInCrop(box, crop, srcW, srcH) {
     (box[0] * srcW - crop.left) / crop.width, (box[1] * srcW - crop.left) / crop.width,
     (box[2] * srcH - crop.top) / crop.height, (box[3] * srcH - crop.top) / crop.height,
   ];
-}
-
-function bandHit(b, band) {
-  if (!b) return false;
-  return Math.max(0, Math.min(b[3], band[1]) - Math.max(b[2], band[0])) / (band[1] - band[0]) > 0.3;
 }
 
 // 書き出し用のタイムライン。ピースごとのフレーム数を確定し、字幕の時刻を出力側に変換する。
@@ -892,16 +950,8 @@ export function buildTimeline(clips, opts = {}) {
     return { ...clip, subtitles: subs, crop, inCrop: boxInCrop(c.box, crop, srcW, srcH) };
   });
 
-  // 字幕の位置: 基本は下。手元が下の方で動く場面が多い動画では上にする。
-  // 場面ごとには、その場面で手元が字幕の位置にかかるときだけ反対側にする
-  const moving = tl.filter(c => c.subtitles.length && c.inCrop && (c.motion ?? 0) >= 0.2);
-  const lowHands = moving.filter(c => bandHit(c.inCrop, ZONE_BANDS.bottom) && !bandHit(c.inCrop, ZONE_BANDS.top)).length;
-  const base = moving.length && lowHands > moving.length / 2 ? 'top' : 'bottom';
-  const other = base === 'top' ? 'bottom' : 'top';
-  for (const c of tl) {
-    const hit = (c.motion ?? 0) >= 0.2 && bandHit(c.inCrop, ZONE_BANDS[base]) && !bandHit(c.inCrop, ZONE_BANDS[other]);
-    c.subPos = hit ? other : base;
-  }
+  // 字幕の位置: いつも下（お手本と同じ）。文字を小さめにして、髪や手元を隠す面積を減らしている
+  for (const c of tl) c.subPos = 'bottom';
 
   // 字幕のフェード: 前後に字幕が切れ目なく続くときは短く
   const pages = tl.flatMap(c => c.subtitles.map(p => Object.assign(p, { pos: c.subPos })));
@@ -913,7 +963,7 @@ export function buildTimeline(clips, opts = {}) {
 
   // 自然なズーム: 手元がまとまって動いている2秒以上の場面だけ、ゆっくり 1.03〜1.08 倍まで寄る。
   // 続けてズームしない・間隔をあける・手元が枠からはみ出す場合はズームしない
-  let lastEnd = -Infinity, prevZoomed = false;
+  let lastEnd = -Infinity, prevZoomed = false, zoomCount = 0;
   for (const c of tl) {
     c.zoom = null;
     const b = c.inCrop;
@@ -938,9 +988,29 @@ export function buildTimeline(clips, opts = {}) {
     const by0 = crop.top + b[2] * crop.height, by1 = crop.top + b[3] * crop.height;
     const mx = zw * 0.04, my = zh * 0.04;
     if (bx0 - mx < rect.left || bx1 + mx > rect.left + zw || by0 - my < rect.top || by1 + my > rect.top + zh) continue;
-    c.zoom = { z, rect };
+    // ゆっくり寄る（in）と、寄った所からゆっくり引く（out）を交互に使う
+    c.zoom = { z, rect, dir: zoomCount++ % 2 ? 'out' : 'in' };
     lastEnd = c.outStart + c.outDuration;
     prevZoomed = true;
+  }
+  // 手元がまとまって動く場面がなく、一度もズームしなかったとき: 単調にならないよう、長めの説明の場面だけ
+  // ごく控えめ（1.04倍）に、画面の中央へゆっくり寄る・引く。手元の範囲がわかる場面は、それが切れない場合だけ
+  if (zoom && !zoomCount) {
+    lastEnd = -Infinity;
+    for (const c of tl) {
+      if (c.outDuration < 4 || c.outStart - lastEnd < zs.spacing || c.outStart < 2) continue;
+      const z = 1.04, { crop } = c;
+      const zw = crop.width / z, zh = crop.height / z;
+      const rect = { left: crop.left + (crop.width - zw) / 2, top: crop.top + (crop.height - zh) / 2, width: zw, height: zh };
+      const b = c.inCrop;
+      if (b) {
+        const bx0 = crop.left + b[0] * crop.width, bx1 = crop.left + b[1] * crop.width;
+        const by0 = crop.top + b[2] * crop.height, by1 = crop.top + b[3] * crop.height;
+        if (bx0 < rect.left || bx1 > rect.left + zw || by0 < rect.top || by1 > rect.top + zh) continue;
+      }
+      c.zoom = { z, rect, dir: zoomCount++ % 2 ? 'out' : 'in', gentle: true };
+      lastEnd = c.outStart + c.outDuration;
+    }
   }
   return tl;
 }
@@ -949,7 +1019,8 @@ export function buildTimeline(clips, opts = {}) {
 export function cropAt(clip, t) {
   if (!clip.zoom) return clip.crop;
   const x = clamp((t - clip.outStart) / clip.outDuration, 0, 1);
-  const e = x * x * (3 - 2 * x);
+  const s = x * x * (3 - 2 * x);
+  const e = clip.zoom.dir === 'out' ? 1 - s : s;
   const a = clip.crop, b = clip.zoom.rect;
   return {
     left: a.left + (b.left - a.left) * e, top: a.top + (b.top - a.top) * e,
@@ -1165,12 +1236,38 @@ export function srcToOut(clip, t) {
 const SUB_LEAD = 0.1;   // 声より少しだけ先に出し始める（フェードの分）
 const SUB_LINGER = 0.25; // 話し終わってから少しだけ残す
 
+// 1文字ごとの時刻（ReazonSpeech・原稿）がわかるときは、ページの最初の文字を話した時刻でページを切り替える。
+// 文字の時刻は声より少し早めに出るので CHAR_LAG を足す。字幕を手直しした・文の一部を取り除いた場合（文字と時刻が
+// 合わない）は使わない（null を返す）
+const CHAR_LAG = 0.15;
+function charPageTimes(pageTexts, clip, fine) {
+  const text = clip.text || '', times = clip.times;
+  if (!times || times.length !== text.length) return null;
+  const strip = t => t.replace(/[、。\s]/g, '');
+  const out = [];
+  let cursor = 0;
+  for (const pt of pageTexts) {
+    const head = strip(pt).slice(0, 2);
+    let at = -1;
+    for (let i = cursor; i < text.length; i++) if (strip(text.slice(i, i + 4)).startsWith(head)) { at = i; break; }
+    if (at < 0) return null;
+    out.push({ at, start: times[at] + CHAR_LAG });
+    cursor = at + Math.max(1, strip(pt).length - 1);
+  }
+  // 最後のページの終わり: 最後の文字の時刻のあと、声が続いている所まで
+  const lastT = times[times.length - 1] + CHAR_LAG;
+  const v = fine.find(r => r.start <= lastT + 0.05 && r.end >= lastT - 0.05);
+  const end = Math.min(clip.subEnd ?? lastT + 0.4, Math.max(lastT + 0.2, v ? v.end : lastT + 0.3));
+  // 最初のページは、声の出始めに合わせた表示開始（subStart）から
+  return out.map((p, i) => ({ start: i ? p.start : (clip.subStart ?? p.start), end: i + 1 < out.length ? out[i + 1].start : end }));
+}
+
 function timedPages(clip, text) {
   const pages = subtitlePages(text, 1);
   if (!pages.length) return [];
   // 手直しで表示時刻が変わっていても、その範囲の中の発話だけを使う
   const fine = (clip.fine || []).map(r => ({ start: Math.max(r.start, clip.subStart), end: Math.min(r.end, clip.subEnd) })).filter(r => r.end > r.start);
-  const src = pageSourceTimes(pages.map(p => p.lines.join('')), clip.subStart, clip.subEnd, fine);
+  const src = charPageTimes(pages.map(p => p.lines.join('')), clip, fine) || pageSourceTimes(pages.map(p => p.lines.join('')), clip.subStart, clip.subEnd, fine);
   const clipEnd = clip.outStart + clip.outDuration;
   const out = pages.map((p, i) => ({
     lines: p.lines,
@@ -1184,4 +1281,70 @@ function timedPages(clip, text) {
     if (out[i].end - out[i].start < 0.5) out[i].end = Math.min(limit, out[i].start + 0.5);
   }
   return out;
+}
+
+// ---------- 冒頭のテキスト・最後のフェード ----------
+
+// 冒頭に大きく出す短い文字（白の太いゴシック・最大3行）。表示は約2秒で、ふわっと出てふわっと消える
+export const OPENING = { maxLines: 3, maxChars: 9, start: 0.1, duration: 2.0, minDuration: 1.5, maxDuration: 2.5, fadeIn: 0.35, fadeOut: 0.45, y: 0.36 };
+
+// 動画タイトルから、冒頭に出す文字の案を作る（1行9文字前後・最大3行。言葉の途中では改行しない）。
+// 長いタイトルは3行に収まる所までにする（確認画面で直せる）
+export function openingLines(title) {
+  const t = (title || '').normalize('NFKC').replace(/[【】「」『』《》〈〉"]/g, ' ').trim();
+  if (!t) return [];
+  const parts = t.split(/[\n／/｜|!！?？。・]+|\s{1,}|、/).map(x => x.trim()).filter(Boolean);
+  for (const maxChars of [OPENING.maxChars, OPENING.maxChars + 2]) {
+    const lines = parts.flatMap(p => wrapLines(p, maxChars));
+    if (lines.length <= OPENING.maxLines || maxChars > OPENING.maxChars) return lines.slice(0, OPENING.maxLines);
+  }
+  return [];
+}
+
+// 入力された冒頭の文字（改行で行を分ける）を、表示する行にする。1行が長すぎるときは自然な位置で折り返す
+export function openingText(text) {
+  const lines = (text || '').normalize('NFKC').split('\n').map(l => l.trim()).filter(Boolean)
+    .flatMap(l => (l.length > OPENING.maxChars + 3 ? wrapLines(l, OPENING.maxChars + 2) : [l]));
+  return lines.slice(0, OPENING.maxLines);
+}
+
+// 書き出しに使う冒頭のテキストの設定。clip: 最初の場面（手元の位置を避ける）
+export function openingPlan(lines, duration = OPENING.duration, firstClip = null) {
+  if (!lines || !lines.length) return null;
+  const d = clamp(duration, OPENING.minDuration, OPENING.maxDuration);
+  // 最初の場面で手元が画面の上の方で動いているときは、文字を少し下げる（手元を隠さない）
+  const b = firstClip?.inCrop;
+  const y = b && (firstClip.motion ?? 0) >= 0.2 && b[2] < 0.4 && b[3] < 0.6 ? 0.5 : OPENING.y;
+  return { lines: lines.slice(0, OPENING.maxLines), start: OPENING.start, end: OPENING.start + d, fadeIn: OPENING.fadeIn, fadeOut: OPENING.fadeOut, y };
+}
+
+// 冒頭のテキストの不透明度（ゆっくり始まりゆっくり終わる）
+export function openingAlpha(op, t) {
+  if (!op) return 0;
+  const x = clamp(Math.min((t - op.start) / op.fadeIn, (op.end - t) / op.fadeOut, 1), 0, 1);
+  return x * x * (3 - 2 * x);
+}
+
+// 最後のフェードアウト（映像をなめらかに黒く・音声も同じ時間で小さくする）
+export const END_FADE = 0.7;
+
+// 出力の時刻 t での黒の濃さ（0〜1）。total は完成動画の長さ
+export function endFadeAlpha(t, total, sec = END_FADE) {
+  const d = Math.min(sec, total * 0.2);
+  if (d <= 0 || t < total - d) return 0;
+  const x = clamp((t - (total - d)) / d, 0, 1);
+  return x * x * (3 - 2 * x);
+}
+
+// 最後の場面の後ろを少しだけ延ばす（最後のフェードアウトが話し声に重ならないように）。
+// 次の声が始まる前・元の動画の終わりまでの範囲で、最大 extra 秒
+export function extendEnding(clips, voice, duration, extra = END_FADE * 0.7) {
+  if (!clips.length) return clips;
+  const last = clips[clips.length - 1];
+  const p = last.pieces[last.pieces.length - 1];
+  const next = (voice || []).find(v => v.start >= p.end - 0.01);
+  const end = Math.min(duration, p.end + extra, next ? next.start - 0.05 : Infinity);
+  if (end <= p.end) return clips;
+  const pieces = [...last.pieces.slice(0, -1), { ...p, end }];
+  return [...clips.slice(0, -1), { ...last, pieces, end }];
 }

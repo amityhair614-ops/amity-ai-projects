@@ -103,12 +103,23 @@ function parallel(a, b) {
 
 // 文の中のくり返し（「このパネルを、このパネルを45度で」）。返り値は { cut } か null
 function stutter(text) {
+  // 読点がなくても、文の頭の言葉（4〜6文字）をすぐ後でもう一度言い出した（「このようなヘアカッターこのようなアイテム」）
+  for (let len = 6; len >= 4; len--) {
+    const head = text.slice(0, len);
+    if (/[、,。]/.test(head) || normalizeText(head).length < len) continue;
+    const at = text.indexOf(head, len);
+    if (at > 0 && at <= 16 && text.length - at > len) return { cut: at, repeated: text.slice(0, at).replace(/[、,]$/, '') };
+  }
   const parts = text.split(/(?<=[、,])/);
   let pos = 0;
   for (let k = 0; k + 1 < parts.length; k++) {
     const a = normalizeText(parts[k]), b = normalizeText(parts[k + 1]);
     pos += parts[k].length;
     if (a.length >= 3 && (b.startsWith(a) || similarity(a, b.slice(0, a.length)) >= 0.8)) return { cut: pos, repeated: parts[k].replace(/[、,]$/, '') };
+    // 同じ言い出しで話し直した（「このようなヘアカッター、このようなアイテム」）: 前の短い句を言い直し前とみなす
+    let common = 0;
+    while (common < Math.min(a.length, b.length) && a[common] === b[common]) common++;
+    if (common >= 4 && a.length <= 14 && b.length > common) return { cut: pos, repeated: parts[k].replace(/[、,]$/, '') };
   }
   return null;
 }

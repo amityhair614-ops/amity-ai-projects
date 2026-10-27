@@ -74,6 +74,7 @@ try {
     $('file').dispatchEvent(new Event('change', { bubbles: true }));
     await until(() => shown('stepAnalyze') && !$('btnAnalyze').disabled, '動画を開く', 120e3);
     $('optAsr').checked = false; // 文字起こしのモデルはネットワークから取れないため、字幕なしで試す
+    $('bTitle').value = q.get('title') || 'ハサミ・すきバサミ以外にもある'; // 冒頭のテキストも描く
     const target = q.get('target');
     if (target) {
       W().document.querySelector('input[name=dur][value=custom]').click();
