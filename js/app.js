@@ -288,15 +288,17 @@ $('file').addEventListener('change', async () => {
   if (!file) return;
   // 再開のために選び直してもらった動画なら、保存してある作業の続きをする
   const pending = state.pendingResume;
-  await loadSource(file);
+  await loadSource(file, { preview: !(pending && ['render', 'assemble'].includes(pending.stage)) });
   if (pending && state.src) {
     if (sameSource(pending, file, state.src.duration)) await continueJob(pending, { reselected: true });
     else showError($('fileError'), '保存してある編集とは別の動画のようです（大きさか長さが違います）。同じ動画を選ぶか、新しく編集してください。');
   }
 });
 
-// 動画を開いて、入力画面を出す。file は選んだ動画、または端末内に保存したコピー
-async function loadSource(file) {
+// 動画を開いて、入力画面を出す。file は選んだ動画、または端末内に保存したコピー。
+// preview: 確認用の再生欄に読み込むか（続きから書き出すときは、読み込んですぐ外すことになるので読み込まない。
+// 読み込み中の動画をすぐ外すと、WebKit（Linux）で画面が止まることがあった）
+async function loadSource(file, { preview = true } = {}) {
   for (const id of ['fileError', 'analyzeError', 'renderError', 'globalError']) $(id).hidden = true;
   $('stepReview').hidden = true;
   $('stepResult').hidden = true;
@@ -313,7 +315,7 @@ async function loadSource(file) {
   state.file = file;
   state.url = URL.createObjectURL(file);
 
-  $('preview').src = state.url;
+  if (preview) $('preview').src = state.url;
   $('name').textContent = file.name;
   $('size').textContent = formatSize(file.size);
   $('duration').textContent = '読み込み中…';
@@ -1403,7 +1405,7 @@ async function continueJob(job, { reselected = false } = {}) {
       $('file').scrollIntoView({ behavior: 'smooth', block: 'center' });
       return;
     }
-    await loadSource(new File([f], job.file.name, { type: job.file.type || 'video/quicktime' }));
+    await loadSource(new File([f], job.file.name, { type: job.file.type || 'video/quicktime' }), { preview: !['render', 'assemble'].includes(job.stage) });
     if (!state.src) return;
     state.sourceFromStore = true;
   }

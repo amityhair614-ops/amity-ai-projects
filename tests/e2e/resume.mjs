@@ -198,6 +198,7 @@ try {
   await page.waitForSelector('#stepAnalyze:not([hidden])', { timeout: 60000 });
   if (noAsr) await page.uncheck('#optAsr'); else await page.check('#optAsr');
   if (await page.$('#optEngine')) await page.selectOption('#optEngine', 'whisper'); // 偽の文字起こしは Whisper の形で返す
+  if (process.env.TITLE) await page.fill('#bTitle', process.env.TITLE);
   if (target) {
     if (['30', '45', '60'].includes(target)) await page.click(`input[name=dur][value="${target}"] + span`);
     else { await page.click('input[name=dur][value=custom] + span'); await page.fill('#durCustom', target); await page.dispatchEvent('#durCustom', 'change'); }
