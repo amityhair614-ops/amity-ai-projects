@@ -104,9 +104,13 @@ const EXTRA_TERMS = [
   { term: '100均', variants: ['百均', 'ひゃっきん', 'ヒャッキン'] },
 ];
 
+// 髪の話でよく聞き間違える同じ読みの漢字（「髪が痛む」ではなく「傷む」）。直した所には確認の印をつける
+const HAIR_HOMOPHONES = [['痛んで', '傷んで'], ['痛んだ', '傷んだ'], ['痛みの', '傷みの'], ['痛みが', '傷みが'], ['痛みや', '傷みや'], ['痛ま', '傷ま'], ['痛み', '傷み']];
+
 function replacements(userTerms = []) {
   const reps = [];
   const add = (from, to, kind) => { if (from && from !== to && from.length >= 2) reps.push({ from, to, kind }); };
+  for (const [from, to] of HAIR_HOMOPHONES) add(from, to, 'homophone');
   for (const { term, reading, variants } of [...BEAUTY_TERMS, ...EXTRA_TERMS]) {
     // ひらがなで書かれた読み（3文字以上。短いものは普通の言葉と区別できないので直さない）
     const r = reading || (/^[゠-ヿ]+$/.test(term) ? term : null);
@@ -149,7 +153,7 @@ export function fixTerms(chunk, userTerms = [], phrases = []) {
     for (let at = text.indexOf(r.from); at >= 0; at = text.indexOf(r.from, at + r.to.length)) {
       // より長い言葉の一部（「ハサミ」の中の…）や、すでに正しい用語の一部は直さない
       if (text.startsWith(r.to, at) || text.slice(Math.max(0, at - r.to.length), at + r.from.length).includes(r.to)) continue;
-      replaceAt(at, r.from.length, r.to, { from: r.from, to: r.to, check: false });
+      replaceAt(at, r.from.length, r.to, { from: r.from, to: r.to, check: r.kind === 'homophone' });
     }
   }
   // 入力された用語（カタカナ・4文字以上）に近いカタカナ語（英字が混ざった「Aカッター」なども含む）

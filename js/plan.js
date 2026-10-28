@@ -966,6 +966,8 @@ function insideTerms(text) {
   return inside;
 }
 
+// 次の文の始まりによく使う言葉
+const SENTENCE_STARTS = ['それは', 'それを', 'それで', 'そして', 'この場所', 'このよう', 'その', 'でも', 'なので', 'だから', 'ですので', 'まず', '次に', 'あとは', 'ただ', 'となれば', 'こうなって', '下手すれば', 'そうなら'];
 // 区切りやすい語尾（この後で区切ると、意味のまとまりで分かれる）
 const GOOD_ENDINGS = ['ように', 'ために', 'ので', 'から', 'けど', 'けれど', 'ても', 'たら', 'れば', 'なら', 'ながら', 'まで', 'より', 'など', 'とき', 'ときに', '際に', '時に', '場合は', '場合', 'なのか', 'ます', 'です', 'ました', 'でした', 'ません', 'ください'];
 // 助詞のあとにひらがなが続いても、ひとまとまりの言葉になる組み合わせ（「には」「でも」「です」「できる」など）
@@ -980,7 +982,11 @@ function breakScore(text, i, inside, pause = 0) {
   if (!prev || !next || NO_LINE_START.includes(next) || next === 'ん') return -Infinity;
   if (inside && inside.has(i)) return -6; // 「すき／バサミ」のように用語の途中では切らない
   let sc = grammarScore(text, i, inside, prev, next);
-  if (pause >= 0.35) sc = Math.max(sc, 0) + 4;
+  // 声の間は意味の切れ目の手がかり。ただし、言葉の途中らしい所（「でき」「アホ／毛」「こ／の」）では、間があっても優先しない
+  // （1文字ごとの時刻は少しずれるため、言葉の途中に間があるように見えることがある）
+  if (sc <= -1) return sc;
+  if (sc < 0) sc += pause >= 0.35 ? 1 : 0;
+  else if (pause >= 0.35) sc += 4;
   else if (pause >= 0.18) sc += 1.5;
   return sc;
 }
@@ -991,6 +997,8 @@ function grammarScore(text, i, inside, prev, next) {
   // ただし用語のあとに同じ種類の文字が続く（「根元／付近」）ときは、ひとつの言葉の続き
   if (inside?.ends?.has(i) && !PARTICLES.includes(next) && !(a === b && a !== 'hira')) return 3;
   if ('、。！？!? '.includes(prev)) return 4;
+  // 次の文の始まりらしい言葉（「…しない／それを」「…です／この場所を」）。字幕AIは句読点を出さないため
+  if (!PARTICLES.includes(prev) && SENTENCE_STARTS.some(w => text.startsWith(w, i)) && charType(prev) !== 'kata') return 3;
   const before = text.slice(0, i);
   // 「〜ないと／」「〜しまうと／」「〜すると／」: 条件の「と」のあとは区切りやすい
   if (prev === 'と' && 'いうるたすく'.includes(text[i - 2] || '') && b !== 'hira' || /(?:ないと|うと|ると)$/.test(before) && !PARTICLE_PAIRS.includes('と' + next)) return 3;
@@ -1001,16 +1009,19 @@ function grammarScore(text, i, inside, prev, next) {
   // 「〜して」「〜しまって」「〜入れて」のあと（文の途中の区切り）。「で」は助詞のことも多いので、
   // 前が動詞の形（っ・ん・い・し・き・り・べ・め・れ・せ・け）のときだけ
   if (prev === 'て' && !PARTICLES.includes(next)) return 3;
-  if (prev === 'で' && 'んい'.includes(text[i - 2] || '') && !PARTICLES.includes(next)) return 2.5;
+  // 「で」は「読んで／」のような形でも、後ろが「き」「す」（「でき」「です」）なら言葉の途中なので分けない
+  if (prev === 'で' && 'んい'.includes(text[i - 2] || '') && !PARTICLES.includes(next) && charType(next) !== 'hira') return 2.5;
   // 助詞の後（「…を」「…に」）。ただし「の」は名詞のつながりが多いので低め
   if (PARTICLES.includes(prev) && b !== 'hira') return prev === 'の' ? 1.5 : 3;
+  // 「の」のあとのひらがな（「アホ毛のような」「切ることのため」）は、ひとまとまりの言葉なので分けない
+  if (prev === 'の' && b === 'hira') return -1.5;
   // 助詞の後にひらがな（「形に／なりました」）。「には」「です」のようにひとまとまりの組み合わせは分けない
   if ('はをにでがもへと'.includes(prev) && b === 'hira') {
     if (PARTICLE_PAIRS.includes(prev + next)) return -2;
     return a === 'hira' && charType(text[i - 2]) === 'hira' ? 0.5 : 2;
   }
   if (a === 'hira' && (b === 'kanji' || b === 'kata')) return 1;
-  if (a === 'kata' && b === 'kanji') return 1;
+  if (a === 'kata' && b === 'kanji') return -0.5; // 「アホ毛」「カット面」のようなひとまとまりの言葉が多い
   if ((a === 'num' || b === 'num') && a !== b) return -1; // 「0度」「45度」を分けない
   if (a === 'kanji' && b === 'hira') return -1; // 送り仮名（「伸／びて」）を分けない
   if (a === b && a !== 'hira') return -3; // カタカナ語・漢字語・数字の途中では切らない
