@@ -349,6 +349,7 @@ try {
       summary: document.getElementById('summary').textContent,
       total: document.getElementById('total').textContent,
       regions: s.speech.regions.map(r => [+r.start.toFixed(2), +r.end.toFixed(2)]),
+      chunks: (s.chunks || []).map(c => ({ start: +c.start.toFixed(2), end: +c.end.toFixed(2), text: c.text, times: (c.times || []).map(t => +t.toFixed(2)), doubts: c.doubts || [] })),
       units: s.units.map(u => ({
         id: u.id, kind: u.kind, start: +u.start.toFixed(2), end: +u.end.toFixed(2), dur: +u.duration.toFixed(2),
         text: u.text, excluded: u.excluded || null, score: +u.score.toFixed(2), cx: +u.cx.toFixed(2),
