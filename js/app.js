@@ -331,6 +331,8 @@ async function loadSource(file, { preview = true } = {}) {
     $('duration').textContent = formatSec(duration);
     $('dims').textContent = `${width}×${height}（${width >= height ? '横向き' : '縦向き'}）${audio ? '' : '・音声なし'}`;
     $('codec').textContent = info.video;
+    // HDR の動画（iPhone の初期設定）: ブラウザでの変換の色の出方は iPhone 実機でまだ確かめていない
+    $('hdrNote').hidden = !state.src.hdr;
     initBrief();
     $('stepBrief').hidden = false;
     $('stepAnalyze').hidden = false;
@@ -382,10 +384,11 @@ function setProgress(ratio, text) {
 const ASR_MODEL = 'onnx-community/whisper-base';
 // 字幕AI。reazon: 日本語専用（ReazonSpeech k2 v2・約160MB）/ whisper: Whisper base（約80MB・従来）
 const ENGINES = {
-  // ReazonSpeech は長い区間の終わりの言葉を落とすことがあるため、話のまとまりごと（8秒まで）に分けて送る
+  // ReazonSpeech は、1回に読む音声の中に無音をはさんだ複数の話のまとまりがあると、無音の後の話をまるごと落とすことがある
+  // （疑似素材の測定: 8秒までまとめて読むと文字の誤り率 30%、話のまとまりごとに読むと 約20%（残りは正解の字幕が話した言葉と違う分））。
+  // そのため、無音で区切られた話のまとまりごとに1回ずつ読む（window: 0）。
   // 話の長さに比べて文字が少なすぎるとき（文の頭や終わりを落とした）は、前後の音声を広げて読み直し、文字の多い方を使う
-  // それでも少ないときは、区間の中の話のまとまり（無音で区切られた部分）ごとに分けて読み直す（splitParts）
-  reazon: { worker: 'js/reazon-worker.js', label: 'ReazonSpeech k2 v2（日本語専用）', window: 8, pads: [0.2, 0.6, 1.0], minRate: 4.5, splitParts: true },
+  reazon: { worker: 'js/reazon-worker.js', label: 'ReazonSpeech k2 v2（日本語専用）', window: 0, pads: [0.3, 0.6, 1.0], minRate: 4.5, splitParts: true },
   whisper: { worker: 'js/transcribe-worker.js', label: ASR_MODEL, window: 28, pads: [0.2] },
 };
 const charCount = chunks => chunks.reduce((n, c) => n + (c.raw || c.text || '').replace(/[、。\s]/g, '').length, 0);
@@ -407,7 +410,9 @@ function transcribe(pcm, windows, terms = [], { saved = {}, onResult, engine = '
         const k = split.idx, p = w.parts[k], prev = w.parts[k - 1], nx = w.parts[k + 1];
         return { start: p.start, end: p.end, pad: 0.3, lo: prev ? Math.max(p.start - 0.3, (prev.end + p.start) / 2) : p.start - 0.3, hi: nx ? Math.min(p.end + 0.3, (p.end + nx.start) / 2) : p.end + 0.3 };
       }
-      return { start: w.start, end: w.end, pad: E.pads[attempt], lo: w.start - 0.3, hi: w.end + 0.3 };
+      // 前後を広げて読んでも、となりの区間の文字は使わない（区間と区間の間の真ん中まで）
+      const pw = windows[i - 1], nw = windows[i + 1];
+      return { start: w.start, end: w.end, pad: E.pads[attempt], lo: pw ? Math.max(w.start - 0.3, (pw.end + w.start) / 2) : w.start - 0.3, hi: nw ? Math.min(w.end + 0.3, (w.end + nw.start) / 2) : w.end + 0.3 };
     };
     const low = (w, chunks) => E.minRate && w.speech > 1.5 && charCount(chunks) < E.minRate * w.speech;
     const collect = () => windows.flatMap((_, k) => results[k] || []);

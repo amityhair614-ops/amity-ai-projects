@@ -1,0 +1,132 @@
+<!doctype html>
+<!--
+  画質の原因を切り分けるための計測ページ（開発用。アプリからは使わない）。
+  元の動画の同じコマを、①アプリと同じ方法で 1080×1920 に縮小したキャンバス（圧縮なし）と、
+  ②それを書き出し設定ごとに H.264 に圧縮してから戻したもの で比べ、髪の細かい模様（3×3の平均との差）が
+  どこでどれだけ失われるかを測る。tests/e2e/quality-bench.mjs から開く。
+  ?src=元の動画のURL&t=開始秒&n=コマ数
+-->
+<meta charset="utf-8">
+<title>quality bench</title>
+<script type="importmap">{ "imports": { "mediabunny": "../../vendor/mediabunny.min.mjs" } }</script>
+<pre id="out"></pre>
+<script type="module">
+import { Input, ALL_FORMATS, UrlSource, BufferSource, VideoSampleSink, Output, Mp4OutputFormat, BufferTarget, CanvasSource, Quality } from 'mediabunny';
+
+const W = 1080, H = 1920;
+const q = new URLSearchParams(location.search);
+const src = q.get('src'), t0 = +(q.get('t') || 3), n = +(q.get('n') || 60);
+const STEP = 10; // このコマおきに測る
+
+function detail(ctx) {
+  const x0 = 120, y0 = 400, w = 840, h = 950;
+  const d = ctx.getImageData(x0, y0, w, h).data;
+  const g = new Float32Array(w * h);
+  for (let i = 0; i < w * h; i++) g[i] = 0.299 * d[i * 4] + 0.587 * d[i * 4 + 1] + 0.114 * d[i * 4 + 2];
+  let sum = 0, cnt = 0, mean = 0, sq = 0;
+  for (let y = 1; y < h - 1; y++) for (let x = 1; x < w - 1; x++) {
+    let b = 0;
+    for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) b += g[(y + dy) * w + x + dx];
+    const v = g[y * w + x];
+    sum += Math.abs(v - b / 9); cnt++; mean += v; sq += v * v;
+  }
+  mean /= cnt;
+  return { detail: sum / cnt, mean, std: Math.sqrt(sq / cnt - mean * mean) };
+}
+
+function painter(rotation, quality) {
+  const hq = c => { c.imageSmoothingEnabled = true; c.imageSmoothingQuality = quality; return c; };
+  const side = rotation === 90 || rotation === 270;
+  const tmp = side ? new OffscreenCanvas(H, W) : null;
+  const tctx = tmp && hq(tmp.getContext('2d'));
+  return (ctx, frame) => {
+    hq(ctx);
+    if (!side) { ctx.drawImage(frame, 0, 0, frame.displayWidth, frame.displayHeight, 0, 0, W, H); return; }
+    tctx.drawImage(frame, 0, 0, frame.displayWidth, frame.displayHeight, 0, 0, H, W);
+    ctx.save();
+    if (rotation === 90) { ctx.translate(W, 0); ctx.rotate(Math.PI / 2); } else { ctx.translate(0, H); ctx.rotate(-Math.PI / 2); }
+    ctx.drawImage(tmp, 0, 0);
+    ctx.restore();
+  };
+}
+
+async function sourceFrames(each) {
+  const input = new Input({ source: new UrlSource(src), formats: ALL_FORMATS });
+  const track = await input.getPrimaryVideoTrack();
+  const sink = new VideoSampleSink(track);
+  let k = 0;
+  for await (const s of sink.samples(t0, t0 + n / 30)) {
+    if (k >= n) { s.close(); break; }
+    const f = s.toVideoFrame();
+    await each(f, k++, track.rotation);
+    f.close(); s.close();
+  }
+}
+
+async function decodeDetails(buf) {
+  const input = new Input({ source: new BufferSource(buf), formats: ALL_FORMATS });
+  const track = await input.getPrimaryVideoTrack();
+  const sink = new VideoSampleSink(track);
+  const c = new OffscreenCanvas(W, H), ctx = c.getContext('2d');
+  const out = [];
+  let k = 0;
+  for await (const s of sink.samples()) {
+    if (k % STEP === 0) { const f = s.toVideoFrame(); ctx.drawImage(f, 0, 0); f.close(); out.push(detail(ctx)); }
+    s.close(); k++;
+  }
+  const cs = (await track.getDecoderConfig())?.colorSpace;
+  return { out, colorSpace: cs };
+}
+
+const avg = (a, key) => a.reduce((s, x) => s + x[key], 0) / a.length;
+const results = {};
+
+// ① 縮小の方法ごとのキャンバス（圧縮なし）
+for (const quality of ['high', 'medium', 'low']) {
+  const c = new OffscreenCanvas(W, H), ctx = c.getContext('2d');
+  const d = [];
+  let rot = 0, cs = null;
+  await sourceFrames((f, k, r) => { rot = r; cs = f.colorSpace?.toJSON?.() ?? null; if (k % STEP) return; painter(r, quality)(ctx, f); d.push(detail(ctx)); });
+  results['canvas-' + quality] = { detail: avg(d, 'detail'), mean: avg(d, 'mean'), std: avg(d, 'std'), rotation: rot, frameColorSpace: cs };
+}
+
+// ② 書き出しの設定ごと（アプリと同じ 'high' の縮小のあと H.264 に圧縮して戻す）
+const configs = {
+  'now-20M': { codec: 'avc', bitrate: 20e6, keyFrameInterval: 2 },
+  '20M+fps': { codec: 'avc', bitrate: 20e6, keyFrameInterval: 2, framerate: 30 },
+  '20M+fps+detail': { codec: 'avc', bitrate: 20e6, keyFrameInterval: 2, framerate: 30, contentHint: 'detail' },
+  '20M+fps+const': { codec: 'avc', bitrate: 20e6, keyFrameInterval: 2, framerate: 30, bitrateMode: 'constant' },
+  'qp18/20M': { codec: 'avc', bitrate: new Quality({ quantizer: 18, bitrate: 20e6 }), keyFrameInterval: 2, framerate: 30 },
+  '40M+fps': { codec: 'avc', bitrate: 40e6, keyFrameInterval: 2, framerate: 30 },
+  '10M+fps': { codec: 'avc', bitrate: 10e6, keyFrameInterval: 2, framerate: 30 },
+};
+const only = q.get('only');
+for (const [name, cfg] of Object.entries(configs)) {
+  if (only && !only.split(',').includes(name)) continue;
+  try {
+    const c = new OffscreenCanvas(W, H), ctx = c.getContext('2d');
+    const target = new BufferTarget();
+    const output = new Output({ format: new Mp4OutputFormat({ fastStart: 'in-memory' }), target });
+    const vs = new CanvasSource(c, cfg);
+    output.addVideoTrack(vs, { frameRate: 30 });
+    await output.start();
+    const before = [];
+    let paint = null;
+    await sourceFrames(async (f, k, r) => {
+      paint ||= painter(r, 'high');
+      paint(ctx, f);
+      if (k % STEP === 0) before.push(detail(ctx));
+      await vs.add(k / 30, 1 / 30);
+    });
+    await output.finalize();
+    const buf = target.buffer;
+    const { out, colorSpace } = await decodeDetails(buf);
+    results[name] = { canvas: avg(before, 'detail'), encoded: avg(out, 'detail'), kept: avg(out, 'detail') / avg(before, 'detail'), mbps: buf.byteLength * 8 / (n / 30) / 1e6, mean: avg(out, 'mean'), std: avg(out, 'std'), colorSpace };
+  } catch (e) {
+    results[name] = { error: String(e) };
+  }
+  document.getElementById('out').textContent = JSON.stringify(results, null, 1);
+}
+window.benchResults = results;
+document.getElementById('out').textContent = JSON.stringify(results, null, 1);
+</script>

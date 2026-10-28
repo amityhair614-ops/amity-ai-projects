@@ -452,8 +452,16 @@ export function findTrim(u, spans, trim) {
     .map(r => ({ start: Math.max(r.start, u.voiceStart), end: Math.min(r.end, u.voiceEnd) })).filter(r => r.end > r.start);
   if (sp.length < 2) return null;
   if (trim.tail != null) {
-    // 文の終わりを取り除く: 残す部分の語尾の後の声の切れ目
-    const a = findGap(u, sp, trim.tail);
+    // 文の終わりを取り除く: 残す部分の語尾の後の声の切れ目。1文字ごとの時刻がわかるときは、残す最後の文字の
+    // すぐ後の切れ目（言いかけの言葉の中の切れ目「トッ／プの」を選ばない）
+    let a = null;
+    const lastT = u.times && u.times.length === text.length ? u.times[trim.tail - 1] + CHAR_LAG : null;
+    if (lastT != null) {
+      for (let k = 0; k + 1 < sp.length && !a; k++) {
+        if (sp[k].end >= lastT - 0.05 && sp[k + 1].start - sp[k].end >= 0.08) a = { gapStart: sp[k].end, voiceStart: sp[k + 1].start };
+      }
+    }
+    a ||= findGap(u, sp, trim.tail);
     return a ? { tail: true, keepEnd: a.gapStart, dropStart: a.voiceStart, text: text.slice(0, trim.tail).replace(/[、,\s]+$/, ''), reason: trim.reason } : null;
   }
   const b = findGap(u, sp, trim.cut);
@@ -523,6 +531,21 @@ export function untrimUnit(u) {
   delete u.trimmed;
 }
 
+// 文の最後の文字の後に、間をおいて文字起こしされていない声が続いている（言いかけてやめた・言い直しの頭などを
+// 字幕AIが聞き落とした）。内容のある言葉かもしれないので自動では取り除かず、取り除ける候補として知らせる
+function untranscribedTail(u, segs) {
+  const text = u.text || '';
+  if (!u.times || u.times.length !== text.length || segs.length < 2) return;
+  const lastT = u.times[u.times.length - 1] + CHAR_LAG;
+  let k = -1;
+  segs.forEach((s, j) => { if (s.start <= lastT + 0.1) k = j; });
+  if (k < 0 || k + 1 >= segs.length || segs[k + 1].start - segs[k].end < 0.15) return;
+  const rest = piecesDuration(segs.slice(k + 1));
+  if (rest < 0.4) return;
+  u.trimOption = { tail: true, keepEnd: segs[k].end, dropStart: segs[k + 1].start, text, reason: '文の後の、文字起こしされていない声' };
+  u.candidate = `文の後に、文字起こしされていない声が約${rest.toFixed(1)}秒あります（言いかけ・言い直しの可能性があります。不要なら取り除いてください）`;
+}
+
 // 候補となる場面（ユニット）を作り、点数をつける。
 // pace: 'natural'（初期設定）/ 'tempo'（間を少し短く）。間の残し方は PACES を参照
 export function buildUnits({ duration, rmsDb, speech, chunks, motion, pace }) {
@@ -574,6 +597,13 @@ export function buildUnits({ duration, rmsDb, speech, chunks, motion, pace }) {
         if (cut && ca[i].trim.high) trimUnit(u, cut, P);
         else if (cut) { u.trimOption = cut; u.candidate = `${ca[i].trim.reason}は取り除けます（確かでないため、そのまま残しています）`; }
         else u.candidate = `${ca[i].trim.reason}が残っています（声の切れ目が見つからないため、文の途中では切っていません）`;
+      }
+      if (!u.excluded && !u.trimmed && !u.trimOption) {
+        // 細かい声の区間（字幕の表示範囲まで）と、その後ろの声の区間
+        const fine = c.fine && c.fine.length ? c.fine : [];
+        const fEnd = fine.length ? fine[fine.length - 1].end : -Infinity;
+        const sp = [...fine, ...segs.filter(r => r.end > fEnd + 0.05).map(r => ({ start: Math.max(r.start, fEnd + 0.05), end: r.end }))];
+        untranscribedTail(u, sp.length ? sp : segs);
       }
       units.push(u);
     });
@@ -786,7 +816,7 @@ function insideTerms(text) {
 }
 
 // 区切りやすい語尾（この後で区切ると、意味のまとまりで分かれる）
-const GOOD_ENDINGS = ['ように', 'ために', 'ので', 'から', 'けど', 'けれど', 'ても', 'たら', 'れば', 'なら', 'ながら', 'まで', 'より', 'など', 'とき', 'ます', 'です', 'ました', 'でした', 'ません', 'ください'];
+const GOOD_ENDINGS = ['ように', 'ために', 'ので', 'から', 'けど', 'けれど', 'ても', 'たら', 'れば', 'なら', 'ながら', 'まで', 'より', 'など', 'とき', 'ときに', '際に', '時に', '場合は', '場合', 'なのか', 'ます', 'です', 'ました', 'でした', 'ません', 'ください'];
 // 助詞のあとにひらがなが続いても、ひとまとまりの言葉になる組み合わせ（「には」「でも」「です」「できる」など）
 const PARTICLE_PAIRS = ['には', 'にも', 'では', 'でも', 'です', 'でき', 'でし', 'とは', 'とも', 'とき', 'とこ', 'はず', 'がら', 'もう', 'もの', 'への', 'との', 'での', 'にく', 'にな'];
 // 「て・で」のあとに続く補助の言葉（「して／しまう」「て／ください」「で／いる」は分けない）
@@ -817,6 +847,10 @@ function grammarScore(text, i, inside, prev, next) {
   if (GOOD_ENDINGS.some(e => before.endsWith(e)) && !PARTICLES.includes(next)) return 3.5;
   // 「て・で」＋補助の言葉は分けない（「して／しまう」）
   if ('てで'.includes(prev) && AUX_AFTER_TE.includes(next)) return -2;
+  // 「〜して」「〜しまって」「〜入れて」のあと（文の途中の区切り）。「で」は助詞のことも多いので、
+  // 前が動詞の形（っ・ん・い・し・き・り・べ・め・れ・せ・け）のときだけ
+  if (prev === 'て' && !PARTICLES.includes(next)) return 3;
+  if (prev === 'で' && 'んい'.includes(text[i - 2] || '') && !PARTICLES.includes(next)) return 2.5;
   // 助詞の後（「…を」「…に」）。ただし「の」は名詞のつながりが多いので低め
   if (PARTICLES.includes(prev) && b !== 'hira') return prev === 'の' ? 1.5 : 3;
   // 助詞の後にひらがな（「形に／なりました」）。「には」「です」のようにひとまとまりの組み合わせは分けない
@@ -834,11 +868,11 @@ function grammarScore(text, i, inside, prev, next) {
 }
 
 // [lo, hi] の範囲で、中央 target に近く、自然な区切り位置を選ぶ。pauseAt(i): i の前の声の間
-function bestBreak(text, lo, hi, target, pauseAt) {
+function bestBreak(text, lo, hi, target, pauseAt, distW = 0.35) {
   let best = -1, bestScore = -Infinity;
   const inside = insideTerms(text);
   for (let i = Math.max(1, lo); i <= Math.min(text.length - 1, hi); i++) {
-    const sc = breakScore(text, i, inside, pauseAt ? pauseAt(i) : 0) * 2 - Math.abs(i - target) * 0.35;
+    const sc = breakScore(text, i, inside, pauseAt ? pauseAt(i) : 0) * 2 - Math.abs(i - target) * distW;
     if (sc > bestScore) { bestScore = sc; best = i; }
   }
   return best > 0 ? best : Math.min(text.length - 1, Math.max(1, Math.round(target)));
@@ -886,7 +920,8 @@ function pageTexts(text, maxChars, maxLines, pauseAt) {
     let cut = -1;
     if (rest.length > cap) {
       const n = Math.max(2, Math.ceil(rest.length / cap));
-      cut = bestBreak(rest, Math.max(3, rest.length - cap * (n - 1)), Math.min(cap, rest.length - 3), rest.length / n, pa);
+      // ページの区切りは、長さをそろえるより意味の切れ目を優先する（どのページも2行に収まる範囲で）
+      cut = bestBreak(rest, Math.max(3, rest.length - cap * (n - 1)), Math.min(cap, rest.length - 3), rest.length / n, pa, 0.15);
     } else if (rest.length > maxChars && wrapQuality(rest, maxChars, pa) < 1) {
       // 2行に分けると言葉の途中で改行してしまう（よい区切りがない）: 意味の切れ目でページを分ける
       const inside = insideTerms(rest);

@@ -62,9 +62,17 @@ export async function openVideo(file) {
     duration: +duration.toFixed(2),
     video: `${CODEC_NAMES[codec] || codec} ${await video.getCodedWidth()}×${await video.getCodedHeight()} 回転${rotation}° 表示${width}×${height}${hdr ? ' HDR' : ''}`,
     decoder: decoderConfig.codec,
+    // 色の情報（HDR の HLG / PQ か、SDR の BT.709 か）。iPhone の HDR 動画は、ブラウザで SDR に変換するときに
+    // 暗く・薄くなる可能性があるため、診断情報で確かめられるようにする
+    color: colorText(decoderConfig.colorSpace),
     audio: audio ? `${CODEC_NAMES[audio.codec] || audio.codec} ${audio.sampleRate}Hz ${audio.numberOfChannels}ch` : 'なし',
   };
-  return { input, video, audio, duration, width, height, rotation, decoderConfig, info };
+  return { input, video, audio, duration, width, height, rotation, decoderConfig, info, hdr };
+}
+
+function colorText(cs) {
+  if (!cs) return '不明';
+  return [cs.primaries, cs.transfer, cs.matrix, cs.fullRange == null ? null : cs.fullRange ? 'full' : 'limited'].map(x => x ?? '?').join(' / ');
 }
 
 export function closeVideo(src) {

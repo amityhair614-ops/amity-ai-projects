@@ -2,7 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  FRAME_SEC, FPS, untrimUnit, detectSpeech, shapePieces, PACES, buildUnits, selectUnits, buildTimeline, linkSentences,
+  FRAME_SEC, FPS, untrimUnit, trimUnit, detectSpeech, shapePieces, PACES, buildUnits, selectUnits, buildTimeline, linkSentences,
 } from '../js/plan.js';
 import { AudioStitcher, crossfade, XFADE_SEC } from '../js/audiomix.js';
 
@@ -249,4 +249,33 @@ test('文の終わりと次の文の頭が同じ語尾（「…します」「�
     chunks: [{ start: 1, end: 3.3, text: '襟足からカットします' }, { start: 4.5, end: 6.5, text: 'しますと、こうなります' }],
   });
   assert.ok(!units.find(u => u.text).trimmed);
+});
+
+test('文の後に文字起こしされていない声が続くときは、取り除ける候補にする（自動では取り除かない）', () => {
+  const r = rms(10, [[1, 2.5, -20], [2.9, 3.6, -20], [5, 6.5, -20]]);
+  const speech = detectSpeech(r);
+  const text = 'それはどこなのか';
+  const times = Array.from(text, (_, i) => 1 + i * 0.17);
+  const units = buildUnits({ duration: 10, rmsDb: r, speech, motion: null, chunks: [{ start: 1, end: 3.6, text, times }, { start: 5, end: 6.5, text: 'トップの根元付近です' }] });
+  const u = units.find(x => x.text === text);
+  assert.ok(u.trimOption && !u.trimmed, '候補として出す');
+  assert.ok(u.end > 3.6, 'そのまま残している');
+  assert.ok(trimUnit(u, u.trimOption));
+  assert.ok(u.end < 2.9 && u.end >= 2.5, 'end=' + u.end);
+  // 最後の文字のすぐ後で終わる文には出さない
+  const r2 = rms(10, [[1, 2.5, -20]]);
+  const u2 = buildUnits({ duration: 10, rmsDb: r2, speech: detectSpeech(r2), motion: null, chunks: [{ start: 1, end: 2.5, text, times }] }).find(x => x.text);
+  assert.ok(!u2.trimOption);
+});
+
+test('言いかけの言葉の中に間があっても（「トッ／プの」）、残す文の語尾のすぐ後で切る', () => {
+  // 1〜2.5秒「それはどこなのか」、2.7〜2.9秒「トッ」、3.3〜3.6秒「プの」（言いかけの中の間の方が長い）
+  const r = rms(10, [[1, 2.5, -20], [2.7, 2.9, -20], [3.3, 3.6, -20], [5, 6.5, -20]]);
+  const speech = detectSpeech(r);
+  const text = 'それはどこなのかトップの';
+  const times = [...Array.from('それはどこなのか', (_, i) => 1 + i * 0.17), 2.75, 2.85, 3.3, 3.4];
+  const units = buildUnits({ duration: 10, rmsDb: r, speech, motion: null, chunks: [{ start: 1, end: 3.6, text, times, fine: [{ start: 1, end: 2.5 }, { start: 2.7, end: 2.9 }, { start: 3.3, end: 3.6 }] }, { start: 5, end: 6.5, text: 'トップの根元付近です' }] });
+  const a = units.find(u => u.text.startsWith('それは'));
+  assert.equal(a.text, 'それはどこなのか');
+  assert.ok(a.end < 2.7, '「トッ」も残さない end=' + a.end);
 });

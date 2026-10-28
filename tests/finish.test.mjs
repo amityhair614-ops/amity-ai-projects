@@ -4,7 +4,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   openingLines, openingText, openingPlan, openingAlpha, endFadeAlpha, END_FADE, END_HOLD, selectUnits, outputLength,
-  extendEnding, wrapLines, setBreakTerms, buildTimeline,
+  extendEnding, wrapLines, setBreakTerms, buildTimeline, subtitlePages,
 } from '../js/plan.js';
 import { applyEndFade } from '../js/audiomix.js';
 import { tokensToChunks, fixTerms, checkRanges, alignScript, scriptTextFor } from '../js/asrtext.js';
@@ -178,4 +178,14 @@ test('画質: 1080pの素材では、拡大になる（ぼやける）ズーム�
   const clips = [clip(0, 5), clip(6, 11), clip(30, 36), clip(60, 66)];
   assert.ok(buildTimeline(clips, { srcW: 1080, srcH: 1920, zoom: true }).every(c => !c.zoom));
   assert.ok(buildTimeline(clips, { srcW: 2160, srcH: 3840, zoom: true }).some(c => c.zoom));
+});
+
+test('字幕の区切り: 「〜して」「〜際に」の後で分け、言葉の途中（「まと／まり」「頭に／入れて」）では分けない', () => {
+  const join = t => subtitlePages(t, t.length * 0.15).map(p => p.lines.join('／'));
+  assert.deepEqual(join('アホ毛のようなピンピンした髪の毛がたくさんできてしまってまとまりつかないようになってしまいます'),
+    ['アホ毛のようなピンピンした髪の毛が／たくさんできてしまって', 'まとまりつかないようになってしまいます']);
+  assert.deepEqual(join('それを頭に入れてセルフカットやってみてください'), ['それを頭に入れて／セルフカットやってみてください']);
+  assert.equal(join('セルフカットで伸びて重くなったボブを軽くしていく際にこの場所は絶対にすかないでください').at(-1), 'この場所は絶対にすかないでください');
+  // 「して／しまう」「て／ください」は分けない
+  for (const p of join('こうなってしまうと髪の毛が伸びないと修正カットができないです')) assert.ok(!p.includes('て／しま'));
 });
