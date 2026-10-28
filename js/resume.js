@@ -30,7 +30,7 @@ export const MB = 1024 * 1024;
 
 // 書き出しに必要な保存容量の見積もり（バイト）。
 // 区間のファイル（完成した動画とほぼ同じ大きさ）と、完成したMP4の両方が一時的に必要
-export function renderBytes(outSec, videoBitrate = 10_000_000, audioBitrate = 160_000) {
+export function renderBytes(outSec, videoBitrate = 20_000_000, audioBitrate = 160_000) {
   const out = outSec * (videoBitrate + audioBitrate) / 8 * 1.05;
   return { segments: out, output: out, total: out * 2 + 30 * MB };
 }

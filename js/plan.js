@@ -226,11 +226,11 @@ export function detectSpeech(rmsDb, opts = {}) {
 // 話のテンポごとの「間」の残し方（秒）。
 // lead: 話し始めの前に残す時間 / tail: 話し終わりの後に残す時間（消えていく語尾・息）
 // keepGap: 文の中でこれより短い間はそのまま残す / maxGap: 文の中の長い間は、ここまで縮める
-// natural は手動編集のお手本（文と文の間 0.2〜0.4秒、長くても0.6秒前後）に合わせている。
+// natural は手動編集のお手本（無音の間の中央値 約0.2秒・90%が0.33秒以下・最長0.44秒）に合わせている。
 // 語尾は detectSpeech で消えていく小さな音まで含めてから tail を足すので、間を詰めても語尾は切れない
 export const PACES = {
-  natural: { lead: 0.12, tail: 0.22, keepGap: 0.4, minGap: 0.3, maxGap: 0.45 },
-  tempo: { lead: 0.1, tail: 0.18, keepGap: 0.32, minGap: 0.24, maxGap: 0.36 },
+  natural: { lead: 0.1, tail: 0.18, keepGap: 0.3, minGap: 0.22, maxGap: 0.32 },
+  tempo: { lead: 0.08, tail: 0.15, keepGap: 0.26, minGap: 0.18, maxGap: 0.26 },
 };
 
 // [a, b] の中で一番音の小さい時刻（3コマの平均）。文と文がつながって聞こえる所の区切りに使う
@@ -297,10 +297,10 @@ export function transcriptionWindows(regions, maxLen = 28) {
   const windows = [];
   let cur = null;
   for (const r of regions) {
-    if (cur && r.end - cur.start <= maxLen) { cur.end = r.end; cur.speech += r.end - r.start; }
+    if (cur && r.end - cur.start <= maxLen) { cur.end = r.end; cur.speech += r.end - r.start; cur.parts.push({ start: r.start, end: r.end }); }
     else {
       if (cur) windows.push(cur);
-      cur = { start: r.start, end: r.end, speech: r.end - r.start };
+      cur = { start: r.start, end: r.end, speech: r.end - r.start, parts: [{ start: r.start, end: r.end }] };
     }
   }
   if (cur) windows.push(cur);
@@ -746,7 +746,7 @@ function charType(c) {
 }
 
 // 改行・ページの区切りで分けない言葉（美容用語・入力された用語）。setBreakTerms で入力された用語を足す
-const BASE_TERMS = [...new Set([...KEYWORDS, ...BEAUTY_TERMS.map(t => t.term), 'すきバサミ', 'ハサミ', 'ヘアカッター'])];
+const BASE_TERMS = [...new Set([...KEYWORDS, ...BEAUTY_TERMS.map(t => t.term), 'すきバサミ', 'ハサミ', 'ヘアカッター', '髪の毛', '根元', 'セルフカット', '修正カット'])];
 let breakTerms = BASE_TERMS;
 export function setBreakTerms(extra = []) {
   breakTerms = [...new Set([...BASE_TERMS, ...extra.filter(w => typeof w === 'string' && w.length >= 2)])];
@@ -766,88 +766,155 @@ function insideTerms(text) {
   return inside;
 }
 
-// text の i 文字目の前で区切るときの「自然さ」。inside: 用語の途中の位置
-function breakScore(text, i, inside) {
+// 区切りやすい語尾（この後で区切ると、意味のまとまりで分かれる）
+const GOOD_ENDINGS = ['ように', 'ために', 'ので', 'から', 'けど', 'けれど', 'ても', 'たら', 'れば', 'なら', 'ながら', 'まで', 'より', 'など', 'とき', 'ます', 'です', 'ました', 'でした', 'ません', 'ください'];
+// 助詞のあとにひらがなが続いても、ひとまとまりの言葉になる組み合わせ（「には」「でも」「です」「できる」など）
+const PARTICLE_PAIRS = ['には', 'にも', 'では', 'でも', 'です', 'でき', 'でし', 'とは', 'とも', 'とき', 'とこ', 'はず', 'がら', 'もう', 'もの', 'への', 'との', 'での', 'にく', 'にな'];
+// 「て・で」のあとに続く補助の言葉（「して／しまう」「て／ください」「で／いる」は分けない）
+const AUX_AFTER_TE = 'しいくおみあもくだ';
+
+// text の i 文字目の前で区切るときの「自然さ」。inside: 用語の途中の位置。
+// pause: その位置の声の間（秒。わかるときだけ）。声の間は、意味の切れ目である可能性が高い
+function breakScore(text, i, inside, pause = 0) {
   const prev = text[i - 1], next = text[i];
-  if (!prev || !next || NO_LINE_START.includes(next)) return -Infinity;
+  if (!prev || !next || NO_LINE_START.includes(next) || next === 'ん') return -Infinity;
   if (inside && inside.has(i)) return -6; // 「すき／バサミ」のように用語の途中では切らない
-  // 用語のすぐ後（「すきバサミ／以外に」）は、助詞が続かなければ区切りやすい
-  if (inside?.ends?.has(i) && !PARTICLES.includes(next)) return 3;
-  if ('、。！？!? '.includes(prev)) return 4;
-  // 助詞の後（「…を」「…に」）。ただし「の」は名詞のつながりが多いので低め
-  if (PARTICLES.includes(prev) && charType(next) !== 'hira') return prev === 'の' ? 1.5 : 3;
-  // 漢字の後の助詞＋ひらがな（「形に／なりました」）。「が」は送り仮名（前下が|り）と紛らわしいので除く
-  if ('はをにでへ'.includes(prev) && charType(text[i - 2]) === 'kanji') return 2.5;
+  let sc = grammarScore(text, i, inside, prev, next);
+  if (pause >= 0.35) sc = Math.max(sc, 0) + 4;
+  else if (pause >= 0.18) sc += 1.5;
+  return sc;
+}
+
+function grammarScore(text, i, inside, prev, next) {
+  // 用語のすぐ後（「すきバサミ／以外に」）は、助詞が続かなければ区切りやすい。
   const a = charType(prev), b = charType(next);
+  // ただし用語のあとに同じ種類の文字が続く（「根元／付近」）ときは、ひとつの言葉の続き
+  if (inside?.ends?.has(i) && !PARTICLES.includes(next) && !(a === b && a !== 'hira')) return 3;
+  if ('、。！？!? '.includes(prev)) return 4;
+  const before = text.slice(0, i);
+  // 「〜ないと／」「〜しまうと／」「〜すると／」: 条件の「と」のあとは区切りやすい
+  if (prev === 'と' && 'いうるたすく'.includes(text[i - 2] || '') && b !== 'hira' || /(?:ないと|うと|ると)$/.test(before) && !PARTICLE_PAIRS.includes('と' + next)) return 3;
+  // 「〜ように／なって」「〜ので／」「〜ます／」: 意味のまとまりの終わり
+  if (GOOD_ENDINGS.some(e => before.endsWith(e)) && !PARTICLES.includes(next)) return 3.5;
+  // 「て・で」＋補助の言葉は分けない（「して／しまう」）
+  if ('てで'.includes(prev) && AUX_AFTER_TE.includes(next)) return -2;
+  // 助詞の後（「…を」「…に」）。ただし「の」は名詞のつながりが多いので低め
+  if (PARTICLES.includes(prev) && b !== 'hira') return prev === 'の' ? 1.5 : 3;
+  // 助詞の後にひらがな（「形に／なりました」）。「には」「です」のようにひとまとまりの組み合わせは分けない
+  if ('はをにでがもへと'.includes(prev) && b === 'hira') {
+    if (PARTICLE_PAIRS.includes(prev + next)) return -2;
+    return a === 'hira' && charType(text[i - 2]) === 'hira' ? 0.5 : 2;
+  }
   if (a === 'hira' && (b === 'kanji' || b === 'kata')) return 1;
+  if (a === 'kata' && b === 'kanji') return 1;
   if ((a === 'num' || b === 'num') && a !== b) return -1; // 「0度」「45度」を分けない
+  if (a === 'kanji' && b === 'hira') return -1; // 送り仮名（「伸／びて」）を分けない
   if (a === b && a !== 'hira') return -3; // カタカナ語・漢字語・数字の途中では切らない
+  if (a === 'hira' && b === 'hira') return -0.5; // ひらがなの言葉の途中（「よ／う」）は避ける
   return 0;
 }
 
-// [lo, hi] の範囲で、中央 target に近く、自然な区切り位置を選ぶ
-function bestBreak(text, lo, hi, target) {
+// [lo, hi] の範囲で、中央 target に近く、自然な区切り位置を選ぶ。pauseAt(i): i の前の声の間
+function bestBreak(text, lo, hi, target, pauseAt) {
   let best = -1, bestScore = -Infinity;
   const inside = insideTerms(text);
   for (let i = Math.max(1, lo); i <= Math.min(text.length - 1, hi); i++) {
-    const sc = breakScore(text, i, inside) * 2 - Math.abs(i - target) * 0.35;
+    const sc = breakScore(text, i, inside, pauseAt ? pauseAt(i) : 0) * 2 - Math.abs(i - target) * 0.35;
     if (sc > bestScore) { bestScore = sc; best = i; }
   }
   return best > 0 ? best : Math.min(text.length - 1, Math.max(1, Math.round(target)));
 }
 
-export function wrapLines(text, maxChars) {
+export function wrapLines(text, maxChars, pauseAt, slack = 2) {
   const t = (text || '').trim();
-  if (t.length <= maxChars) return t ? [t] : [];
+  // 1〜2文字（slack）だけはみ出す行は、改行せずに1行にする（書き出しでは文字を少し小さくして収める）
+  if (t.length <= maxChars + slack) return t ? [t] : [];
   const lines = [];
-  let rest = t;
+  let rest = t, off = 0;
   while (rest.length > maxChars) {
     // 残りが2行分以内なら半分ずつ、それより長ければ1行分を目安に区切る
     const target = rest.length <= maxChars * 2 ? rest.length / 2 : maxChars;
     const lo = Math.max(3, rest.length - maxChars * (rest.length <= maxChars * 2 ? 1 : 99));
-    const cut = bestBreak(rest, Math.min(lo, maxChars), maxChars, target);
+    const o = off;
+    const cut = bestBreak(rest, Math.min(lo, maxChars), maxChars, target, pauseAt && (i => pauseAt(o + i)));
     lines.push(rest.slice(0, cut).trim());
-    rest = rest.slice(cut).trim();
+    rest = rest.slice(cut);
+    off += cut;
   }
-  if (rest) lines.push(rest);
+  if (rest.trim()) lines.push(rest.trim());
   return lines.filter(Boolean);
 }
 
-// 2行に分けるとき、自然な区切りが見つかるか
-function canWrap(t, maxChars) {
-  if (t.length <= maxChars) return true;
-  const inside = insideTerms(t);
-  for (let i = t.length - maxChars; i <= maxChars; i++) if (breakScore(t, i, inside) >= 1) return true;
-  return false;
+// 2行に分けるときの、いちばんよい改行位置の自然さ
+function wrapQuality(text, maxChars, pauseAt) {
+  const inside = insideTerms(text);
+  let best = -Infinity;
+  for (let i = Math.max(1, text.length - maxChars); i <= Math.min(maxChars, text.length - 1); i++) {
+    best = Math.max(best, breakScore(text, i, inside, pauseAt ? pauseAt(i) : 0));
+  }
+  return best;
 }
 
-// 文を2行ずつのページに分ける。ページの切れ目も自然な位置にし、
-// 2行にきれいに分けられない長さなら、もう1ページに分ける
-function pageTexts(text, maxChars, maxLines) {
+// 文を2行ずつのページに分ける。2行に収まる文は1ページにする（区切りがよくなくても、言葉の途中でページを変えない）。
+// 2行に収まらない文・はっきりした声の間（0.5秒以上）がある文は、自然な位置でページを分ける
+function pageTexts(text, maxChars, maxLines, pauseAt) {
   const cap = maxChars * maxLines;
   const out = [];
-  let rest = text;
-  for (let guard = 0; guard < 20 && (rest.length > cap || !canWrap(rest, maxChars)); guard++) {
-    const n = Math.max(2, Math.ceil(rest.length / cap));
-    const target = rest.length / n; // ページの長さをそろえる
-    const cut = bestBreak(rest, Math.max(3, rest.length - cap * (n - 1)), Math.min(cap, rest.length - 3), target);
+  let rest = text, off = 0;
+  for (let guard = 0; guard < 20; guard++) {
+    const o = off;
+    const pa = pauseAt && (i => pauseAt(o + i));
+    let cut = -1;
+    if (rest.length > cap) {
+      const n = Math.max(2, Math.ceil(rest.length / cap));
+      cut = bestBreak(rest, Math.max(3, rest.length - cap * (n - 1)), Math.min(cap, rest.length - 3), rest.length / n, pa);
+    } else if (rest.length > maxChars && wrapQuality(rest, maxChars, pa) < 1) {
+      // 2行に分けると言葉の途中で改行してしまう（よい区切りがない）: 意味の切れ目でページを分ける
+      const inside = insideTerms(rest);
+      let bestI = -1, bestS = 1.5;
+      for (let i = 4; i <= rest.length - 4; i++) {
+        const sc = breakScore(rest, i, inside, pa ? pa(i) : 0) - Math.abs(i - rest.length / 2) * 0.05;
+        if (sc > bestS) { bestS = sc; bestI = i; }
+      }
+      cut = bestI;
+    }
+    if (cut < 0 && pa && rest.length >= 10 && rest.length <= cap) {
+      // 長めの間で、前後どちらも5文字以上なら、そこでページを変える（話す速さに合わせて読みやすく）
+      const inside = insideTerms(rest);
+      let bestI = -1, bestP = 0.5;
+      for (let i = 5; i <= rest.length - 5; i++) {
+        const p = pa(i);
+        if (p >= bestP && breakScore(rest, i, inside) > -2) { bestP = p; bestI = i; }
+      }
+      cut = bestI;
+    }
     if (cut <= 0 || cut >= rest.length) break;
     out.push(rest.slice(0, cut).trim());
-    rest = rest.slice(cut).trim();
+    rest = rest.slice(cut);
+    off += cut;
   }
-  if (rest) out.push(rest);
+  if (rest.trim()) out.push(rest.trim());
   return out;
 }
 
-export const SUB_MAX_CHARS = 16;
-export function subtitlePages(text, duration, maxChars = SUB_MAX_CHARS, maxLines = 2) {
+export const SUB_MAX_CHARS = 18;
+// pauseAt(i): text の i 文字目の前の声の間（秒）。わかるときは、声の間を意味の切れ目として区切りに使う
+export function subtitlePages(text, duration, maxChars = SUB_MAX_CHARS, maxLines = 2, pauseAt = null) {
   const clean = (text || '').replace(/\s+/g, ' ').trim();
   if (!clean || duration <= 0) return [];
+  const pa = clean === text ? pauseAt : null; // 空白を詰めて文字の位置がずれたときは使わない
   const pages = [];
+  let cursor = 0;
   for (const sentence of splitSentences(clean)) {
-    for (const pt of pageTexts(sentence.replace(/[、。]+$/, ''), maxChars, maxLines)) {
+    const sOff = clean.indexOf(sentence, cursor);
+    cursor = sOff + sentence.length;
+    const body = sentence.replace(/[、。]+$/, '');
+    let pOff = 0;
+    for (const pt of pageTexts(body, maxChars, maxLines, pa && (i => pa(sOff + i)))) {
+      const at = body.indexOf(pt, pOff);
+      pOff = at + pt.length;
       // 行末の「、」「。」は字幕では付けない（すっきり見せる）
-      const lines = wrapLines(pt, maxChars).map(l => l.replace(/[、。]+$/, '')).filter(Boolean);
+      const lines = wrapLines(pt, maxChars, pa && (i => pa(sOff + at + i))).map(l => l.replace(/[、。]+$/, '')).filter(Boolean);
       if (lines.length) pages.push(lines.slice(0, maxLines).length === lines.length ? lines : [lines.slice(0, maxLines - 1).join(''), lines.slice(maxLines - 1).join('')]);
     }
   }
@@ -976,6 +1043,8 @@ export function buildTimeline(clips, opts = {}) {
     if (z < ZOOM_MIN) continue;
     const { crop } = c;
     const zw = crop.width / z, zh = crop.height / z;
+    // 寄った後の範囲が書き出しの大きさ（1080）より小さくなる＝拡大になる素材（1080pなど）ではズームしない（ぼやけるため）
+    if (zw < OUT_W - 1) continue;
     const cx = crop.left + ((b[0] + b[1]) / 2) * crop.width;
     const cy = crop.top + ((b[2] + b[3]) / 2) * crop.height;
     const rect = {
@@ -1001,6 +1070,7 @@ export function buildTimeline(clips, opts = {}) {
       if (c.outDuration < 4 || c.outStart - lastEnd < zs.spacing || c.outStart < 2) continue;
       const z = 1.04, { crop } = c;
       const zw = crop.width / z, zh = crop.height / z;
+      if (zw < OUT_W - 1) continue; // 拡大になる（ぼやける）素材ではズームしない
       const rect = { left: crop.left + (crop.width - zw) / 2, top: crop.top + (crop.height - zh) / 2, width: zw, height: zh };
       const b = c.inCrop;
       if (b) {
@@ -1262,11 +1332,40 @@ function charPageTimes(pageTexts, clip, fine) {
   return out.map((p, i) => ({ start: i ? p.start : (clip.subStart ?? p.start), end: i + 1 < out.length ? out[i + 1].start : end }));
 }
 
+// 時刻 a〜b の間の無音（声の区間 fine のすき間）の長さ
+function silenceBetween(fine, a, b) {
+  let sum = 0;
+  for (let i = 1; i < fine.length; i++) {
+    const g0 = Math.max(a, fine[i - 1].end), g1 = Math.min(b, fine[i].start);
+    if (g1 > g0) sum += g1 - g0;
+  }
+  return sum;
+}
+
+// 1文字ごとの時刻と声の区間から、「i 文字目の前の声の間」を返す関数を作る（わからないときは null）
+function charPauses(clip, fine) {
+  const text = clip.text || '', times = clip.times;
+  if (!times || times.length !== text.length || !fine.length) return null;
+  return i => {
+    let a = i - 1;
+    while (a >= 0 && /[、。\s]/.test(text[a])) a--;
+    if (a < 0 || i >= text.length) return 0;
+    return silenceBetween(fine, times[a] + CHAR_LAG, times[i] + CHAR_LAG);
+  };
+}
+
+// 1ページを表示しておく長さの上限（読むのに十分な時間）。字幕AIが言葉を聞き落とした区間で、
+// 残った文字が何秒も出たままにならないようにする
+export function pageMaxDuration(text) {
+  return Math.max(1.6, 1.0 + moraCount(text) * 0.2);
+}
+
 function timedPages(clip, text) {
-  const pages = subtitlePages(text, 1);
-  if (!pages.length) return [];
   // 手直しで表示時刻が変わっていても、その範囲の中の発話だけを使う
   const fine = (clip.fine || []).map(r => ({ start: Math.max(r.start, clip.subStart), end: Math.min(r.end, clip.subEnd) })).filter(r => r.end > r.start);
+  // 声の間を、ページ・行の区切りに使う（1文字ごとの時刻がわかるとき）
+  const pages = subtitlePages(text, 1, SUB_MAX_CHARS, 2, text === clip.text ? charPauses(clip, fine) : null);
+  if (!pages.length) return [];
   const src = charPageTimes(pages.map(p => p.lines.join('')), clip, fine) || pageSourceTimes(pages.map(p => p.lines.join('')), clip.subStart, clip.subEnd, fine);
   const clipEnd = clip.outStart + clip.outDuration;
   const out = pages.map((p, i) => ({
@@ -1276,7 +1375,7 @@ function timedPages(clip, text) {
   }));
   for (let i = 0; i < out.length; i++) {
     const limit = i + 1 < out.length ? out[i + 1].start : clipEnd;
-    out[i].end = Math.min(out[i].end, limit);
+    out[i].end = Math.min(out[i].end, limit, out[i].start + pageMaxDuration(out[i].lines.join('')));
     // 短すぎて読めないページは、次のページの直前まで延ばす（文字は省かない）
     if (out[i].end - out[i].start < 0.5) out[i].end = Math.min(limit, out[i].start + 0.5);
   }
@@ -1286,7 +1385,9 @@ function timedPages(clip, text) {
 // ---------- 冒頭のテキスト・最後のフェード ----------
 
 // 冒頭に大きく出す短い文字（白の太いゴシック・最大3行）。表示は約2秒で、ふわっと出てふわっと消える
-export const OPENING = { maxLines: 3, maxChars: 9, start: 0.1, duration: 2.0, minDuration: 1.5, maxDuration: 2.5, fadeIn: 0.35, fadeOut: 0.45, y: 0.36 };
+export const OPENING = { maxLines: 3, maxChars: 9, start: 0.1, duration: 2.0, minDuration: 0.8, maxDuration: 4.0, fadeIn: 0.3, fadeOut: 0.4, y: 0.36 };
+// 冒頭のテキストの表示時間の選択肢（秒）
+export const OPENING_DURATIONS = [1.0, 1.5, 2.0, 2.5, 3.0];
 
 // 動画タイトルから、冒頭に出す文字の案を作る（1行9文字前後・最大3行。言葉の途中では改行しない）。
 // 長いタイトルは3行に収まる所までにする（確認画面で直せる）
@@ -1295,7 +1396,7 @@ export function openingLines(title) {
   if (!t) return [];
   const parts = t.split(/[\n／/｜|!！?？。・]+|\s{1,}|、/).map(x => x.trim()).filter(Boolean);
   for (const maxChars of [OPENING.maxChars, OPENING.maxChars + 2]) {
-    const lines = parts.flatMap(p => wrapLines(p, maxChars));
+    const lines = parts.flatMap(p => wrapLines(p, maxChars, null, 0));
     if (lines.length <= OPENING.maxLines || maxChars > OPENING.maxChars) return lines.slice(0, OPENING.maxLines);
   }
   return [];
@@ -1304,7 +1405,7 @@ export function openingLines(title) {
 // 入力された冒頭の文字（改行で行を分ける）を、表示する行にする。1行が長すぎるときは自然な位置で折り返す
 export function openingText(text) {
   const lines = (text || '').normalize('NFKC').split('\n').map(l => l.trim()).filter(Boolean)
-    .flatMap(l => (l.length > OPENING.maxChars + 3 ? wrapLines(l, OPENING.maxChars + 2) : [l]));
+    .flatMap(l => (l.length > OPENING.maxChars + 3 ? wrapLines(l, OPENING.maxChars + 2, null, 0) : [l]));
   return lines.slice(0, OPENING.maxLines);
 }
 
@@ -1325,20 +1426,24 @@ export function openingAlpha(op, t) {
   return x * x * (3 - 2 * x);
 }
 
-// 最後のフェードアウト（映像をなめらかに黒く・音声も同じ時間で小さくする）
-export const END_FADE = 0.7;
+// 最後のフェードアウト（映像をなめらかに黒く・音声も同じ時間で小さくする）。
+// END_FADE 秒で黒くなり、最後の END_HOLD 秒は真っ黒のまま終わる（最後のコマが必ず黒になる）
+export const END_FADE = 0.9;
+export const END_HOLD = 0.3;
 
 // 出力の時刻 t での黒の濃さ（0〜1）。total は完成動画の長さ
-export function endFadeAlpha(t, total, sec = END_FADE) {
+export function endFadeAlpha(t, total, sec = END_FADE, hold = END_HOLD) {
+  const h = Math.min(hold, total * 0.1);
   const d = Math.min(sec, total * 0.2);
-  if (d <= 0 || t < total - d) return 0;
-  const x = clamp((t - (total - d)) / d, 0, 1);
+  const end = total - h; // ここで真っ黒になる
+  if (d <= 0 || t < end - d) return 0;
+  const x = clamp((t - (end - d)) / d, 0, 1);
   return x * x * (3 - 2 * x);
 }
 
 // 最後の場面の後ろを少しだけ延ばす（最後のフェードアウトが話し声に重ならないように）。
 // 次の声が始まる前・元の動画の終わりまでの範囲で、最大 extra 秒
-export function extendEnding(clips, voice, duration, extra = END_FADE * 0.7) {
+export function extendEnding(clips, voice, duration, extra = END_FADE * 0.6 + END_HOLD) {
   if (!clips.length) return clips;
   const last = clips[clips.length - 1];
   const p = last.pieces[last.pieces.length - 1];

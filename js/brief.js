@@ -2,6 +2,7 @@
 // どれも任意。入力された言葉は、場面の点数・必ず残す場面・選び方・文字起こしの用語に使う。
 // 入力から字幕の文字や場面を作ることはしない（話していない言葉を足さない・元の映像の順番を変えない）
 import { KEYWORDS, BEAUTY_TERMS, normalizeText, similarity, targetTolerance, outputLength } from './plan.js';
+import { kanaPhrases } from './asrtext.js';
 
 export const FORMATS = {
   short: { label: 'ショート', aspect: '縦 9:16', size: '1080×1920', presets: [30, 45, 60], defaultSec: 60, min: 10, max: 180 },
@@ -116,6 +117,8 @@ export function briefPlan(brief) {
       .filter(w => /[゠-ヿ一-鿿]/.test(w) && w.length <= 10 && !DICT.includes(w)).slice(0, 30),
     // 入力された使用アイテム・用語（文字起こしの書き間違いを直す・字幕を用語の途中で改行しない）
     items,
+    // タイトル・説明のひらがなの言葉（「すかないで」）。文字起こしの聞き間違い（「つかないで」）を直す手がかり
+    phrases: kanaPhrases(b.title, b.content, b.message, b.flow, b.mustKeep),
     script: b.script.trim(),
   };
 }

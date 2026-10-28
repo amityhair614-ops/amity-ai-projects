@@ -132,7 +132,9 @@ function editDistance(a, b) {
 // - 読みが同じ書き方 → 自動で直す
 // - 入力されたアイテム名・用語（カタカナ）と1〜2文字だけ違うカタカナ語 → 直して「確認が必要」の印をつける
 // 返り値: 直した chunk（fixed: 直した箇所 [{ from, to, at, len, check }]）
-export function fixTerms(chunk, userTerms = []) {
+// phrases: 入力したタイトル・説明に出てくるひらがなの言葉（5文字以上。「すかないで」など）。
+// 文字起こしの中に、最初の1文字だけが違う同じ長さの言葉（「つかないで」）があれば、聞き間違いとして直して印をつける
+export function fixTerms(chunk, userTerms = [], phrases = []) {
   let text = chunk.text, times = chunk.times ? [...chunk.times] : null;
   const fixed = [];
   const replaceAt = (at, len, to, rec) => {
@@ -163,7 +165,24 @@ export function fixTerms(chunk, userTerms = []) {
       }
     }
   }
+  for (const ph of phrases) {
+    if (ph.length < 5 || text.includes(ph)) continue;
+    for (let at = 0; at + ph.length <= text.length; at++) {
+      const w = text.slice(at, at + ph.length);
+      if (w[0] !== ph[0] && w.slice(1) === ph.slice(1) && /^[\u3041-\u3096]$/.test(w[0])) {
+        replaceAt(at, ph.length, ph, { from: w, to: ph, check: true });
+        at += ph.length - 1;
+      }
+    }
+  }
   return { ...chunk, text, times, fixed: [...(chunk.fixed || []), ...fixed] };
+}
+
+// 入力した文章から、ひらがなの言葉（5文字以上）を取り出す（聞き間違いを直す手がかり）
+export function kanaPhrases(...texts) {
+  const out = new Set();
+  for (const t of texts) for (const m of (t || '').normalize('NFKC').matchAll(/[\u3041-\u3096ー]{5,12}/g)) out.add(m[0]);
+  return [...out];
 }
 
 // 確認が必要な箇所（文字起こしの確からしさが低い文字・入力された用語に直した所）。text の文字位置の範囲 [from, to)

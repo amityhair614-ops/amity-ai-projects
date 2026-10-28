@@ -124,6 +124,13 @@ function codedRect(crop, rotation, cw, ch) {
   return { x: L, y: T, w: W, h: H };
 }
 
+// 縮小・拡大の補間を高品質にする（ブラウザの初期設定は「低」で、4Kから縮小すると髪の細い線がつぶれる）
+function hq(ctx) {
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
+  return ctx;
+}
+
 class FramePainter {
   constructor(rotation, outW, outH) {
     this.rotation = rotation;
@@ -132,7 +139,7 @@ class FramePainter {
     if (rotation) {
       const side = rotation === 180;
       this.tmp = new OffscreenCanvas(side ? outW : outH, side ? outH : outW);
-      this.tctx = this.tmp.getContext('2d');
+      this.tctx = hq(this.tmp.getContext('2d'));
     }
   }
 
@@ -376,7 +383,7 @@ const LINE_HEIGHT = 1.4;
 const MAX_TEXT_W = OUT_W * 0.86;
 
 // 冒頭のテキスト: 白の太いゴシック体・大きめ・薄い黒の影（背景の帯はつけない）
-const TITLE_SIZE = 104;
+const TITLE_SIZE = 96;
 const TITLE_LINE_HEIGHT = 1.28;
 const TITLE_MAX_W = OUT_W * 0.84;
 
@@ -472,7 +479,7 @@ export function createRenderContext(src) {
   const canvas = new OffscreenCanvas(OUT_W, OUT_H);
   const base = new OffscreenCanvas(OUT_W, OUT_H); // 字幕を載せる前のコマ
   return {
-    canvas, ctx: canvas.getContext('2d'), base, bctx: base.getContext('2d'),
+    canvas, ctx: hq(canvas.getContext('2d')), base, bctx: hq(base.getContext('2d')),
     painter: new FramePainter(src.rotation, OUT_W, OUT_H),
   };
 }
@@ -554,7 +561,7 @@ export async function renderSegment(src, timeline, seg, stream, { onProgress, rc
   const output = new Output({ format: new Mp4OutputFormat({ fastStart: false }), target: new StreamTarget(stream) });
   rc.bctx.fillStyle = '#000';
   rc.bctx.fillRect(0, 0, OUT_W, OUT_H);
-  // 髪の質感がつぶれないよう、ビットレートは高め（約 75MB/分）。色の加工はしない
+  // 髪の質感がつぶれないよう、ビットレートは高め（約 150MB/分）。色の加工はしない
   const videoSource = new CanvasSource(rc.canvas, { codec: 'avc', bitrate: VIDEO_BITRATE, keyFrameInterval: 2 });
   output.addVideoTrack(videoSource, { frameRate: FPS });
   await output.start();
@@ -598,7 +605,9 @@ function useBundledAac() {
   log('音声は内蔵のAACエンコーダーで作成');
 }
 
-export const VIDEO_BITRATE = 10_000_000;
+// 映像のビットレート。髪の細かい線は圧縮で真っ先に失われるため高めにする（4Kの細かい模様の試験で、10Mbps では
+// 細かさが元の66%、20Mbps では78%。約150MB/分）
+export const VIDEO_BITRATE = 20_000_000;
 export const AUDIO_BITRATE = 160_000;
 
 function sameConfig(a, b) {
@@ -611,7 +620,7 @@ function sameConfig(a, b) {
 
 // 保存した区間の映像をつなぎ、音声を通して作って、stream（ファイル）に完成したMP4を書き出す。
 // getSegment(i): i 番目の区間のファイル（File）
-export async function assembleOutput(src, timeline, segments, getSegment, stream, { gainDb = 0, onProgress, endFade = 0 } = {}) {
+export async function assembleOutput(src, timeline, segments, getSegment, stream, { gainDb = 0, onProgress, endFade = 0, endHold = 0 } = {}) {
   const withAudio = !!src.audio;
   // 音声は、ブラウザの AAC エンコーダーではなく、内蔵の AAC エンコーダー（FFmpeg の WASM 版）で作る。
   // WebKit（Safari と同じエンジン）のエンコーダーは、1回に渡した音声から作られる AAC のフレームすべてに
@@ -644,7 +653,7 @@ export async function assembleOutput(src, timeline, segments, getSegment, stream
           const last = seg === lastSeg && s === seg.slices[seg.slices.length - 1];
           const data = stitcher.add(raw.data, raw.sr, { len, contiguous: s.f0 > 0 || piece.contiguous, last });
           // 最後のフェードアウト（映像が黒くなるのと同じ時間で、音声も小さくする）
-          if (endFade) applyEndFade(data, raw.sr, piece.outStart + s.f0 / FPS, outTotal, endFade);
+          if (endFade) applyEndFade(data, raw.sr, piece.outStart + s.f0 / FPS, outTotal, endFade, endHold);
           await audioSource.add(toAudioBuffer(data, raw.sr, 0, len));
         }
       }

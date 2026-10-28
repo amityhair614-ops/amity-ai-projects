@@ -158,6 +158,8 @@
     .sub-check { font-size: 12px; color: var(--warn); margin: 4px 0 0; }
     .opening-edit { margin: -4px 0 12px 32px; }
     .opening-edit textarea { width: 100%; font-weight: 700; }
+    .opening-dur { display: inline-block; margin: 6px 12px 0 0; font-size: 14px; }
+    .opening-dur select { font: inherit; min-height: 36px; }
     .field.engine { margin-top: 8px; }
     .sub-time { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; margin-top: 6px; font-size: 13px; }
     .sub-adj { display: inline-flex; align-items: center; gap: 4px; }
@@ -229,7 +231,7 @@
     <p class="lead">カット解説動画から、字幕付きのYouTube動画を自動で作ります。動画の内容や完成時間を入力すると、それに合わせて場面を選びます。処理はすべてこのiPhoneの中で行い、動画はどこにも送信しません。</p>
   </header>
 
-  <div class="banner"><b>テスト版です（v0.9.0）。</b> 手動編集のお手本に近づけるため、①話の途中で切らずに説明を残すカット（間は0.2〜0.4秒）②冒頭のタイトル文字 ③画面下の小さめの字幕 ④日本語専用の字幕AI（ReazonSpeech）と原稿からの字幕 ⑤最後の0.7秒のフェードアウト を入れました。<b>これらは iPhone 実機ではまだ確認できていません。</b>うまく動かない場合は、下の「診断情報」をコピーして送ってください。</div>
+  <div class="banner"><b>テスト版です（v0.9.1）。</b> 手動編集のお手本に合わせて、①画質（高品質な縮小・20Mbps・拡大しすぎないズーム）②字幕の区切り（言葉の途中で分けない・声の間で区切る・長く出しすぎない）③タイトルのひらがなを使った聞き間違いの補正 ④間の長さ（0.2〜0.3秒）⑤最後の0.9秒のフェード＋黒い画面 ⑥冒頭テキストの表示時間 を直しました。<b>これらは iPhone 実機ではまだ確認できていません。</b>うまく動かない場合は、下の「診断情報」をコピーして送ってください。</div>
 
   <div class="recover" id="recover" role="alert" hidden>
     <b>前回の処理が途中で止まりました</b>
@@ -262,8 +264,8 @@
       <li><span>カット技術の重要場面を残す<small>手元の動きの量と美容の用語で判定する簡易版。映像の内容までは理解しません</small></span><span class="badge warn">簡易版</span></li>
       <li><span>言い直し・くり返しの判断<small>文字起こしが必要。「いや、〜じゃなくて」などの訂正・同じ説明のくり返し・文の中のくり返しを取り除きます。用語が違う説明は外さず、確かでないものは候補として出します</small></span><span class="badge warn">パソコンで確認</span></li>
       <li><span>日本語字幕の自動生成<small>端末内のAI。初期は日本語専用の ReazonSpeech（1文字ごとの時刻で声に合わせる）、軽い Whisper base も選べます。入力した用語で書き間違いを直し、自信のない言葉はオレンジ色で知らせます。原稿を貼り付けると、原稿の文字で字幕を出します</small></span><span class="badge warn">パソコンで確認</span></li>
-      <li><span>字幕・冒頭のテキスト・最後のフェード<small>字幕は白のゴシック体・最大2行・薄い影で画面の下に。冒頭は動画タイトルから作った太字のテキストを約2秒（直せます）。最後の0.7秒で映像が黒くなり、音声も小さくなります</small></span><span class="badge warn">パソコンで確認</span></li>
-      <li><span>自然なズーム<small>手元がまとまって動く場面を中心に、ゆっくり1.03〜1.08倍で寄る・引く。15秒以上あけ、手元が切れる場合はしない。色や質感の加工はしません</small></span><span class="badge warn">パソコンで確認</span></li>
+      <li><span>字幕・冒頭のテキスト・最後のフェード<small>字幕は白のゴシック体・最大2行・薄い影で画面の下に。冒頭は動画タイトルから作った太字のテキスト（文字・行・表示時間を直せます）。最後の0.9秒で映像が黒くなり、音声も小さくなって、0.3秒黒い画面のまま終わります</small></span><span class="badge warn">パソコンで確認</span></li>
+      <li><span>自然なズーム<small>手元がまとまって動く場面を中心に、ゆっくり1.03〜1.08倍で寄る・引く。15秒以上あけ、手元が切れる場合や、元の動画の画素が足りず拡大でぼやける場合（1080pの元動画など）はしない。色や質感の加工はしません</small></span><span class="badge warn">パソコンで確認</span></li>
       <li><span>動画の内容・完成時間・編集スタイルの入力<small>入力した言葉で場面の点数を上げ、「必ず残したい場面」は時間を超えても残します。収まらないときは理由と予定時間を表示</small></span><span class="badge warn">パソコンで確認</span></li>
       <li><span>途中から再開<small>Safariを閉じると一時停止し、もう一度開くと続きから再開します（閉じている間は進みません）。解析の結果と書き終えた区間を端末内に保存し、やり直しません。保存データは消えることがあります</small></span><span class="badge warn">パソコンで確認</span></li>
       <li><span>10分の通常動画（横16:9）の自動編集</span><span class="badge pending">準備中</span></li>
@@ -380,14 +382,17 @@
     <details id="otherWrap"><summary id="otherSummary">ほかの候補</summary><div class="clips" id="others"></div></details>
     <details id="retakeWrap"><summary id="retakeSummary">言い直しとして除外した場面</summary><div class="clips" id="retakes"></div></details>
     <div class="render-options">
-      <label class="option"><input type="checkbox" id="optOpening" checked><span>冒頭にタイトルの文字を入れる <small class="note" id="openingNote" style="margin:0"></small><br><small class="note" style="margin:0">白の太いゴシック体・最大3行・薄い影（黒い帯なし）。最初の約2秒、ふわっと出て消えます</small></span></label>
+      <label class="option"><input type="checkbox" id="optOpening" checked><span>冒頭にタイトルの文字を入れる <small class="note" id="openingNote" style="margin:0"></small><br><small class="note" style="margin:0">白の太いゴシック体・最大3行・薄い影（黒い帯なし）。最初にふわっと出て消えます。文字と改行（行数）は下の欄で直せます</small></span></label>
       <div class="opening-edit">
         <textarea id="openingText" rows="3" maxlength="60" aria-label="冒頭に出す文字（改行で行を分ける）" placeholder="例:&#10;ハサミ&#10;すきバサミ&#10;以外にもある"></textarea>
+        <label class="opening-dur">表示時間 <select id="openingDur" aria-label="冒頭の文字の表示時間">
+          <option value="1">1秒</option><option value="1.5">1.5秒</option><option value="2" selected>2秒</option><option value="2.5">2.5秒</option><option value="3">3秒</option>
+        </select></label>
         <button type="button" class="link-btn" id="openingReset">動画タイトルから作り直す</button>
       </div>
       <label class="option"><input type="checkbox" id="optSubs" checked><span>字幕を入れる <small class="note" id="optSubsNote" style="margin:0"></small><br><small class="note" style="margin:0">白のゴシック体・最大2行・薄い影。画面の下に、ふわっと表示します（用語の途中では改行しません）</small></span></label>
-      <label class="option"><input type="checkbox" id="optZoom" checked><span>自然なズーム<br><small class="note" style="margin:0">手元がまとまって動く場面だけ、ゆっくり1.03〜1.08倍に寄る・引く（15秒以上あけて、ハサミや手元が切れない場合のみ）</small></span></label>
-      <p class="note" style="margin-top:0">最後の約0.7秒は、映像がなめらかに黒くなり、音声も同時に小さくなります。</p>
+      <label class="option"><input type="checkbox" id="optZoom" checked><span>自然なズーム<br><small class="note" style="margin:0">手元がまとまって動く場面だけ、ゆっくり1.03〜1.08倍に寄る・引く（15秒以上あけて、ハサミや手元が切れない場合のみ。1080pの元動画では、拡大でぼやけるためズームしません）</small></span></label>
+      <p class="note" style="margin-top:0">最後の約0.9秒で映像がなめらかに黒くなり（音声も同時に小さくなります）、最後の0.3秒は黒い画面のまま終わります。</p>
     </div>
     <button class="btn block" id="btnRender">この内容でMP4を書き出す</button>
     <p class="note">書き出しは数秒ずつの区間に分けて進め、書き終えた区間はこのiPhoneの中に保存します。途中でSafariを閉じた場合は、もう一度開いて「途中の編集」の「続きから再開」を押してください。
@@ -430,7 +435,7 @@
     </ul>
   </section>
 
-  <footer>Amity AI動画編集 ・ テスト版 v0.9.0</footer>
+  <footer>Amity AI動画編集 ・ テスト版 v0.9.1</footer>
 </main>
 <script type="module" src="js/app.js"></script>
 </body>

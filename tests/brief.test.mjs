@@ -160,8 +160,8 @@ test('編集スタイル: テンポ重視はズームの間隔が短く、それ
   const clip = (s, e) => ({ pieces: [{ start: s, end: e }], text: '', motion: 0.8, cx: 0.5, box: [0.35, 0.65, 0.4, 0.6] });
   const clips = [];
   for (let s = 0; s < 60; s += 4) clips.push(clip(s, s + 3));
-  const simple = buildTimeline(clips, { srcW: 1080, srcH: 1920, zoom: true, style: 'simple' }).filter(c => c.zoom);
-  const tempo = buildTimeline(clips, { srcW: 1080, srcH: 1920, zoom: true, style: 'tempo' }).filter(c => c.zoom);
+  const simple = buildTimeline(clips, { srcW: 2160, srcH: 3840, zoom: true, style: 'simple' }).filter(c => c.zoom);
+  const tempo = buildTimeline(clips, { srcW: 2160, srcH: 3840, zoom: true, style: 'tempo' }).filter(c => c.zoom);
   assert.ok(tempo.length > simple.length, `${tempo.length} > ${simple.length}`);
   for (const c of [...simple, ...tempo]) assert.ok(c.zoom.z >= 1.03 && c.zoom.z <= 1.10, String(c.zoom.z));
   for (const c of simple) assert.ok(c.zoom.z <= 1.08);

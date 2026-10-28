@@ -28,7 +28,8 @@ test('全部無音なら話し区間なし', () => {
 
 test('文字起こし用の区切りは28秒以内', () => {
   const w = transcriptionWindows([{ start: 0, end: 10 }, { start: 12, end: 25 }, { start: 26, end: 40 }]);
-  assert.deepEqual(w, [{ start: 0, end: 25, speech: 23 }, { start: 26, end: 40, speech: 14 }]);
+  assert.deepEqual(w.map(({ start, end, speech }) => ({ start, end, speech })), [{ start: 0, end: 25, speech: 23 }, { start: 26, end: 40, speech: 14 }]);
+  assert.equal(w[0].parts.length, 2);
 });
 
 test('言い直しを検出する（似た発言・合図の言葉）', () => {
@@ -214,7 +215,7 @@ test('演出: 字幕はいつも下（お手本と同じ）、ズームは間隔
     clip(30, 34, '毛先を切りそろえます', 0.7, low),
     clip(40, 43, '', 0.9, [0.05, 0.95, 0.1, 0.9]), // 画面いっぱいに動く → ズームしない
   ];
-  const tl = buildTimeline(clips, { srcW: 1080, srcH: 1920, zoom: true, subtitles: true });
+  const tl = buildTimeline(clips, { srcW: 2160, srcH: 3840, zoom: true, subtitles: true });
   assert.ok(tl.every(c => c.subPos === 'bottom'), '場面ごとに上下が入れ替わらない');
   const zoomed = tl.filter(c => c.zoom);
   assert.ok(zoomed.length >= 1);
@@ -222,8 +223,8 @@ test('演出: 字幕はいつも下（お手本と同じ）、ズームは間隔
   for (const c of zoomed) {
     assert.ok(c.zoom.z >= ZOOM_MIN && c.zoom.z <= ZOOM_MAX, String(c.zoom.z));
     const r = c.zoom.rect, b = c.box;
-    assert.ok(r.left <= b[0] * 1080 && r.left + r.width >= b[1] * 1080, '手元が横に切れない');
-    assert.ok(r.top <= b[2] * 1920 && r.top + r.height >= b[3] * 1920, '手元が縦に切れない');
+    assert.ok(r.left <= b[0] * 2160 && r.left + r.width >= b[1] * 2160, '手元が横に切れない');
+    assert.ok(r.top <= b[2] * 3840 && r.top + r.height >= b[3] * 3840, '手元が縦に切れない');
     assert.ok(Math.abs(r.width / r.height - 1080 / 1920) < 1e-6, '9:16 のまま');
   }
   for (let i = 1; i < zoomed.length; i++) assert.ok(zoomed[i].outStart - (zoomed[i - 1].outStart + zoomed[i - 1].outDuration) >= 15);

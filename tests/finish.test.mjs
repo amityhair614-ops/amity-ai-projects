@@ -3,7 +3,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  openingLines, openingText, openingPlan, openingAlpha, endFadeAlpha, END_FADE, selectUnits, outputLength,
+  openingLines, openingText, openingPlan, openingAlpha, endFadeAlpha, END_FADE, END_HOLD, selectUnits, outputLength,
   extendEnding, wrapLines, setBreakTerms, buildTimeline,
 } from '../js/plan.js';
 import { applyEndFade } from '../js/audiomix.js';
@@ -18,9 +18,11 @@ test('冒頭のテキスト: タイトルから最大3行の案を作る（言�
   assert.deepEqual(openingText('ハサミ\nすきバサミ\n以外にもある\n4行目'), ['ハサミ', 'すきバサミ', '以外にもある']);
 });
 
-test('冒頭のテキスト: 約2秒（1.5〜2.5秒）、ふわっと出て消える', () => {
-  const op = openingPlan(['ハサミ'], 5);
-  assert.ok(op.end - op.start <= 2.5 && op.end - op.start >= 1.5);
+test('冒頭のテキスト: 標準は2秒、表示時間は0.8〜4秒で変えられる、ふわっと出て消える', () => {
+  const op = openingPlan(['ハサミ']);
+  assert.ok(Math.abs(op.end - op.start - 2) < 1e-9);
+  assert.ok(Math.abs(openingPlan(['ハサミ'], 3).end - openingPlan(['ハサミ'], 3).start - 3) < 1e-9);
+  assert.ok(Math.abs(openingPlan(['ハサミ'], 10).end - openingPlan(['ハサミ'], 10).start - 4) < 1e-9, '長すぎる指定は4秒まで');
   assert.equal(openingAlpha(op, op.start), 0);
   assert.equal(openingAlpha(op, (op.start + op.end) / 2), 1);
   assert.ok(openingAlpha(op, op.start + 0.1) > 0 && openingAlpha(op, op.start + 0.1) < 1);
@@ -31,19 +33,24 @@ test('冒頭のテキスト: 約2秒（1.5〜2.5秒）、ふわっと出て消�
   assert.ok(low.y > op.y);
 });
 
-test('最後のフェード: 最後の0.7秒で映像が黒くなり、音声も同じ時間で0になる', () => {
-  const total = 60;
-  assert.equal(endFadeAlpha(total - 1, total), 0);
-  assert.equal(endFadeAlpha(total - END_FADE, total), 0);
-  assert.ok(endFadeAlpha(total - END_FADE / 2, total) > 0.4 && endFadeAlpha(total - END_FADE / 2, total) < 0.6);
-  assert.equal(endFadeAlpha(total, total), 1);
+test('最後のフェード: 0.9秒でなめらかに黒くなり、最後の0.3秒は真っ黒・無音のまま終わる', () => {
+  const total = 60, endAt = total - END_HOLD;
+  assert.equal(endFadeAlpha(total - 2, total), 0);
+  assert.equal(endFadeAlpha(endAt - END_FADE, total), 0);
+  const mid = endFadeAlpha(endAt - END_FADE / 2, total);
+  assert.ok(mid > 0.4 && mid < 0.6);
+  assert.equal(endFadeAlpha(endAt, total), 1);
+  assert.equal(endFadeAlpha(total - 0.1, total), 1, '黒い画面を保つ');
+  assert.equal(endFadeAlpha(total - 1 / 30, total), 1, '最後のコマは完全に黒');
   const sr = 1000;
   const data = [new Float32Array(2000).fill(0.5)]; // 出力の 58〜60秒
-  applyEndFade(data, sr, 58, total, END_FADE);
+  applyEndFade(data, sr, 58, total, END_FADE, END_HOLD);
   assert.equal(data[0][0], 0.5);
-  assert.equal(data[0][1200], 0.5, 'フェードの前は変えない');
-  assert.ok(data[0][1650] > 0.1 && data[0][1650] < 0.4);
-  assert.ok(data[0][1999] < 0.01, '最後はほぼ無音');
+  assert.ok(data[0][700] > 0.49, 'フェードの前は変えない');
+  const am = data[0][Math.round((endAt - END_FADE / 2 - 58) * sr)];
+  assert.ok(am > 0.1 && am < 0.4, '音声も映像と同じ時間で小さくなる ' + am);
+  assert.ok(data[0][Math.round((endAt - 58) * sr) + 5] < 1e-6, '黒い間は無音');
+  assert.equal(data[0][1999], 0);
 });
 
 test('最後の場面は、次の声の手前まで少し延ばす（フェードが声にかからないように）', () => {
@@ -95,7 +102,7 @@ test('字幕の改行: 入力した用語・美容用語の途中で改行しな
 
 test('字幕はいつも画面の下・ズームは控えめ（1.03〜1.08倍）で寄る・引くを交互に', () => {
   const clip = (s, e, motion, box) => ({ pieces: [{ start: s, end: e }], text: '説明します', motion, cx: 0.5, box });
-  const tl = buildTimeline([clip(0, 5, 0.1, null), clip(6, 11, 0.1, null), clip(30, 36, 0.1, null), clip(60, 66, 0.1, null)], { srcW: 1080, srcH: 1920, zoom: true });
+  const tl = buildTimeline([clip(0, 5, 0.1, null), clip(6, 11, 0.1, null), clip(30, 36, 0.1, null), clip(60, 66, 0.1, null)], { srcW: 2160, srcH: 3840, zoom: true });
   assert.ok(tl.every(c => c.subPos === 'bottom'));
   const z = tl.filter(c => c.zoom);
   assert.ok(z.length >= 1, '手元が動かない動画でも、長い説明の場面で控えめにズームする');
@@ -164,4 +171,11 @@ test('同じ言い出しで話し直した所（「このようなヘアカッ�
   const r = analyzeContent([{ start: 0, end: 5, text: 'このようなヘアカッターこのようなアイテム名前はヘアカッターです' }]);
   assert.ok(r[0]?.trim);
   assert.equal('このようなヘアカッターこのようなアイテム名前はヘアカッターです'.slice(r[0].trim.cut), 'このようなアイテム名前はヘアカッターです');
+});
+
+test('画質: 1080pの素材では、拡大になる（ぼやける）ズームはしない。4Kの素材ではズームする', () => {
+  const clip = (s, e) => ({ pieces: [{ start: s, end: e }], text: '説明します', motion: 0.6, cx: 0.5, box: [0.4, 0.6, 0.4, 0.6] });
+  const clips = [clip(0, 5), clip(6, 11), clip(30, 36), clip(60, 66)];
+  assert.ok(buildTimeline(clips, { srcW: 1080, srcH: 1920, zoom: true }).every(c => !c.zoom));
+  assert.ok(buildTimeline(clips, { srcW: 2160, srcH: 3840, zoom: true }).some(c => c.zoom));
 });

@@ -12,7 +12,7 @@ import {
 import {
   detectSpeech, transcriptionWindows, buildUnits, selectUnits, buildTimeline, formatTime, FRAME_SEC, trimUnit, untrimUnit,
   cleanSubtitle, alignSentences, refineSubtitleTiming, fineSpeech, setBreakTerms, openingLines, openingText, openingPlan,
-  END_FADE, extendEnding, outputLength,
+  END_FADE, END_HOLD, extendEnding, outputLength, OPENING_DURATIONS,
 } from './plan.js';
 import { tokensToChunks, fixTerms, checkRanges, alignScript, assignScript } from './asrtext.js';
 import {
@@ -384,7 +384,8 @@ const ASR_MODEL = 'onnx-community/whisper-base';
 const ENGINES = {
   // ReazonSpeech は長い区間の終わりの言葉を落とすことがあるため、話のまとまりごと（8秒まで）に分けて送る
   // 話の長さに比べて文字が少なすぎるとき（文の頭や終わりを落とした）は、前後の音声を広げて読み直し、文字の多い方を使う
-  reazon: { worker: 'js/reazon-worker.js', label: 'ReazonSpeech k2 v2（日本語専用）', window: 8, pads: [0.2, 0.6, 1.0], minRate: 4.5 },
+  // それでも少ないときは、区間の中の話のまとまり（無音で区切られた部分）ごとに分けて読み直す（splitParts）
+  reazon: { worker: 'js/reazon-worker.js', label: 'ReazonSpeech k2 v2（日本語専用）', window: 8, pads: [0.2, 0.6, 1.0], minRate: 4.5, splitParts: true },
   whisper: { worker: 'js/transcribe-worker.js', label: ASR_MODEL, window: 28, pads: [0.2] },
 };
 const charCount = chunks => chunks.reduce((n, c) => n + (c.raw || c.text || '').replace(/[、。\s]/g, '').length, 0);
@@ -397,7 +398,18 @@ function transcribe(pcm, windows, terms = [], { saved = {}, onResult, engine = '
     const worker = new Worker(E.worker, { type: 'module' });
     const files = new Map();
     const results = { ...saved };
-    let i = 0, attempt = 0, best = null;
+    let i = 0, attempt = 0, best = null, split = null, triedSplit = false;
+    // 今読む範囲: 区間全体（前後の広げ方は attempt 番目）か、分けて読み直しているときはその部分
+    const region = () => {
+      const w = windows[i];
+      if (split) {
+        // となりの部分と同じ文字を2回使わないよう、文字を受け取る範囲は部分と部分の間の真ん中まで
+        const k = split.idx, p = w.parts[k], prev = w.parts[k - 1], nx = w.parts[k + 1];
+        return { start: p.start, end: p.end, pad: 0.3, lo: prev ? Math.max(p.start - 0.3, (prev.end + p.start) / 2) : p.start - 0.3, hi: nx ? Math.min(p.end + 0.3, (p.end + nx.start) / 2) : p.end + 0.3 };
+      }
+      return { start: w.start, end: w.end, pad: E.pads[attempt], lo: w.start - 0.3, hi: w.end + 0.3 };
+    };
+    const low = (w, chunks) => E.minRate && w.speech > 1.5 && charCount(chunks) < E.minRate * w.speech;
     const collect = () => windows.flatMap((_, k) => results[k] || []);
     let finished = false;
     const finish = (fn, v) => {
@@ -413,13 +425,12 @@ function transcribe(pcm, windows, terms = [], { saved = {}, onResult, engine = '
     const next = () => {
       while (i < windows.length && results[i]) i++; // 保存済みの区間はやり直さない
       if (i >= windows.length) return finish(resolve, collect());
-      const w = windows[i];
-      const pad = E.pads[attempt];
-      const from = Math.max(0, Math.floor((w.start - pad) * ASR_RATE));
-      const to = Math.min(pcm.length, Math.ceil((w.end + pad) * ASR_RATE));
+      const r = region();
+      const from = Math.max(0, Math.floor((r.start - r.pad) * ASR_RATE));
+      const to = Math.min(pcm.length, Math.ceil((r.end + r.pad) * ASR_RATE));
       const audio = pcm.slice(from, to);
       worker.postMessage({ type: 'run', id: i, audio, offset: from / ASR_RATE }, [audio.buffer]);
-      setProgress(i / windows.length, `文字起こし中… ${i + 1} / ${windows.length}${attempt ? '（読み直し）' : ''}`);
+      setProgress(i / windows.length, `文字起こし中… ${i + 1} / ${windows.length}${attempt || split ? '（読み直し）' : ''}`);
     };
     worker.onmessage = e => {
       const m = e.data;
@@ -443,8 +454,8 @@ function transcribe(pcm, windows, terms = [], { saved = {}, onResult, engine = '
           chunks: m.chunks.length,
           fixes: fixes.map(f => f.error ? '確認できず: ' + f.error : `${f.from}→${f.to} ${f.ok ? '採用' : '見送り'}(${f.delta})`),
         });
-        const pad = E.pads[attempt];
-        const offset = Math.max(0, w.start - pad);
+        const r = region();
+        const offset = Math.max(0, r.start - r.pad);
         const chunks = [];
         for (const c of m.chunks) {
           const start = offset + c.start, end = Math.min(offset + c.end, w.end + 0.2);
@@ -453,21 +464,41 @@ function transcribe(pcm, windows, terms = [], { saved = {}, onResult, engine = '
           // （残さないと、文字起こしのない声として構成に入ってしまう）
           // 1文字ごとの時刻（ReazonSpeech）は、元の動画の時刻に直して残す
           // 広げた前後の部分（ほかの区間の言葉）は使わない
-          const tokens = c.tokens ? c.tokens.map(k => ({ ...k, t: +(offset + k.t).toFixed(3) })).filter(k => k.t >= w.start - 0.3 && k.t <= w.end + 0.3) : undefined;
+          const tokens = c.tokens ? c.tokens.map(k => ({ ...k, t: +(offset + k.t).toFixed(3) })).filter(k => k.t >= r.lo && k.t < r.hi) : undefined;
           const rawText = tokens ? tokens.map(k => k.s).join('') : (c.raw ?? c.text);
           if (end > start && (text || (rawText || '').trim())) chunks.push({ start, end, text: tokens ? rawText : text, raw: rawText, timed: c.timed, tokens });
         }
-        if (!best || charCount(chunks) > charCount(best)) best = chunks;
-        // 話の長さに比べて文字が少なすぎる: 前後を広げて読み直す（区間ごとに最大2回）
-        if (E.minRate && w.speech > 1.5 && charCount(best) < E.minRate * w.speech && attempt + 1 < E.pads.length) {
-          log(`文字起こし ${m.id + 1}: 話の長さ${w.speech.toFixed(1)}秒に対して${charCount(chunks)}文字のため、前後を広げて読み直します`);
-          attempt++;
-          next();
-          return;
+        if (split) {
+          // 部分ごとに読み直している: 全部の部分を読んだら、区間全体で読んだ結果と文字の多い方を使う
+          split.chunks.push(...chunks);
+          split.idx++;
+          if (split.idx < w.parts.length) { next(); return; }
+          if (charCount(split.chunks) > charCount(best)) {
+            log(`文字起こし ${m.id + 1}: 部分ごとに読み直した結果を使います（${charCount(best)}→${charCount(split.chunks)}文字）`);
+            best = split.chunks;
+          }
+          split = null;
+        } else {
+          if (!best || charCount(chunks) > charCount(best)) best = chunks;
+          // 話の長さに比べて文字が少なすぎる: 前後を広げて読み直す（最大2回）。それでも少なければ部分ごとに読み直す
+          if (low(w, best) && attempt + 1 < E.pads.length) {
+            log(`文字起こし ${m.id + 1}: 話の長さ${w.speech.toFixed(1)}秒に対して${charCount(chunks)}文字のため、前後を広げて読み直します`);
+            attempt++;
+            next();
+            return;
+          }
+          if (low(w, best) && E.splitParts && !triedSplit && (w.parts || []).length > 1) {
+            log(`文字起こし ${m.id + 1}: まだ文字が少ないため、${w.parts.length}つの部分に分けて読み直します`);
+            triedSplit = true;
+            split = { idx: 0, chunks: [] };
+            next();
+            return;
+          }
         }
         results[m.id] = best;
         attempt = 0;
         best = null;
+        triedSplit = false;
         Promise.resolve(onResult?.(m.id, results[m.id])).catch(err => log('文字起こしの途中結果を保存できませんでした', errorText(err))).then(() => { i++; next(); });
       } else if (m.type === 'error') {
         finish(reject, new Error(m.message));
@@ -640,7 +671,7 @@ async function runAnalysis(job) {
         // Whisper: 文ごとの時刻を、無音の切れ目に合わせて割り当て直す
         // どちらも字幕の表示時刻は実際の声の出始め・終わりに合わせる
         const sentences = engine === 'reazon' && raw.some(c => c.tokens)
-          ? tokensToChunks(raw, fine).map(c => fixTerms(c, [...bp.items, ...bp.asrTerms]))
+          ? tokensToChunks(raw, fine).map(c => fixTerms(c, [...bp.items, ...bp.asrTerms], bp.phrases))
           : alignSentences(raw, state.speech.regions);
         state.chunks = refineSubtitleTiming(sentences, fine);
         A.asr = { windows, done: true, chunks: state.chunks };
@@ -813,6 +844,12 @@ function makePlan(brief) {
     for (const m of must) used.push(m.unit ? `必ず残す: 「${m.item}」→ ${formatTime(m.unit.start)}の発言「${m.unit.text.slice(0, 24)}」` : `必ず残す: 「${m.item}」→ 合う発言が見つかりませんでした`);
   }
   if (bp.buckets !== 5) used.push(`流れ（${bp.buckets}段階）に合わせて、動画全体から順に場面を選びました。`);
+  // 用語の聞き取りの補正（入力した言葉に合わせて直した所。字幕に入力の文章を足すことはしない）
+  const fixes = new Map();
+  for (const c of state.chunks || []) for (const f of c.fixed || []) if (f.from !== f.to) fixes.set(`${f.from}→${f.to}`, (fixes.get(`${f.from}→${f.to}`) || 0) + 1);
+  if (fixes.size) used.push(`入力した言葉に合わせて字幕を直しました（確認の印を付けています）: ${[...fixes].slice(0, 8).map(([k, n]) => n > 1 ? `${k}（${n}か所）` : k).join('、')}`);
+  else if (state.chunks && (bp.phrases.length || bp.asrTerms.length)) used.push('入力した言葉で字幕を直した所はありませんでした。');
+  if (state.opening === undefined && bp.brief.title) used.push('冒頭のテキストは、動画タイトルから作りました（下で文字・行・表示時間を直せます）。');
   state.briefUsed = used;
   state.briefWarnings = [];
   if (bp.mustItems.length && !state.chunks) state.briefWarnings.push('「必ず残したい説明や場面」は文字起こし（字幕）をONにしたときだけ照合できます。今回は照合していません。');
@@ -828,6 +865,8 @@ function makePlan(brief) {
 
 $('openingText').addEventListener('input', () => { state.opening = $('openingText').value; saveReview(); });
 $('optOpening').addEventListener('change', saveReview);
+$('openingDur').addEventListener('change', saveReview);
+const openingDur = () => OPENING_DURATIONS.includes(+$('openingDur').value) ? +$('openingDur').value : 2;
 $('openingReset').addEventListener('click', () => {
   state.opening = openingLines(readBrief().title).join('\n');
   $('openingText').value = state.opening;
@@ -1057,7 +1096,7 @@ function styleSummary(timeline, useSubs, useZoom, overlay) {
   } else {
     parts.push('ズーム: なし');
   }
-  parts.push(`最後: ${END_FADE}秒で黒くフェードアウト`);
+  parts.push(`最後: ${END_FADE}秒で黒くフェードアウト＋${END_HOLD}秒 黒い画面`);
   return parts.join(' / ');
 }
 
@@ -1099,6 +1138,7 @@ function showReview() {
   if (state.opening === undefined) state.opening = state.job?.review?.opening ?? openingLines(state.brief?.title).join('\n');
   $('openingText').value = state.opening;
   if (state.job?.review?.openingOn !== undefined) $('optOpening').checked = state.job.review.openingOn;
+  if (state.job?.review?.openingDur) $('openingDur').value = String(state.job.review.openingDur);
   $('openingNote').textContent = state.brief?.title ? '' : '（動画タイトルを入力すると、案を作ります）';
   $('subSaved').textContent = state.restoredEdits ? `前回の字幕の修正を読み込みました（${state.restoredEdits}か所）` : '';
   $('optSubs').disabled = !state.chunks;
@@ -1144,7 +1184,7 @@ function saveReview() {
   if (!job || job.stage !== 'review') return;
   clearTimeout(reviewTimer);
   reviewTimer = setTimeout(() => {
-    job.review = { selected: [...state.selected], brief: readBrief(), trims: { ...state.trims }, opening: state.opening, openingOn: $('optOpening').checked };
+    job.review = { selected: [...state.selected], brief: readBrief(), trims: { ...state.trims }, opening: state.opening, openingOn: $('optOpening').checked, openingDur: openingDur() };
     job.brief = job.review.brief;
     persistJob(job);
   }, 300);
@@ -1163,9 +1203,9 @@ $('btnRender').addEventListener('click', async () => {
     srcW: state.src.width, srcH: state.src.height, zoom: useZoom, subtitles: useSubs, style: state.brief?.style,
   });
   const outSec = timeline.reduce((s, c) => s + c.outDuration, 0);
-  // 冒頭のテキスト（約2秒）と最後のフェードアウト（約0.7秒）
+  // 冒頭のテキスト（標準2秒・選べる）と最後のフェードアウト（0.9秒＋黒い画面0.3秒）
   const lines = $('optOpening').checked ? openingText(state.opening ?? '') : [];
-  const overlay = { opening: openingPlan(lines, undefined, timeline[0]), total: outSec };
+  const overlay = { opening: openingPlan(lines, openingDur(), timeline[0]), total: outSec };
   // 保存できる容量を確かめる（区間のファイルと完成したMP4が一時的に両方必要）
   const need = renderBytes(outSec).total;
   const sc = spaceCheck(await storageInfo(), need);
@@ -1177,9 +1217,9 @@ $('btnRender').addEventListener('click', async () => {
   for (const f of await listFiles(job.id)) if (/^seg-|^output/.test(f.name)) await removeFile(job.id, f.name);
   const segments = planSegments(timeline);
   job.stage = 'render';
-  job.review = { selected: [...state.selected], brief: readBrief(), trims: { ...state.trims }, opening: state.opening, openingOn: $('optOpening').checked };
+  job.review = { selected: [...state.selected], brief: readBrief(), trims: { ...state.trims }, opening: state.opening, openingOn: $('optOpening').checked, openingDur: openingDur() };
   job.render = {
-    timeline, segments, done: segments.map(() => false), gainDb: computeGainDb(clips), overlay, endFade: END_FADE,
+    timeline, segments, done: segments.map(() => false), gainDb: computeGainDb(clips), overlay, endFade: END_FADE, endHold: END_HOLD,
     styleNote: styleSummary(timeline, useSubs, useZoom, overlay), outSec, startedAt: Date.now(), elapsed: 0, sessions: 0,
   };
   job.output = null;
@@ -1289,7 +1329,7 @@ async function runRender(job) {
       const w = await openWritable(job.id, OUTPUT_NAME);
       try {
         await assembleOutput(state.src, R.timeline, R.segments, i => readFile(job.id, `seg-${i}.mp4`), w.stream, {
-          gainDb: R.gainDb, endFade: R.endFade || 0,
+          gainDb: R.gainDb, endFade: R.endFade || 0, endHold: R.endHold || 0,
           onProgress: r => show(0.92 + 0.08 * r, `MP4を仕上げ中… ${Math.round(92 + 8 * r)}%`),
         });
         break;
