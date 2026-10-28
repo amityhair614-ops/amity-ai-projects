@@ -694,6 +694,28 @@ function untranscribedTail(u, segs, rmsDb, nextT = Infinity) {
   u.candidate = `文の後に、文字起こしされていない声が約${rest.toFixed(1)}秒あります（言いかけ・言い直しの可能性があります。不要なら取り除いてください）`;
 }
 
+// 文の途中で、文字と文字の間に文字にならない声がある（「…続けないと、うまくいきま（言いかけ）、うまくカバーできません」）。
+// 字幕AIが言いかけを文字にしなかった所。声の切れ目があれば、取り除ける候補にする（自動では取り除かない）
+function untranscribedMid(u, sp) {
+  const text = u.text || '', times = u.times;
+  if (!times || times.length !== text.length || sp.length < 2) return;
+  for (let i = 0; i + 1 < times.length; i++) {
+    const a = times[i] + CHAR_LAG, b = times[i + 1] + CHAR_LAG;
+    if (b - a < 0.8 || /[、。]/.test(text[i + 1])) continue;
+    // a の後で声が途切れる所（a を含む声の区間の終わり）と、b を話し始める声の区間
+    const ka = sp.findIndex(r => r.end >= a - 0.05);
+    const kb = sp.findIndex(r => r.end >= b - 0.05);
+    if (ka < 0 || kb <= ka) continue;
+    const mid = sp.slice(ka + 1, kb).map(r => ({ start: r.start, end: Math.min(r.end, b) }));
+    const extra = (sp[ka].end - a > 0.3 ? sp[ka].end - a - 0.3 : 0) + piecesDuration(mid);
+    if (extra < 0.4 || sp[kb].start - sp[kb - 1].end < 0.08) continue;
+    const keepEnd = mid.length || sp[ka].end - a <= 0.3 ? sp[ka].end : a + 0.3;
+    u.trimOption = { mid: true, keepEnd, gapStart: sp[kb - 1].end, voiceStart: sp[kb].start, text, reason: '文の途中の、文字起こしされていない声' };
+    u.candidate = `「${text.slice(Math.max(0, i - 5), i + 1)}」と「${text.slice(i + 1, i + 6)}」の間に、文字起こしされていない声が約${extra.toFixed(1)}秒あります（言いかけ・言い直しの可能性があります。不要なら取り除いてください）`;
+    return;
+  }
+}
+
 // 候補となる場面（ユニット）を作り、点数をつける。
 // pace: 'natural'（初期設定）/ 'tempo'（間を少し短く）。間の残し方は PACES を参照
 export function buildUnits({ duration, rmsDb, speech, chunks, motion, pace }) {
@@ -753,6 +775,7 @@ export function buildUnits({ duration, rmsDb, speech, chunks, motion, pace }) {
         const sp = [...fine, ...segs.filter(r => r.end > fEnd + 0.05).map(r => ({ start: Math.max(r.start, fEnd + 0.05), end: r.end }))];
         const nextT = chunks[i + 1]?.times?.length ? chunks[i + 1].times[0] + CHAR_LAG - 0.1 : (chunks[i + 1]?.start ?? Infinity);
         untranscribedTail(u, sp.length ? sp : segs, rmsDb, nextT);
+        if (!u.trimOption) untranscribedMid(u, sp.length ? sp : segs);
       }
       units.push(u);
     });

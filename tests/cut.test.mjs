@@ -304,3 +304,17 @@ test('次の文を間をおかずに話し始めたときは、その声を「�
   const u = buildUnits({ duration: 10, rmsDb: r, speech, motion: null, chunks: [{ start: 1, end: 2.7, text: a, times: ta }, { start: 2.7, end: 4.2, text: b, times: tb }] }).find(x => x.text === a);
   assert.ok(!u.trimOption, JSON.stringify(u.candidate));
 });
+
+test('文の途中の文字にならない声（「…ないと、うまくいきま、うまくカバー…」の言いかけ）は、取り除ける候補にする', () => {
+  // 1〜2.4秒「伸ばし続けないと」、2.5〜3.2秒 言いかけ（文字なし）、3.35〜4.6秒「うまくカバーできません」
+  const r = rms(10, [[1, 2.4, -20], [2.5, 3.2, -20], [3.35, 4.6, -20]]);
+  const speech = detectSpeech(r);
+  const a = '伸ばし続けないと', b = 'うまくカバーできません';
+  const times = [...Array.from(a, (_, i) => 1 + i * 0.17), ...Array.from(b, (_, i) => 3.35 + i * 0.11)];
+  const fine = [{ start: 1, end: 2.4 }, { start: 2.5, end: 3.2 }, { start: 3.35, end: 4.6 }];
+  const u = buildUnits({ duration: 10, rmsDb: r, speech, motion: null, chunks: [{ start: 1, end: 4.6, text: a + b, times, fine }] }).find(x => x.text);
+  assert.ok(u.trimOption?.mid && !u.trimmed, JSON.stringify(u.candidate));
+  assert.ok(trimUnit(u, u.trimOption));
+  const covered = t => u.pieces.some(p => p.start <= t && t <= p.end);
+  assert.ok(covered(2.3) && covered(3.5) && !covered(2.8), JSON.stringify(u.pieces));
+});
