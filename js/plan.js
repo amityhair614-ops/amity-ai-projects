@@ -307,59 +307,134 @@ export function transcriptionWindows(regions, maxLen = 28) {
   return windows;
 }
 
-// ReazonSpeech の読み方（2通り）。
-// - 長い窓（30秒まで）: 前後の話があると、文の終わりの言葉（「です」「しない」）や、文の後に続く文を落としにくい。
-//   続けて話している音声（手動編集の音声）で、文字の誤り率 16%→3%
-// - 話のまとまりごと: 長い無音をはさむと、無音の後の話を落とすことがあるため、まとまりごとにも読む
-// まとまりごとに、2通りのうち文字の多い方を使う（mergeAsrPasses）。字幕AIの誤りは、ほとんどが「言葉を落とす」ため
-export const ASR_LONG_WINDOW = 30;
-export function asrWindows(regions, rmsDb, maxLen = ASR_LONG_WINDOW) {
-  // 長すぎるまとまりは、真ん中あたり（全体の1/4〜3/4）の一番静かな所で分ける
-  const split = (a, b) => {
-    if (b - a <= maxLen || !rmsDb) return [{ start: a, end: b }];
-    const i0 = Math.ceil((a + (b - a) / 4) / FRAME_SEC), i1 = Math.floor((b - (b - a) / 4) / FRAME_SEC);
-    let k = i0;
-    for (let i = i0; i <= i1; i++) if (rmsDb[i] < rmsDb[k]) k = i;
-    const t = k * FRAME_SEC;
-    return [...split(a, t), ...split(t, b)];
-  };
-  const segs = regions.flatMap(r => split(r.start, r.end));
-  const long = [];
-  for (const r of segs) {
-    const cur = long[long.length - 1];
-    if (cur && r.end - cur.start <= maxLen) { cur.end = r.end; cur.speech += r.end - r.start; cur.parts.push({ start: r.start, end: r.end }); }
-    else long.push({ start: r.start, end: r.end, speech: r.end - r.start, parts: [{ start: r.start, end: r.end }], pass: 'long' });
+// ReazonSpeech の読み方（3通り）と、結果の合わせ方。
+// 字幕AIの誤りのほとんどは「言葉を落とす」こと。どこで落とすかは、読む音声の区切り方で大きく変わる
+// （同じ音声でも、区切り方しだいで文字の誤り率 3%〜35%）。とくに、文の途中で区切った窓や、長い無音をはさむ窓で落としやすい。
+// そこで、区切り方の違う3通りで読み、どれかが落とした言葉を、ほかの読み方の結果で補う（文字の並びを照らし合わせて差し込む）。
+//   A: 30秒ごとの窓（区切りは近くの一番静かな所）
+//   B: A と15秒ずらした窓（A の区切りの所が、B では窓の真ん中になる）
+//   C: はっきりした間（0.5秒以上）で分けた話のまとまりごと（無音の後の話を落とさないように）
+// 手動編集の実際の音声2本・疑似素材2本で、まとまりごとに読む方法（誤り率 15〜18%）より少ない（3〜11%）
+export const ASR_WINDOW = 30;
+export function asrWindows(regions, rmsDb, L = ASR_WINDOW) {
+  if (!regions.length) return [];
+  // 0.3秒より短い間（言葉の中の「ッ」や息つぎ）では区切らない
+  const merged = [];
+  for (const r of regions) {
+    const last = merged[merged.length - 1];
+    if (last && r.start - last.end < 0.3) last.end = r.end;
+    else merged.push({ start: r.start, end: r.end });
   }
-  const each = segs.map((r, k) => ({ start: r.start, end: r.end, speech: r.end - r.start, parts: [{ start: r.start, end: r.end }], pass: 'region', idx: k }));
-  return [...long, ...each];
+  const T0 = merged[0].start, T1 = merged[merged.length - 1].end;
+  const quietAt = (t, r) => {
+    if (!rmsDb) return t;
+    const i0 = Math.max(Math.ceil(T0 / FRAME_SEC), Math.round((t - r) / FRAME_SEC)), i1 = Math.min(Math.floor(T1 / FRAME_SEC), Math.round((t + r) / FRAME_SEC));
+    let k = Math.round(t / FRAME_SEC);
+    for (let i = i0; i <= i1; i++) if (rmsDb[i] < (rmsDb[k] ?? Infinity)) k = i;
+    return k * FRAME_SEC;
+  };
+  const speechIn = (a, b) => merged.reduce((s, r) => s + Math.max(0, Math.min(b, r.end) - Math.max(a, r.start)), 0);
+  const grid = (off, pass) => {
+    const cuts = [T0];
+    for (let t = T0 + (off || L); t < T1 - 3; t = cuts[cuts.length - 1] + L) cuts.push(quietAt(t, 1.5));
+    cuts.push(T1);
+    const out = [];
+    for (let i = 0; i + 1 < cuts.length; i++) {
+      const a = cuts[i], b = cuts[i + 1];
+      if (b - a < 0.3) continue;
+      // 窓の頭は区切りの所から読む（前の窓の言葉を読まない）。終わりは少し先まで読む
+      out.push({ start: a, end: b, padStart: 0.05, padEnd: 0.3, lo: a - 0.06, hi: b, speech: speechIn(a, b), pass });
+    }
+    return out;
+  };
+  // C: 0.5秒以上の間で分けた話のまとまり。30秒を超えるまとまりは、一番長い間（なければ一番静かな所）で分ける
+  const groups = [];
+  for (const r of merged) {
+    const g = groups[groups.length - 1];
+    if (g && r.start - g[g.length - 1].end < 0.5) g.push(r);
+    else groups.push([r]);
+  }
+  const cutLongest = rs => {
+    const a = rs[0].start, b = rs[rs.length - 1].end;
+    if (b - a <= L) return [rs];
+    if (rs.length === 1) {
+      const t = quietAt((a + b) / 2, (b - a) / 4);
+      return [...cutLongest([{ start: a, end: t }]), ...cutLongest([{ start: t, end: b }])];
+    }
+    let k = 1;
+    for (let i = 2; i < rs.length; i++) if (rs[i].start - rs[i - 1].end > rs[k].start - rs[k - 1].end) k = i;
+    return [...cutLongest(rs.slice(0, k)), ...cutLongest(rs.slice(k))];
+  };
+  const C = groups.flatMap(cutLongest).map(rs => {
+    const a = rs[0].start, b = rs[rs.length - 1].end;
+    return { start: a, end: b, padStart: 0.3, padEnd: 0.3, lo: a - 0.35, hi: b + 0.3, speech: speechIn(a, b), pass: 'C', parts: rs.map(r => ({ ...r })) };
+  });
+  return [...grid(0, 'A'), ...grid(L / 2, 'B'), ...C];
+}
+
+// 文字の並び a・b を照らし合わせる（編集距離）。返り値は [種類, a の番号, b の番号] の並び
+function alignChars(a, b) {
+  const n = a.length, m = b.length, D = Array.from({ length: n + 1 }, (_, i) => new Int32Array(m + 1).fill(0).map((_, j) => (i ? (j ? 0 : i) : j)));
+  for (let i = 1; i <= n; i++) for (let j = 1; j <= m; j++) D[i][j] = Math.min(D[i - 1][j] + 1, D[i][j - 1] + 1, D[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+  const ops = [];
+  let i = n, j = m;
+  while (i > 0 || j > 0) {
+    if (i > 0 && j > 0 && D[i][j] === D[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1)) ops.push(['m', --i, --j]);
+    else if (j > 0 && D[i][j] === D[i][j - 1] + 1) ops.push(['ins', null, --j]);
+    else ops.push(['del', --i, null]);
+  }
+  return ops.reverse();
+}
+
+// base（文字の列）に、other にだけある文字の並び（minRun 文字以上）を差し込む。違う文字の所は base のまま
+export function fillDeletions(base, other, minRun = 2) {
+  const ops = alignChars(base.map(k => k.s), other.map(k => k.s));
+  const out = [];
+  let run = [];
+  const flush = () => { if (run.length >= minRun) out.push(...run); run = []; };
+  for (const [op, i, j] of ops) {
+    if (op === 'ins') { run.push(other[j]); continue; }
+    flush();
+    out.push(base[i]);
+  }
+  flush();
+  return out;
 }
 
 // 否定の言葉（意味が逆になるため、聞き落とすと大きな誤りになる）
 const NEGATION_RE = /ない|なかっ|ません|ず[にのともで、。]|ず$|ダメ|だめ/;
 export const hasNegation = text => NEGATION_RE.test(text || '');
 
-// asrWindows の2通りの結果（results[窓の番号] = chunks）から、まとまりごとに文字の多い方を選んで、1つの結果にする。
-// 2通りの聞き取りで、否定の言葉や入力された用語（terms）の有無が違うまとまりには doubts（確認が必要な理由）をつける
-export function mergeAsrPasses(windows, results, terms = []) {
-  const regs = windows.filter(w => w.pass === 'region');
-  if (!regs.length) return windows.flatMap((_, k) => results[k] || []);
-  const count = toks => toks.reduce((n, k) => n + (k.s || '').replace(/[、。\s]/g, '').length, 0);
-  const longTokens = windows.flatMap((w, k) => w.pass === 'long' ? (results[k] || []).flatMap(c => c.tokens || []) : []);
+// 3通りの結果（results[窓の番号] = chunks）を合わせて、1つの結果（文字ごとの時刻つき）にする。
+// まとまり（C の窓）ごとに、A を基にして B・C で落とした言葉を補う。返り値の passes は、読み方ごとの文字（確認用）
+export function mergeAsrPasses(windows, results) {
+  if (!windows.some(w => w.pass)) return windows.flatMap((_, k) => results[k] || []);
+  const tokensOf = pass => windows.flatMap((w, k) => w.pass === pass ? (results[k] || []).flatMap(c => c.tokens || []) : []).sort((x, y) => x.t - y.t);
+  const P = { A: tokensOf('A'), B: tokensOf('B'), C: tokensOf('C') };
+  const segs = windows.filter(w => w.pass === 'C');
   const out = [];
-  regs.forEach((r, j) => {
-    const lo = j ? (regs[j - 1].end + r.start) / 2 : -Infinity, hi = j + 1 < regs.length ? (r.end + regs[j + 1].start) / 2 : Infinity;
-    const a = longTokens.filter(k => k.t >= lo && k.t < hi);
-    const wi = windows.indexOf(r);
-    const b = (results[wi] || []).flatMap(c => c.tokens || []).filter(k => k.t >= lo && k.t < hi);
-    const tokens = count(b) > count(a) ? b : a;
-    if (!tokens.length) return;
+  segs.forEach((g, j) => {
+    const lo = j ? (segs[j - 1].end + g.start) / 2 : -Infinity, hi = j + 1 < segs.length ? (g.end + segs[j + 1].start) / 2 : Infinity;
+    const pick = p => P[p].filter(k => k.t >= lo && k.t < hi);
+    const filled = fillDeletions(fillDeletions(pick('A'), pick('B')), pick('C'));
+    if (!filled.length) return;
+    // 差し込んだ文字は別の読み方の時刻なので、前後と順番が逆になることがある。文字の順に時刻をそろえる
+    const tokens = [];
+    for (const k of filled) tokens.push({ ...k, t: tokens.length ? Math.max(k.t, tokens[tokens.length - 1].t + 0.02) : k.t });
     const text = tokens.map(k => k.s).join('');
-    const other = (tokens === b ? a : b).map(k => k.s).join('');
-    const doubts = [];
-    if (other && hasNegation(text) !== hasNegation(other)) doubts.push('否定の言葉（ない・ません）を聞き落としている可能性');
-    for (const t of terms) if (t.length >= 2 && other.includes(t) && !text.includes(t)) doubts.push(`「${t}」を聞き落としている可能性`);
-    out.push({ start: r.start, end: r.end, text, raw: text, timed: true, tokens: tokens.slice().sort((x, y) => x.t - y.t), pass: tokens === b ? 'region' : 'long', alt: other, doubts });
+    out.push({ start: g.start, end: g.end, text, raw: text, timed: true, tokens });
   });
+  out.passes = P;
+  return out;
+}
+
+// 字幕の文 c について、読み方ごとの聞き取りを比べ、否定の言葉・入力された用語の有無が違えば理由を返す
+export function passDoubts(c, passes, terms = []) {
+  if (!passes) return [];
+  const texts = Object.values(passes).map(P => P.filter(k => k.t >= c.start - 0.3 && k.t < c.end + 0.3).map(k => k.s).join('')).filter(Boolean);
+  const out = [];
+  if (texts.some(t => hasNegation(t) !== hasNegation(c.text))) out.push('否定の言葉（ない・ません）を聞き落としている可能性');
+  for (const t of terms) if (t.length >= 2 && !(c.text || '').includes(t) && texts.some(x => x.includes(t))) out.push(`「${t}」を聞き落としている可能性`);
   return out;
 }
 

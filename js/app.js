@@ -10,7 +10,7 @@ import {
   planSegments, renderBytes, spaceCheck, formatBytes, describeJob, jobIdFor, sameSource, MB,
 } from './resume.js';
 import {
-  detectSpeech, transcriptionWindows, asrWindows, mergeAsrPasses, buildUnits, selectUnits, buildTimeline, formatTime, FRAME_SEC, trimUnit, untrimUnit,
+  detectSpeech, transcriptionWindows, asrWindows, mergeAsrPasses, passDoubts, buildUnits, selectUnits, buildTimeline, formatTime, FRAME_SEC, trimUnit, untrimUnit,
   cleanSubtitle, alignSentences, refineSubtitleTiming, fineSpeech, setBreakTerms, openingLines, openingText, openingPlan,
   END_FADE, END_HOLD, extendEnding, outputLength, OPENING_DURATIONS,
 } from './plan.js';
@@ -399,7 +399,7 @@ const charCount = chunks => chunks.reduce((n, c) => n + (c.raw || c.text || '').
 function transcribe(pcm, windows, terms = [], { saved = {}, onResult, onStart, started = {}, engine = 'whisper' } = {}) {
   saved = { ...saved };
   windows.forEach((w, k) => {
-    if (w.pass === 'long' && started[k] && !saved[k]) { saved[k] = []; log(`文字起こし: 長い窓 ${k + 1} は前回読んでいる途中で止まったため、使いません`); }
+    if (w.pass && started[k] && !saved[k]) { saved[k] = []; log(`文字起こし: 窓 ${k + 1} は前回読んでいる途中で止まったため、使いません（ほかの読み方の結果で補います）`); }
   });
   if (windows.every((_, k) => saved[k])) return Promise.resolve(windows.map((_, k) => saved[k]));
   const E = ENGINES[engine] || ENGINES.whisper;
@@ -423,6 +423,8 @@ function transcribe(pcm, windows, terms = [], { saved = {}, onResult, onStart, s
     };
     const rawRegion = () => {
       const w = windows[i];
+      // 3通りの読み方の窓（asrWindows）: 読む範囲と、文字を受け取る範囲が決まっている
+      if (w.lo != null && !split) return { start: w.start, end: w.end, pad: w.padStart, padEnd: w.padEnd, lo: w.lo, hi: w.hi };
       if (split) {
         // となりの部分と同じ文字を2回使わないよう、文字を受け取る範囲は部分と部分の間の真ん中まで
         const k = split.idx, p = w.parts[k], prev = w.parts[k - 1], nx = w.parts[k + 1];
@@ -433,7 +435,7 @@ function transcribe(pcm, windows, terms = [], { saved = {}, onResult, onStart, s
       return { start: w.start, end: w.end, pad: E.pads[attempt], lo: pw ? Math.max(w.start - 0.3, (pw.end + w.start) / 2) : w.start - 0.3, hi: nw ? Math.min(w.end + 0.3, (w.end + nw.start) / 2) : w.end + 0.3 };
     };
     // 長い窓は読み直さない（同じ所をまとまりごとにも読むため）
-    const low = (w, chunks) => w.pass !== 'long' && E.minRate && w.speech > 1.5 && charCount(chunks) < E.minRate * w.speech;
+    const low = (w, chunks) => !w.pass && E.minRate && w.speech > 1.5 && charCount(chunks) < E.minRate * w.speech;
     const collect = () => windows.map((_, k) => results[k] || []);
     let finished = false;
     const finish = (fn, v) => {
@@ -451,10 +453,10 @@ function transcribe(pcm, windows, terms = [], { saved = {}, onResult, onStart, s
       if (i >= windows.length) return finish(resolve, collect());
       const r = region();
       const from = Math.max(0, Math.floor((r.start - r.pad) * ASR_RATE));
-      const to = Math.min(pcm.length, Math.ceil((r.end + r.pad) * ASR_RATE));
+      const to = Math.min(pcm.length, Math.ceil((r.end + (r.padEnd ?? r.pad)) * ASR_RATE));
       const audio = pcm.slice(from, to);
       const id = i;
-      Promise.resolve(windows[id].pass === 'long' && attempt === 0 ? onStart?.(id) : null)
+      Promise.resolve(windows[id].pass && attempt === 0 ? onStart?.(id) : null)
         .catch(err => log('文字起こしの途中経過を保存できませんでした', errorText(err)))
         .then(() => worker.postMessage({ type: 'run', id, audio, offset: from / ASR_RATE }, [audio.buffer]));
       setProgress(i / windows.length, `文字起こし中… ${i + 1} / ${windows.length}${attempt || split ? '（読み直し）' : ''}`);
@@ -529,8 +531,8 @@ function transcribe(pcm, windows, terms = [], { saved = {}, onResult, onStart, s
         Promise.resolve(onResult?.(m.id, results[m.id])).catch(err => log('文字起こしの途中結果を保存できませんでした', errorText(err))).then(() => { i++; next(); });
       } else if (m.type === 'error') {
         // 長い窓で失敗したとき（メモリ不足など）は、その窓を使わずに続ける（同じ所をまとまりごとにも読むため）
-        if (m.id != null && m.id === i && windows[i]?.pass === 'long') {
-          log(`文字起こし: 長い窓 ${i + 1} で失敗したため、まとまりごとの結果だけを使います`, m.message);
+        if (m.id != null && m.id === i && windows[i]?.pass) {
+          log(`文字起こし: 窓 ${i + 1} で失敗したため、ほかの読み方の結果で補います`, m.message);
           results[i] = [];
           i++;
           next();
@@ -692,7 +694,7 @@ async function runAnalysis(job) {
       setStep('asr', 'active');
       try {
         const engine = job.asrEngine || 'whisper';
-        // ReazonSpeech: 長い窓と、話のまとまりごとの2通りで読み、まとまりごとに文字の多い方を使う（asrWindows）
+        // ReazonSpeech: 区切り方の違う3通りで読み、どれかが落とした言葉をほかの結果で補う（asrWindows・mergeAsrPasses）
         const windows = A.asr?.windows || (engine === 'reazon' ? asrWindows(state.speech.regions, state.rmsDb) : transcriptionWindows(state.speech.regions, ENGINES[engine].window));
         A.asr = { windows, results: A.asr?.results || {}, started: A.asr?.started || {}, done: false };
         const savedN = Object.keys(A.asr.results).length;
@@ -704,8 +706,8 @@ async function runAnalysis(job) {
           started: A.asr.started || {},
           onStart: async i => { A.asr.started = { ...(A.asr.started || {}), [i]: true }; await persistJob(job); },
         });
-        const raw = mergeAsrPasses(windows, perWindow, [...bp.items, ...bp.asrTerms]);
-        if (windows.some(w => w.pass)) log('字幕AIの2通りの読み方', { long: raw.filter(c => c.pass === 'long').length, region: raw.filter(c => c.pass === 'region').length });
+        const raw = mergeAsrPasses(windows, perWindow);
+        if (raw.passes) log('字幕AIの3通りの読み方（文字数）', { A: raw.passes.A.length, B: raw.passes.B.length, C: raw.passes.C.length, merged: raw.reduce((n, c) => n + c.tokens.length, 0) });
         const fine = fineSpeech(state.rmsDb, state.speech.threshold);
         // ReazonSpeech: 1文字ごとの時刻と声の切れ目で文に分け、用語の書き方を直す
         // Whisper: 文ごとの時刻を、無音の切れ目に合わせて割り当て直す
@@ -713,7 +715,7 @@ async function runAnalysis(job) {
         const sentences = engine === 'reazon' && raw.some(c => c.tokens)
           ? tokensToChunks(raw, fine).map(c => fixTerms(c, [...bp.items, ...bp.asrTerms], bp.phrases))
           : alignSentences(raw, state.speech.regions);
-        state.chunks = attachDoubts(refineSubtitleTiming(sentences, fine), raw);
+        state.chunks = attachDoubts(refineSubtitleTiming(sentences, fine), raw.passes, [...bp.items, ...bp.asrTerms]);
         A.asr = { windows, done: true, chunks: state.chunks };
         await persistJob(job);
         await removeFile(job.id, PCM_NAME);
@@ -801,10 +803,10 @@ async function storeSource(job) {
 }
 
 // 字幕の文に、意味が変わるおそれのある聞き落としの印をつける（chunk.doubts）。
-// raw: 2通りの読み方を比べた結果（否定の言葉・用語の違い）。文の終わりが言葉の途中で終わっている文にもつける
-function attachDoubts(chunks, raw) {
+// passes: 3通りの読み方の結果（否定の言葉・用語の有無が違う文）。文の終わりが言葉の途中で終わっている文にもつける
+function attachDoubts(chunks, passes, terms) {
   return chunks.map((c, i) => {
-    const ds = raw.filter(r => r.doubts?.length && r.end > c.start && r.start < c.end).flatMap(r => r.doubts);
+    const ds = passDoubts(c, passes, terms);
     const next = chunks[i + 1];
     // 「…を」「…は」で終わる文は、すぐ後に続きを話しているなら、声の間で文を分けただけ
     const particle = /[をがは]$/.test((c.text || '').replace(/[、。\s]+$/, ''));

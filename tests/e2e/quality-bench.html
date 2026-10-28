@@ -5,17 +5,29 @@
   ②それを書き出し設定ごとに H.264 に圧縮してから戻したもの で比べ、髪の細かい模様（3×3の平均との差）が
   どこでどれだけ失われるかを測る。tests/e2e/quality-bench.mjs から開く。
   ?src=元の動画のURL&t=開始秒&n=コマ数
+  src を指定しないときは、動画を選ぶ欄を出す（iPhone の Safari で、iPhone のエンコーダーの画質を測るため。
+  動画は端末の外に送らない）
 -->
 <meta charset="utf-8">
 <title>quality bench</title>
 <script type="importmap">{ "imports": { "mediabunny": "../../vendor/mediabunny.min.mjs" } }</script>
+<div id="pick" hidden style="font: 16px system-ui; padding: 12px">
+  <p>画質の計測（開発用）: 髪がはっきり写っている短い動画（数秒〜）を選んでください。動画は端末の外に送りません。数分かかります。</p>
+  <input type="file" id="file" accept="video/*"> <button id="go" type="button">計測を始める</button>
+</div>
+<p id="status" style="font: 14px system-ui; padding: 0 12px"></p>
 <pre id="out"></pre>
 <script type="module">
 import { Input, ALL_FORMATS, BlobSource, BufferSource, VideoSampleSink, Output, Mp4OutputFormat, BufferTarget, CanvasSource, Quality } from 'mediabunny';
 
 const W = 1080, H = 1920;
 const q = new URLSearchParams(location.search);
-const src = q.get('src'), t0 = +(q.get('t') || 3), n = +(q.get('n') || 60);
+const src = q.get('src'), t0 = +(q.get('t') ?? (src ? 3 : 0.5)), n = +(q.get('n') || (src ? 60 : 30));
+// ?report: テスト用サーバー（tests/webkit/server.py）に途中経過と結果を送る（WebKitGTK で測るとき）
+const report = body => { if (q.has('report')) fetch('/__report', { method: 'POST', body: JSON.stringify(body) }).catch(() => {}); };
+const status = t => { document.getElementById('status').textContent = t; console.log(t); report({ type: 'BENCH_STATUS', t }); };
+addEventListener('error', e => report({ type: 'BENCH_ERROR', message: String(e.message || e.error) }));
+addEventListener('unhandledrejection', e => report({ type: 'BENCH_ERROR', message: String(e.reason?.message || e.reason) }));
 const STEP = 10; // このコマおきに測る
 
 function detail(ctx) {
@@ -50,7 +62,14 @@ function painter(rotation, quality) {
   };
 }
 
-const srcBlob = await (await fetch(src)).blob();
+let srcBlob;
+if (src) srcBlob = await (await fetch(src)).blob();
+else {
+  document.getElementById('pick').hidden = false;
+  srcBlob = await new Promise(res => document.getElementById('go').onclick = () => { const f = document.getElementById('file').files[0]; if (f) res(f); });
+  document.getElementById('pick').hidden = true;
+}
+status('計測中…');
 async function sourceFrames(each) {
   const input = new Input({ source: new BlobSource(srcBlob), formats: ALL_FORMATS });
   const track = await input.getPrimaryVideoTrack();
@@ -108,10 +127,14 @@ const configs = {
   'qp18/20M': { codec: 'avc', bitrate: new Quality({ quantizer: 18, bitrate: 20e6 }), keyFrameInterval: 2, framerate: 30 },
   '40M+fps': { codec: 'avc', bitrate: 40e6, keyFrameInterval: 2, framerate: 30 },
   '10M+fps': { codec: 'avc', bitrate: 10e6, keyFrameInterval: 2, framerate: 30 },
+  '20M+hw': { codec: 'avc', bitrate: 20e6, keyFrameInterval: 2, framerate: 30, hardwareAcceleration: 'prefer-hardware' },
 };
-const only = q.get('only');
+// iPhone で動画を選んで測るとき（src なし）は、主な設定だけ
+const defaultOnly = src ? '' : 'now-20M,10M+fps,40M+fps,20M+hw';
+const only = q.get('only') ?? defaultOnly;
 for (const [name, cfg] of Object.entries(configs)) {
   if (only && !only.split(',').includes(name)) continue;
+  status('計測中… ' + name);
   try {
     const c = new OffscreenCanvas(W, H), ctx = c.getContext('2d');
     const target = new BufferTarget();
@@ -140,6 +163,9 @@ for (const [name, cfg] of Object.entries(configs)) {
   document.getElementById('out').textContent = JSON.stringify(results, null, 1);
 }
 results.probes = probes;
+results.ua = navigator.userAgent;
 window.benchResults = results;
+report({ type: 'BENCH_DONE', results: Object.fromEntries(Object.entries(results).filter(([k]) => k !== 'probes' || q.has('probes'))) });
+status('完了: 縮小後の細かさ ' + (results['canvas-high']?.detail ?? 0).toFixed(2) + ' / 圧縮後に残った割合 ' + Object.entries(results).filter(([, v]) => v && v.kept).map(([k, v]) => `${k}: ${Math.round(v.kept * 100)}%（${v.mbps.toFixed(1)}Mbps）`).join('、'));
 document.getElementById('out').textContent = JSON.stringify(results, null, 1);
 </script>

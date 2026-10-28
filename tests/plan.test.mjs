@@ -373,30 +373,31 @@ test('字幕の手直し: 0.1秒ずつ動かし、保存・読み込み・全体
   assert.equal(again[0].subStart, 10.2);
 });
 
-test('字幕AIの2通りの読み方: 長い窓（30秒まで）と話のまとまりごと。まとまりごとに文字の多い方を使う', async () => {
-  const { asrWindows, mergeAsrPasses } = await import('../js/plan.js');
-  const regions = [{ start: 0, end: 10 }, { start: 11, end: 25 }, { start: 26, end: 40 }];
+test('字幕AIの3通りの読み方: 区切りの違う窓で読み、落とした言葉をほかの結果で補う', async () => {
+  const { asrWindows, mergeAsrPasses, fillDeletions, passDoubts } = await import('../js/plan.js');
+  // 0.3秒より短い間では区切らない。A は30秒ごと、B は15秒ずらす、C は0.5秒以上の間で分けたまとまり
+  const regions = [{ start: 0, end: 10 }, { start: 10.1, end: 25 }, { start: 26, end: 70 }];
   const w = asrWindows(regions, null, 30);
-  const long = w.filter(x => x.pass === 'long'), each = w.filter(x => x.pass === 'region');
-  assert.equal(each.length, 3);
-  assert.ok(long.every(x => x.end - x.start <= 30));
-  assert.ok(long.length >= 2);
-  const tok = (t, s) => ({ t, s, p: 1 });
-  const results = {};
-  // 長い窓: 1つ目のまとまりの後の文を落とした / まとまりごと: 2つ目の文の終わり「しない」を落とした
-  results[w.indexOf(long[0])] = [{ tokens: [tok(1, 'こ'), tok(1.2, 'の'), tok(12, '軽'), tok(12.2, 'く'), tok(12.4, 'し'), tok(12.6, 'な'), tok(12.8, 'い')] }];
-  results[w.indexOf(long[1])] = [{ tokens: [tok(27, 'そ'), tok(27.2, 'れ')] }];
-  results[w.indexOf(each[0])] = [{ tokens: [tok(1, 'こ'), tok(1.2, 'の'), tok(5, '場'), tok(5.2, '所')] }];
-  results[w.indexOf(each[1])] = [{ tokens: [tok(12, '軽'), tok(12.2, 'く')] }];
-  results[w.indexOf(each[2])] = [{ tokens: [tok(27, 'そ'), tok(27.2, 'れ')] }];
-  const merged = mergeAsrPasses(w, results);
-  assert.deepEqual(merged.map(c => c.text), ['この場所', '軽くしない', 'それ']);
-  // 長すぎるまとまりは静かな所で分ける
-  const rms = new Float32Array(Math.round(70 / 0.05)).fill(-20);
-  rms[Math.round(35 / 0.05)] = -60;
-  const w2 = asrWindows([{ start: 0, end: 70 }], rms, 30);
-  const parts = w2.filter(x => x.pass === 'region');
-  assert.ok(parts.length >= 3);
-  assert.ok(parts.every(x => x.end - x.start <= 30 && x.end - x.start >= 7), JSON.stringify(parts));
-  assert.ok(parts.some(x => Math.abs(x.end - 35) < 1e-6), '一番静かな所で分ける');
+  const A = w.filter(x => x.pass === 'A'), B = w.filter(x => x.pass === 'B'), C = w.filter(x => x.pass === 'C');
+  assert.ok(A.length >= 3 && B.length >= 3 && C.length >= 3);
+  assert.equal(A[0].start, 0);
+  assert.ok(Math.abs(B[0].end - 15) < 1e-6, 'B は15秒ずれる');
+  assert.ok(C.every(x => x.end - x.start <= 30), JSON.stringify(C));
+  assert.ok(!C.some(x => Math.abs(x.start - 10.1) < 1e-6), '0.1秒の間では分けない');
+  // 落とした言葉を補う
+  const tok = (s, t0) => [...s].map((c, i) => ({ s: c, t: t0 + i * 0.1, p: 1 }));
+  const base = [...tok('それはどこなのか', 0), ...tok('この場所を', 3)];
+  const other = [...tok('それはどこなのかトップの根元付近です', 0), ...tok('この場所を', 3)];
+  assert.equal(fillDeletions(base, other).map(k => k.s).join(''), 'それはどこなのかトップの根元付近ですこの場所を');
+  // 1文字だけの違い（言い方の違い・聞き間違い）は補わない（もとの結果のまま）
+  assert.equal(fillDeletions(tok('かるくしない', 0), tok('かるくしなない', 0)).map(k => k.s).join(''), 'かるくしない');
+  // 合わせた結果
+  const ws = [{ start: 0, end: 10, pass: 'A' }, { start: 0, end: 10, pass: 'B' }, { start: 0, end: 10, pass: 'C' }];
+  const r = mergeAsrPasses(ws, { 0: [{ tokens: tok('根元付近は軽く', 1) }], 1: [{ tokens: tok('根元付近は軽くしない', 1) }], 2: [{ tokens: tok('根元付近は軽く', 1) }] });
+  assert.equal(r[0].text, '根元付近は軽くしない');
+  for (let i = 1; i < r[0].tokens.length; i++) assert.ok(r[0].tokens[i].t > r[0].tokens[i - 1].t, '時刻は文字の順');
+  // 読み方によって否定の言葉の有無が違う文は、要確認にする
+  const passes = { A: tok('うまくカバーできます', 0), B: tok('うまくカバーできません', 0), C: tok('うまくカバーできます', 0) };
+  assert.ok(passDoubts({ start: 0, end: 1.2, text: 'うまくカバーできます' }, passes).some(d => d.includes('否定')));
+  assert.deepEqual(passDoubts({ start: 0, end: 1.2, text: 'うまくカバーできません' }, { A: tok('うまくカバーできません', 0) }), []);
 });

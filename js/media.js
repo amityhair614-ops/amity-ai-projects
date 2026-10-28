@@ -470,10 +470,20 @@ function drawSubtitle(ctx, page, t) {
 //    → 音声を区間ごとに作ると、つなぎ目ごとに AAC の先頭の無音（エンコーダーの遅延）が入って「プツッ」となるため
 // どちらも書き出し先はファイル（StreamTarget）で、動画全体をメモリに持たない（10分の動画でも使うメモリは一定）
 
+let encoderLogged = false;
 async function checkVideoEncoder() {
   if (!(await canEncodeVideo('avc', { width: OUT_W, height: OUT_H }))) {
     throw new Error('この端末では H.264 の書き出しに対応していません。');
   }
+  // 画質の確認用（診断情報）: この端末の H.264 エンコーダーがハードウェアか。画質はエンコーダーで大きく変わる
+  if (encoderLogged) return;
+  encoderLogged = true;
+  try {
+    const base = { codec: 'avc1.640028', width: OUT_W, height: OUT_H, bitrate: VIDEO_BITRATE, framerate: FPS };
+    const hw = await VideoEncoder.isConfigSupported({ ...base, hardwareAcceleration: 'prefer-hardware' }).then(r => r.supported, () => null);
+    const sw = await VideoEncoder.isConfigSupported({ ...base, hardwareAcceleration: 'prefer-software' }).then(r => r.supported, () => null);
+    log('映像のエンコーダー', { hardware: hw, software: sw, bitrate: VIDEO_BITRATE });
+  } catch {}
 }
 
 // 書き出しを一時停止するときの合図（画面を離れたときなど）。この例外は失敗ではない
