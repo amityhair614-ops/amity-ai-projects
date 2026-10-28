@@ -294,3 +294,13 @@ test('文の後に間をおかずに文字にならない声が続くとき（�
   const u2 = buildUnits({ duration: 10, rmsDb: r2, speech: detectSpeech(r2), motion: null, chunks: [{ start: 1, end: 2.9, text, times }] }).find(x => x.text === text);
   assert.ok(!u2.trimOption);
 });
+
+test('次の文を間をおかずに話し始めたときは、その声を「文字にならない声」とみなさない', () => {
+  const r = rms(10, [[1, 4.2, -20]]);
+  const speech = detectSpeech(r);
+  const a = '傷んでも見えやすいです', b = 'こうなってしまうと';
+  const ta = Array.from(a, (_, i) => 1 + i * 0.15); // 最後の文字 2.5秒
+  const tb = Array.from(b, (_, i) => 2.75 + i * 0.15);
+  const u = buildUnits({ duration: 10, rmsDb: r, speech, motion: null, chunks: [{ start: 1, end: 2.7, text: a, times: ta }, { start: 2.7, end: 4.2, text: b, times: tb }] }).find(x => x.text === a);
+  assert.ok(!u.trimOption, JSON.stringify(u.candidate));
+});

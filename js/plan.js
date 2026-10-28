@@ -664,10 +664,13 @@ export function untrimUnit(u) {
 
 // 文の最後の文字の後に、間をおいて文字起こしされていない声が続いている（言いかけてやめた・言い直しの頭などを
 // 字幕AIが聞き落とした）。内容のある言葉かもしれないので自動では取り除かず、取り除ける候補として知らせる
-function untranscribedTail(u, segs, rmsDb) {
+function untranscribedTail(u, segs, rmsDb, nextT = Infinity) {
   const text = u.text || '';
   if (!u.times || u.times.length !== text.length || !segs.length) return;
   const lastT = u.times[u.times.length - 1] + CHAR_LAG;
+  // 次の文の最初の文字より後の声は、次の文の声（間をおかずに話し始めた）
+  segs = segs.filter(s => s.start < nextT - 0.05).map(s => ({ start: s.start, end: Math.min(s.end, nextT - 0.05) }));
+  if (!segs.length) return;
   let k = -1;
   segs.forEach((s, j) => { if (s.start <= lastT + 0.1) k = j; });
   if (k < 0) return;
@@ -748,7 +751,8 @@ export function buildUnits({ duration, rmsDb, speech, chunks, motion, pace }) {
         const fine = c.fine && c.fine.length ? c.fine : [];
         const fEnd = fine.length ? fine[fine.length - 1].end : -Infinity;
         const sp = [...fine, ...segs.filter(r => r.end > fEnd + 0.05).map(r => ({ start: Math.max(r.start, fEnd + 0.05), end: r.end }))];
-        untranscribedTail(u, sp.length ? sp : segs, rmsDb);
+        const nextT = chunks[i + 1]?.times?.length ? chunks[i + 1].times[0] + CHAR_LAG - 0.1 : (chunks[i + 1]?.start ?? Infinity);
+        untranscribedTail(u, sp.length ? sp : segs, rmsDb, nextT);
       }
       units.push(u);
     });
