@@ -30,6 +30,8 @@ function pauseBetween(fine, a, b) {
 // 文字起こしの区間ごとの結果（tokens: { t: 元の動画の時刻, s: 文字, p: 確からしさ }）を、
 // 声の切れ目（fine: 細かい発話区間）で文に分ける。句読点は声の間から入れる（モデルは句読点を出さない）。
 // 返り値の各文: { start, end, text, raw, timed, tokens, times }（times は text の1文字ごとの時刻）
+const SENTENCE_HEADS = ['あとは', 'それは', 'それを', 'そうなら', 'そして', 'でも', 'なので', 'だから', 'まずは', 'ただ', 'となれば', 'こうなって'];
+
 export function tokensToChunks(raw, fine = []) {
   const tokens = [];
   for (const c of raw) {
@@ -63,6 +65,15 @@ export function tokensToChunks(raw, fine = []) {
     cur.push({ ...k });
   }
   flush();
+  // 文の始まりによく使う言葉（「あとは」「それは」）の途中で文が分かれた（「…しまいあ｜とは…」）ときは、言葉の前で分ける
+  for (let g = 0; g + 1 < groups.length; g++) {
+    const a = groups[g], b = groups[g + 1];
+    const tail = a.slice(-3).map(k => k.s).join(''), head = b.slice(0, 4).map(k => k.s).join('');
+    for (const w of SENTENCE_HEADS) {
+      const n = [...Array(w.length).keys()].slice(1).find(n => n < a.length && tail.endsWith(w.slice(0, n)) && head.startsWith(w.slice(n)));
+      if (n) { b.unshift(...a.splice(a.length - n, n)); break; }
+    }
+  }
   // 2. 間なく続けて話した長い文は、はっきりした文の終わり（〜ます。〜です。）で分ける
   const split = [];
   for (const g of groups) {

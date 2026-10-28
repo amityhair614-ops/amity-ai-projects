@@ -105,7 +105,7 @@ test('文字起こしなしでも構成できる', () => {
 
 test('字幕の折り返しとページ分け', () => {
   const lines = wrapLines('まずはバックからブロッキングをしていきます、ここが大事です', 13);
-  assert.ok(lines.every(l => l.length <= 13));
+  assert.ok(lines.every(l => l.length <= 13 || (l.length === 14 && /[、。]$/.test(l))), '1行の文字数（読点の1文字だけは超えてよい）');
   assert.ok(!lines.some(l => /^[、。]/.test(l)));
   const pages = subtitlePages('まずはバックからブロッキングをしていきます、ここが大事なポイントになります', 6);
   assert.ok(pages.length >= 2);

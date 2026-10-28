@@ -995,7 +995,8 @@ function grammarScore(text, i, inside, prev, next) {
   // 用語のすぐ後（「すきバサミ／以外に」）は、助詞が続かなければ区切りやすい。
   const a = charType(prev), b = charType(next);
   // ただし用語のあとに同じ種類の文字が続く（「根元／付近」）ときは、ひとつの言葉の続き
-  if (inside?.ends?.has(i) && !PARTICLES.includes(next) && !(a === b && a !== 'hira')) return 3;
+  // ただし用語のすぐ後が漢字なら、ひとまとまりの言葉のことが多い（「トップ表面」「ボブ全体」）
+  if (inside?.ends?.has(i) && !PARTICLES.includes(next) && !(a === b && a !== 'hira')) return b === 'kanji' ? 0.5 : 3;
   if ('、。！？!? '.includes(prev)) return 4;
   // 次の文の始まりらしい言葉（「…しない／それを」「…です／この場所を」）。字幕AIは句読点を出さないため
   if (!PARTICLES.includes(prev) && SENTENCE_STARTS.some(w => text.startsWith(w, i)) && charType(prev) !== 'kata') return 3;
@@ -1020,6 +1021,8 @@ function grammarScore(text, i, inside, prev, next) {
     if (PARTICLE_PAIRS.includes(prev + next)) return -2;
     return a === 'hira' && charType(text[i - 2]) === 'hira' ? 0.5 : 2;
   }
+  // 言い切りの形（「使わない」「使っていく」「使う」「短い」）のあとに漢字・カタカナで始まる言葉が来たら、次の文・句の始まり
+  if (a === 'hira' && (b === 'kanji' || b === 'kata') && /(?:ない|ます|です|[くするうつむぬぶぐい])$/.test(before) && !/(?:という|ような|ように)$/.test(before)) return 2.5;
   if (a === 'hira' && (b === 'kanji' || b === 'kata')) return 1;
   if (a === 'kata' && b === 'kanji') return -0.5; // 「アホ毛」「カット面」のようなひとまとまりの言葉が多い
   if ((a === 'num' || b === 'num') && a !== b) return -1; // 「0度」「45度」を分けない
@@ -1051,7 +1054,9 @@ export function wrapLines(text, maxChars, pauseAt, slack = 2) {
     const target = rest.length <= maxChars * 2 ? rest.length / 2 : maxChars;
     const lo = Math.max(3, rest.length - maxChars * (rest.length <= maxChars * 2 ? 1 : 99));
     const o = off;
-    const cut = bestBreak(rest, Math.min(lo, maxChars), maxChars, target, pauseAt && (i => pauseAt(o + i)));
+    // 1行の文字数を、読点の1文字だけは超えてよい（「…することで、／軽やかで…」を「こと／で、」と分けない）
+    const hi = maxChars + (/[、。]/.test(rest[maxChars] || '') ? 1 : 0);
+    const cut = bestBreak(rest, Math.min(lo, maxChars), hi, target, pauseAt && (i => pauseAt(o + i)));
     lines.push(rest.slice(0, cut).trim());
     rest = rest.slice(cut);
     off += cut;

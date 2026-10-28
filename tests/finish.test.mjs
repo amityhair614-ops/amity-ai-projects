@@ -237,3 +237,11 @@ test('髪の話でよく聞き間違える同じ読みの漢字（痛んで→�
   assert.equal(c.text, '傷んでも見えやすいです');
   assert.ok(c.fixed.some(f => f.check));
 });
+
+test('文の始まりの言葉（あとは）の途中で文が分かれたときは、言葉の前で分ける', () => {
+  const tok = (s, t0, step = 0.12) => [...s].map((c, i) => ({ s: c, t: +(t0 + i * step).toFixed(2), p: 1 }));
+  // 「しまいあ」のあとに0.6秒の間（字幕AIが「ます」を落とし、「あ」と「とは」の間で切れた）
+  const raw = [{ start: 0, end: 5, tokens: [...tok('原因になってしまいあ', 0), ...tok('とはうまく切りづらい', 1.8)] }];
+  const chunks = tokensToChunks(raw, [{ start: 0, end: 1.25 }, { start: 1.85, end: 3.1 }]);
+  assert.deepEqual(chunks.map(c => c.text.replace(/[、。]/g, '')), ['原因になってしまい', 'あとはうまく切りづらい']);
+});
