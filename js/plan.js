@@ -1544,6 +1544,12 @@ function charPageTimes(pageTexts, clip, fine) {
   const lastT = times[times.length - 1] + CHAR_LAG;
   const v = fine.find(r => r.start <= lastT + 0.05 && r.end >= lastT - 0.05);
   const end = Math.min(clip.subEnd ?? lastT + 0.4, Math.max(lastT + 0.2, v ? v.end : lastT + 0.3));
+  // 2ページ目からは、文字の時刻の少し後に声の出始め（声の区間の始まり）があれば、そこに合わせる。
+  // 原稿の文字の時刻は、字幕AIの文字と対応しない所では前後から割り振るため、声より早くなることがある
+  for (let i = 1; i < out.length; i++) {
+    const on = fine.find(r => r.start >= out[i].start - 0.15 && r.start <= out[i].start + 0.8);
+    if (on) out[i].start = Math.max(out[i - 1].start + 0.3, on.start - 0.1);
+  }
   // 最初のページは、声の出始めに合わせた表示開始（subStart）から
   return out.map((p, i) => ({ start: i ? p.start : (clip.subStart ?? p.start), end: i + 1 < out.length ? out[i + 1].start : end }));
 }
