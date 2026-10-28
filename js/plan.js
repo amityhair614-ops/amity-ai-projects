@@ -451,6 +451,11 @@ export function findTrim(u, spans, trim) {
   const sp = spans.filter(r => r.end > u.voiceStart - 0.05 && r.start < u.voiceEnd + 0.05)
     .map(r => ({ start: Math.max(r.start, u.voiceStart), end: Math.min(r.end, u.voiceEnd) })).filter(r => r.end > r.start);
   if (sp.length < 2) return null;
+  if (trim.tail != null) {
+    // 文の終わりを取り除く: 残す部分の語尾の後の声の切れ目
+    const a = findGap(u, sp, trim.tail);
+    return a ? { tail: true, keepEnd: a.gapStart, dropStart: a.voiceStart, text: text.slice(0, trim.tail).replace(/[、,\s]+$/, ''), reason: trim.reason } : null;
+  }
   const b = findGap(u, sp, trim.cut);
   if (!b) return null;
   const kept = (trim.from ? text.slice(0, trim.from) : '') + text.slice(trim.cut);
@@ -462,10 +467,23 @@ export function findTrim(u, spans, trim) {
 
 // 文の一部を取り除く（元に戻せるよう、もとの状態を u.trimmed.original に残す）
 export function trimUnit(u, cut, pace = PACES.natural) {
-  const original = { pieces: u.pieces.map(p => ({ ...p })), start: u.start, text: u.text, subStart: u.subStart, fine: u.fine, voiceStart: u.voiceStart };
+  const original = { pieces: u.pieces.map(p => ({ ...p })), start: u.start, end: u.end, text: u.text, subStart: u.subStart, subEnd: u.subEnd, fine: u.fine, voiceStart: u.voiceStart, voiceEnd: u.voiceEnd, times: u.times };
   const from = Math.max(cut.gapStart + 0.02, cut.voiceStart - pace.lead);
   let pieces;
-  if (cut.mid) {
+  if (cut.tail) {
+    // 終わりを取り除く: 残す部分の語尾の後に余白（tail）を残して切る
+    const to = Math.min(cut.keepEnd + pace.tail, (cut.dropStart ?? Infinity) - 0.02);
+    pieces = u.pieces.filter(p => p.start < to - 0.05).map(p => ({ ...p, end: Math.min(p.end, to) }));
+    if (pieces.length) pieces[pieces.length - 1].end = Math.max(pieces[pieces.length - 1].end, to);
+    if (pieces.length) {
+      u.voiceEnd = cut.keepEnd;
+      if (u.subEnd != null) u.subEnd = Math.min(u.subEnd, cut.keepEnd);
+      if (u.fine) u.fine = u.fine.filter(r => r.start < cut.keepEnd).map(r => ({ start: r.start, end: Math.min(r.end, cut.keepEnd) }));
+      u.end = pieces[pieces.length - 1].end;
+      // 残す文字の時刻はそのまま使える（字幕のページの切り替えに使う）
+      if (u.times && u.times.length === (u.text || '').length && u.text.startsWith(cut.text)) u.times = u.times.slice(0, cut.text.length);
+    }
+  } else if (cut.mid) {
     // 途中を取り除く: 前の部分は語尾の後に短い間を残して切り、後ろの部分は話し始めの少し前から
     const to = Math.min(cut.keepEnd + pace.lead, from);
     pieces = [];
@@ -499,6 +517,7 @@ export function untrimUnit(u) {
   if (!u.trimmed) return;
   const o = u.trimmed.original;
   Object.assign(u, { pieces: o.pieces, start: o.start, text: o.text, subStart: o.subStart, fine: o.fine, voiceStart: o.voiceStart });
+  if (o.end != null) Object.assign(u, { end: o.end, subEnd: o.subEnd, voiceEnd: o.voiceEnd, times: o.times });
   u.duration = piecesDuration(u.pieces);
   u.trimOption = u.trimmed.cut;
   delete u.trimmed;

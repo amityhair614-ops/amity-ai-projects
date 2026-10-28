@@ -2,7 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  FRAME_SEC, FPS, detectSpeech, shapePieces, PACES, buildUnits, selectUnits, buildTimeline, linkSentences,
+  FRAME_SEC, FPS, untrimUnit, detectSpeech, shapePieces, PACES, buildUnits, selectUnits, buildTimeline, linkSentences,
 } from '../js/plan.js';
 import { AudioStitcher, crossfade, XFADE_SEC } from '../js/audiomix.js';
 
@@ -220,4 +220,33 @@ test('ハサミの音のすぐ後に話し始めても、声の区間を失わ�
   // 話し始めの前の短い音が1つだけなら（言葉の出始めの可能性）、声の区間に含める
   const one = detectSpeech(rms(15, [[2.0, 2.1, -20], [2.25, 4, -20]]));
   assert.ok(one.voice[0].start <= 2.05, JSON.stringify(one.voice));
+});
+
+test('文の終わりで言いかけてやめ、次の文で同じ言葉から言い直した部分（「…なのかトップの」）を取り除く', () => {
+  // 1〜2.5秒「それはどこなのか」、2.8〜3.3秒「トップの」（言いかけ）、4.5〜6.5秒「トップの根元付近です」
+  const r = rms(10, [[1, 2.5, -20], [2.8, 3.3, -20], [4.5, 6.5, -20]]);
+  const speech = detectSpeech(r);
+  const units = buildUnits({
+    duration: 10, rmsDb: r, speech, motion: null,
+    chunks: [{ start: 1, end: 3.3, text: 'それはどこなのかトップの' }, { start: 4.5, end: 6.5, text: 'トップの根元付近です' }],
+  });
+  const [a, b] = units.filter(u => u.text);
+  assert.equal(a.text, 'それはどこなのか');
+  assert.ok(a.trimmed, '言いかけを取り除いた');
+  assert.ok(a.end < 2.8, '言いかけの声は残さない end=' + a.end);
+  assert.ok(a.voiceEnd >= 2.4 && a.end >= a.voiceEnd + PACES.natural.tail - 1e-6, '残す文の語尾は切らない end=' + a.end);
+  assert.equal(b.text, 'トップの根元付近です');
+  untrimUnit(a);
+  assert.equal(a.text, 'それはどこなのかトップの');
+  assert.ok(a.end > 3.3);
+});
+
+test('文の終わりと次の文の頭が同じ語尾（「…します」「します…」）は言い直しとみなさない', () => {
+  const r = rms(10, [[1, 2.5, -20], [2.8, 3.3, -20], [4.5, 6.5, -20]]);
+  const speech = detectSpeech(r);
+  const units = buildUnits({
+    duration: 10, rmsDb: r, speech, motion: null,
+    chunks: [{ start: 1, end: 3.3, text: '襟足からカットします' }, { start: 4.5, end: 6.5, text: 'しますと、こうなります' }],
+  });
+  assert.ok(!units.find(u => u.text).trimmed);
 });

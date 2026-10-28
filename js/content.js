@@ -172,7 +172,23 @@ export function analyzeContent(chunks) {
     if (st) set(i, { trim: { cut: st.cut, reason: `くり返した「${st.repeated}」`, high: true } });
   }
 
-  // 5. 同じ説明のくり返し（あとの発言を採用）。用語が違うものは別の説明として残す
+  // 5. 文の終わりで言い出してやめ、次の文で同じ言葉から言い直した（「それはどこなのか、トップの」「トップの根元付近です」）。
+  //    文の終わりの言いかけ（3〜8文字）を取り除く。声の切れ目があるときだけ取り除く（findTrim）
+  for (let i = 0; i + 1 < chunks.length; i++) {
+    if (out[i]?.drop || out[i]?.trim || !near(i, i + 1, 4)) continue;
+    const t = text[i].replace(/[、。,.\s]+$/, '');
+    const next = text[i + 1].replace(/^[、,\s]+/, '');
+    for (let len = Math.min(8, t.length - 4); len >= 3; len--) {
+      const tail = t.slice(-len);
+      if (/[、。,]/.test(tail) || !next.startsWith(tail) || next.length <= len + 1) continue;
+      // 「…します」「します、…」のような語尾のくり返しは言い直しではない
+      if (/(?:ます|です|さい|した|よね)$/.test(tail)) break;
+      set(i, { trim: { tail: t.length - len, reason: `言いかけてやめた「${tail}」（次の文で言い直し）`, high: /[のをにはがでと]$/.test(tail) || len >= 4 } });
+      break;
+    }
+  }
+
+  // 6. 同じ説明のくり返し（あとの発言を採用）。用語が違うものは別の説明として残す
   for (let i = 0; i < chunks.length; i++) {
     if (out[i]?.drop) continue;
     const a = norm[i];

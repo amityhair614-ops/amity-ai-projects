@@ -379,7 +379,7 @@ try {
   mem.stage = '書き出し';
   await page.click('#btnRender');
   if (reloadAt === 'render') await reloadDuring('render');
-  await page.waitForSelector('#stepResult:not([hidden]), #renderError:not([hidden])', { timeout: 600000 });
+  await page.waitForSelector('#stepResult:not([hidden]), #renderError:not([hidden])', { timeout: +(process.env.RENDER_TIMEOUT || 600000) });
   const renderErr = await page.$eval('#renderError', el => (el.hidden ? null : el.textContent));
   if (renderErr) throw new Error('書き出しエラー: ' + renderErr);
   console.log(`書き出し: ${((Date.now() - t1) / 1000).toFixed(1)}秒`);
