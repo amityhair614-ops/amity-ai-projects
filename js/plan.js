@@ -680,7 +680,13 @@ export function buildUnits({ duration, rmsDb, speech, chunks, motion, pace }) {
     // 文字起こしのない声: 文字起こしをしていないときは少し残しやすく、
     // 文字起こしをしたのに文字にならなかった声（言いよどみ・聞き取れない声）は外しやすくする
     if (u.kind === 'speech' && !u.text) {
-      if (chunks && chunks.length) { score -= 0.6; u.candidate = u.candidate || '文字にならなかった声です（言いよどみの可能性があります。必要なら残してください）'; }
+      if (chunks && chunks.length) {
+        score -= 0.6;
+        // 2秒未満の短い声は、言いかけてやめた言葉・つなぎ言葉・物音であることが多いので、初めは使わない（候補に出す）。
+        // 長い声は、字幕AIが聞き落とした説明の可能性があるので残す
+        if (u.duration < 2) { u.optional = true; u.candidate = '文字にならなかった短い声です（言いかけ・言いよどみの可能性があるため、外しています。必要なら残してください）'; }
+        else u.candidate = u.candidate || '文字にならなかった声です（言いよどみの可能性があります。必要なら残してください）';
+      }
       else score += 0.3;
     }
     if (u.redo) { score += 1.2; reasons.push('言い直した説明'); }
@@ -723,7 +729,7 @@ export function selectUnits(units, duration, target = 60, max = target + targetT
   const cands = units.filter(u => !u.excluded && u.duration >= 0.5);
   const byId = new Map(cands.map(u => [u.id, u]));
   // 話している場面を、つながった文のまとまり（グループ）に分ける
-  const speech = cands.filter(u => u.kind === 'speech');
+  const speech = cands.filter(u => u.kind === 'speech' && !(u.optional && !u.mustKeep));
   const linked = new Set(speech.filter(u => u.linkNext && byId.has(u.linkNext)).map(u => u.linkNext));
   const groups = [];
   for (const u of speech) {

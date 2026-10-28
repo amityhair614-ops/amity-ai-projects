@@ -165,6 +165,23 @@ export function fixTerms(chunk, userTerms = [], phrases = []) {
       }
     }
   }
+  // 入力された用語（漢字を含む5文字以上）と、漢字の所だけが違う同じ長さの言葉（同じ読みの別の漢字の聞き間違い。
+  // 「トップの根元布巾」→「トップの根元付近」）。2文字の熟語がまるごと入れ替わったときだけ直す（「前上がり」と
+  // 「前下がり」のように1文字だけ違う言葉は、別の意味の言葉のことがあるので直さない）
+  const isKanji = ch => /[\u4e00-\u9fff々]/.test(ch);
+  for (const w of userTerms.filter(x => x.length >= 5 && [...x].some(isKanji))) {
+    if (text.includes(w)) continue;
+    for (let at = 0; at + w.length <= text.length; at++) {
+      const seg = text.slice(at, at + w.length);
+      const diffs = [];
+      for (let k = 0; k < w.length; k++) if (seg[k] !== w[k]) diffs.push(k);
+      const ok = diffs.length === 2 && diffs[1] === diffs[0] + 1 && w.length >= 6 && diffs.every(k => isKanji(seg[k]) && isKanji(w[k]));
+      if (ok) {
+        replaceAt(at, w.length, w, { from: seg, to: w, check: true });
+        break;
+      }
+    }
+  }
   for (const ph of phrases) {
     if (ph.length < 5 || text.includes(ph)) continue;
     for (let at = 0; at + ph.length <= text.length; at++) {

@@ -11,7 +11,7 @@
 <script type="importmap">{ "imports": { "mediabunny": "../../vendor/mediabunny.min.mjs" } }</script>
 <pre id="out"></pre>
 <script type="module">
-import { Input, ALL_FORMATS, UrlSource, BufferSource, VideoSampleSink, Output, Mp4OutputFormat, BufferTarget, CanvasSource, Quality } from 'mediabunny';
+import { Input, ALL_FORMATS, BlobSource, BufferSource, VideoSampleSink, Output, Mp4OutputFormat, BufferTarget, CanvasSource, Quality } from 'mediabunny';
 
 const W = 1080, H = 1920;
 const q = new URLSearchParams(location.search);
@@ -50,14 +50,16 @@ function painter(rotation, quality) {
   };
 }
 
+const srcBlob = await (await fetch(src)).blob();
 async function sourceFrames(each) {
-  const input = new Input({ source: new UrlSource(src), formats: ALL_FORMATS });
+  const input = new Input({ source: new BlobSource(srcBlob), formats: ALL_FORMATS });
   const track = await input.getPrimaryVideoTrack();
   const sink = new VideoSampleSink(track);
   let k = 0;
   for await (const s of sink.samples(t0, t0 + n / 30)) {
     if (k >= n) { s.close(); break; }
     const f = s.toVideoFrame();
+    if (k % 10 === 0) console.log('frame', k, s.timestamp);
     await each(f, k++, track.rotation);
     f.close(); s.close();
   }
@@ -71,7 +73,7 @@ async function decodeDetails(buf) {
   const out = [];
   let k = 0;
   for await (const s of sink.samples()) {
-    if (k % STEP === 0) { const f = s.toVideoFrame(); ctx.drawImage(f, 0, 0); f.close(); out.push(detail(ctx)); }
+    if (k % STEP === 0) { const f = s.toVideoFrame(); ctx.drawImage(f, 0, 0); f.close(); out.push(detail(ctx)); out.probe = probe(ctx); }
     s.close(); k++;
   }
   const cs = (await track.getDecoderConfig())?.colorSpace;
@@ -79,14 +81,21 @@ async function decodeDetails(buf) {
 }
 
 const avg = (a, key) => a.reduce((s, x) => s + x[key], 0) / a.length;
+// 画面の中央の行で、横に 16 段（灰色の段階の動画用）の RGB の値
+function probe(ctx) {
+  const d = ctx.getImageData(0, H / 2, W, 1).data;
+  return Array.from({ length: 16 }, (_, i) => { const x = Math.round((i + 0.5) * W / 16); return [d[x * 4], d[x * 4 + 1], d[x * 4 + 2]]; });
+}
+const probes = {};
 const results = {};
 
 // ① 縮小の方法ごとのキャンバス（圧縮なし）
-for (const quality of ['high', 'medium', 'low']) {
+console.log('start');
+for (const quality of (q.get('scale') || 'high,medium,low').split(',')) {
   const c = new OffscreenCanvas(W, H), ctx = c.getContext('2d');
   const d = [];
   let rot = 0, cs = null;
-  await sourceFrames((f, k, r) => { rot = r; cs = f.colorSpace?.toJSON?.() ?? null; if (k % STEP) return; painter(r, quality)(ctx, f); d.push(detail(ctx)); });
+  await sourceFrames((f, k, r) => { rot = r; cs = f.colorSpace?.toJSON?.() ?? null; if (k % STEP) return; painter(r, quality)(ctx, f); d.push(detail(ctx)); probes['canvas-' + quality] = probe(ctx); });
   results['canvas-' + quality] = { detail: avg(d, 'detail'), mean: avg(d, 'mean'), std: avg(d, 'std'), rotation: rot, frameColorSpace: cs };
 }
 
@@ -120,13 +129,17 @@ for (const [name, cfg] of Object.entries(configs)) {
     });
     await output.finalize();
     const buf = target.buffer;
+    // 書き出したファイルも保存できるように（色の値を ffmpeg で調べる）
+    (window.benchFiles ||= {})[name] = btoa(Array.from(new Uint8Array(buf), c => String.fromCharCode(c)).join(''));
     const { out, colorSpace } = await decodeDetails(buf);
+    probes[name] = out.probe;
     results[name] = { canvas: avg(before, 'detail'), encoded: avg(out, 'detail'), kept: avg(out, 'detail') / avg(before, 'detail'), mbps: buf.byteLength * 8 / (n / 30) / 1e6, mean: avg(out, 'mean'), std: avg(out, 'std'), colorSpace };
   } catch (e) {
     results[name] = { error: String(e) };
   }
   document.getElementById('out').textContent = JSON.stringify(results, null, 1);
 }
+results.probes = probes;
 window.benchResults = results;
 document.getElementById('out').textContent = JSON.stringify(results, null, 1);
 </script>

@@ -403,7 +403,17 @@ function transcribe(pcm, windows, terms = [], { saved = {}, onResult, engine = '
     const results = { ...saved };
     let i = 0, attempt = 0, best = null, split = null, triedSplit = false;
     // 今読む範囲: 区間全体（前後の広げ方は attempt 番目）か、分けて読み直しているときはその部分
+    // 字幕AIは、読んだ音声の最初の文字の時刻を音声の頭（0秒）にすることがある。前の区間の声を含まない読み方なら、
+    // 音声の頭の文字も受け取る（受け取る範囲を、計算の誤差も見込んで少し前まで広げる）
+    const withHead = (reg, prevEnd) => {
+      const head = Math.max(0, reg.start - reg.pad);
+      return head >= prevEnd ? { ...reg, lo: Math.min(reg.lo, head - 0.05) } : reg;
+    };
     const region = () => {
+      const prevWin = i > 0 ? windows[i - 1].end : -Infinity;
+      return withHead(rawRegion(), split ? windows[i].parts[split.idx - 1]?.end ?? prevWin : prevWin);
+    };
+    const rawRegion = () => {
       const w = windows[i];
       if (split) {
         // となりの部分と同じ文字を2回使わないよう、文字を受け取る範囲は部分と部分の間の真ん中まで

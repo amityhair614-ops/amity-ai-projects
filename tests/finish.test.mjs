@@ -189,3 +189,24 @@ test('字幕の区切り: 「〜して」「〜際に」の後で分け、言葉
   // 「して／しまう」「て／ください」は分けない
   for (const p of join('こうなってしまうと髪の毛が伸びないと修正カットができないです')) assert.ok(!p.includes('て／しま'));
 });
+
+test('入力した用語と漢字の所だけが違う言葉（同じ読みの聞き間違い）を直して、確認の印をつける', () => {
+  const c = fixTerms({ start: 0, end: 3, text: 'トップの根元布巾、この場所を' }, ['トップの根元付近']);
+  assert.equal(c.text, 'トップの根元付近、この場所を');
+  assert.ok(c.fixed.some(f => f.from === 'トップの根元布巾' && f.check));
+  // ひらがな・カタカナが違うときや、違う文字が多いときは直さない
+  assert.equal(fixTerms({ start: 0, end: 3, text: 'トップの根本ふきん' }, ['トップの根元付近']).text, 'トップの根本ふきん');
+  assert.equal(fixTerms({ start: 0, end: 3, text: '全体の毛先部分' }, ['トップの根元付近']).text, '全体の毛先部分');
+  // 1文字だけ違う（別の意味の言葉かもしれない）ときは直さない
+  assert.equal(fixTerms({ start: 0, end: 3, text: '前上がりのボブ' }, ['前下がりのボブ']).text, '前上がりのボブ');
+});
+
+test('文字起こしをしたのに文字にならなかった短い声（2秒未満）は、初めは使わず候補にする', () => {
+  const units = [
+    { id: 'a', kind: 'speech', start: 0, end: 4, duration: 4, pieces: [{ start: 0, end: 4 }], text: 'それはどこなのか', score: 2 },
+    { id: 'b', kind: 'speech', start: 4.5, end: 5.8, duration: 1.3, pieces: [{ start: 4.5, end: 5.8 }], text: '', score: 0.4, optional: true },
+    { id: 'c', kind: 'speech', start: 6, end: 9, duration: 3, pieces: [{ start: 6, end: 9 }], text: 'トップの根元付近です', score: 2 },
+  ];
+  const sel = selectUnits(units, 10, 7, 9).map(u => u.id);
+  assert.deepEqual(sel, ['a', 'c']);
+});
