@@ -279,3 +279,18 @@ test('言いかけの言葉の中に間があっても（「トッ／プの」�
   assert.equal(a.text, 'それはどこなのか');
   assert.ok(a.end < 2.7, '「トッ」も残さない end=' + a.end);
 });
+
+test('文の後に間をおかずに文字にならない声が続くとき（「…ないと、うまくいきま」）は、切れる候補にする（自動では切らない）', () => {
+  const r = rms(10, [[1, 3.6, -20], [5, 6.5, -20]]);
+  r[Math.round(2.85 / FRAME_SEC)] = -35; // 言葉の切れ目の小さなくぼみ
+  const speech = detectSpeech(r);
+  const text = '伸ばし続けないと';
+  const times = Array.from(text, (_, i) => 1 + i * 0.22); // 最後の文字 2.54秒
+  const u = buildUnits({ duration: 10, rmsDb: r, speech, motion: null, chunks: [{ start: 1, end: 3.6, text, times }, { start: 5, end: 6.5, text: 'うまくカバーできません' }] }).find(x => x.text === text);
+  assert.ok(u.trimOption && !u.trimmed, '候補として出す');
+  assert.ok(Math.abs(u.trimOption.keepEnd - 2.875) < 0.06, 'くぼみで切る ' + u.trimOption.keepEnd);
+  // 最後の文字のすぐ後に声が終わる文には出さない
+  const r2 = rms(10, [[1, 2.9, -20], [5, 6.5, -20]]);
+  const u2 = buildUnits({ duration: 10, rmsDb: r2, speech: detectSpeech(r2), motion: null, chunks: [{ start: 1, end: 2.9, text, times }] }).find(x => x.text === text);
+  assert.ok(!u2.trimOption);
+});

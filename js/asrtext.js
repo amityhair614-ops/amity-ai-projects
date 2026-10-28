@@ -195,6 +195,14 @@ export function fixTerms(chunk, userTerms = [], phrases = []) {
   return { ...chunk, text, times, fixed: [...(chunk.fixed || []), ...fixed] };
 }
 
+// 文の終わりが言葉の途中で終わっている（「…は軽く」「…軽くし」「…でき」）。字幕AIが「しない」「します」などを
+// 聞き落とした可能性があり、否定の「ない」を落とすと意味が逆になるため、確認が必要な字幕として知らせる
+const CUT_ENDING_RE = /(?:[^っ]く|[^ーっ]し|でき|ませ|[^よいくずるたうすつぬむふ]な|[をがは])$/;
+export function cutEnding(text) {
+  const t = (text || '').replace(/[、。\s]+$/, '');
+  return t.length >= 4 && CUT_ENDING_RE.test(t);
+}
+
 // 入力した文章から、ひらがなの言葉（5文字以上）を取り出す（聞き間違いを直す手がかり）
 export function kanaPhrases(...texts) {
   const out = new Set();

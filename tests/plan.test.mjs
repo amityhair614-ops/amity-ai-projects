@@ -372,3 +372,31 @@ test('字幕の手直し: 0.1秒ずつ動かし、保存・読み込み・全体
   assert.equal(again[0].text, 'パネルを0度に引き出します');
   assert.equal(again[0].subStart, 10.2);
 });
+
+test('字幕AIの2通りの読み方: 長い窓（30秒まで）と話のまとまりごと。まとまりごとに文字の多い方を使う', async () => {
+  const { asrWindows, mergeAsrPasses } = await import('../js/plan.js');
+  const regions = [{ start: 0, end: 10 }, { start: 11, end: 25 }, { start: 26, end: 40 }];
+  const w = asrWindows(regions, null, 30);
+  const long = w.filter(x => x.pass === 'long'), each = w.filter(x => x.pass === 'region');
+  assert.equal(each.length, 3);
+  assert.ok(long.every(x => x.end - x.start <= 30));
+  assert.ok(long.length >= 2);
+  const tok = (t, s) => ({ t, s, p: 1 });
+  const results = {};
+  // 長い窓: 1つ目のまとまりの後の文を落とした / まとまりごと: 2つ目の文の終わり「しない」を落とした
+  results[w.indexOf(long[0])] = [{ tokens: [tok(1, 'こ'), tok(1.2, 'の'), tok(12, '軽'), tok(12.2, 'く'), tok(12.4, 'し'), tok(12.6, 'な'), tok(12.8, 'い')] }];
+  results[w.indexOf(long[1])] = [{ tokens: [tok(27, 'そ'), tok(27.2, 'れ')] }];
+  results[w.indexOf(each[0])] = [{ tokens: [tok(1, 'こ'), tok(1.2, 'の'), tok(5, '場'), tok(5.2, '所')] }];
+  results[w.indexOf(each[1])] = [{ tokens: [tok(12, '軽'), tok(12.2, 'く')] }];
+  results[w.indexOf(each[2])] = [{ tokens: [tok(27, 'そ'), tok(27.2, 'れ')] }];
+  const merged = mergeAsrPasses(w, results);
+  assert.deepEqual(merged.map(c => c.text), ['この場所', '軽くしない', 'それ']);
+  // 長すぎるまとまりは静かな所で分ける
+  const rms = new Float32Array(Math.round(70 / 0.05)).fill(-20);
+  rms[Math.round(35 / 0.05)] = -60;
+  const w2 = asrWindows([{ start: 0, end: 70 }], rms, 30);
+  const parts = w2.filter(x => x.pass === 'region');
+  assert.ok(parts.length >= 3);
+  assert.ok(parts.every(x => x.end - x.start <= 30 && x.end - x.start >= 7), JSON.stringify(parts));
+  assert.ok(parts.some(x => Math.abs(x.end - 35) < 1e-6), '一番静かな所で分ける');
+});

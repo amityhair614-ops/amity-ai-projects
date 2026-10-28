@@ -10,11 +10,11 @@ import {
   planSegments, renderBytes, spaceCheck, formatBytes, describeJob, jobIdFor, sameSource, MB,
 } from './resume.js';
 import {
-  detectSpeech, transcriptionWindows, buildUnits, selectUnits, buildTimeline, formatTime, FRAME_SEC, trimUnit, untrimUnit,
+  detectSpeech, transcriptionWindows, asrWindows, mergeAsrPasses, buildUnits, selectUnits, buildTimeline, formatTime, FRAME_SEC, trimUnit, untrimUnit,
   cleanSubtitle, alignSentences, refineSubtitleTiming, fineSpeech, setBreakTerms, openingLines, openingText, openingPlan,
   END_FADE, END_HOLD, extendEnding, outputLength, OPENING_DURATIONS,
 } from './plan.js';
-import { tokensToChunks, fixTerms, checkRanges, alignScript, assignScript } from './asrtext.js';
+import { tokensToChunks, fixTerms, checkRanges, alignScript, assignScript, cutEnding } from './asrtext.js';
 import {
   previousJob, log, setEnv, jobStart, jobStage, jobProgress, jobEnd, report, clearLogs, errorText,
 } from './diag.js';
@@ -394,8 +394,14 @@ const ENGINES = {
 const charCount = chunks => chunks.reduce((n, c) => n + (c.raw || c.text || '').replace(/[、。\s]/g, '').length, 0);
 
 // saved: 前回までに文字起こしした区間の結果（{ 区間の番号: chunks }）。onResult(i, chunks) で区間ごとに保存する
-function transcribe(pcm, windows, terms = [], { saved = {}, onResult, engine = 'whisper' } = {}) {
-  if (windows.every((_, k) => saved[k])) return Promise.resolve(windows.flatMap((_, k) => saved[k]));
+// started: 読み始めた長い窓（{ 番号: true }）。onStart(i) で長い窓を読み始める前に保存する。
+// 長い窓はメモリを多く使うため、読んでいる途中でページが落ちた場合は、次はその窓を読まずにまとまりごとの結果だけを使う
+function transcribe(pcm, windows, terms = [], { saved = {}, onResult, onStart, started = {}, engine = 'whisper' } = {}) {
+  saved = { ...saved };
+  windows.forEach((w, k) => {
+    if (w.pass === 'long' && started[k] && !saved[k]) { saved[k] = []; log(`文字起こし: 長い窓 ${k + 1} は前回読んでいる途中で止まったため、使いません`); }
+  });
+  if (windows.every((_, k) => saved[k])) return Promise.resolve(windows.map((_, k) => saved[k]));
   const E = ENGINES[engine] || ENGINES.whisper;
   return new Promise((resolve, reject) => {
     const worker = new Worker(E.worker, { type: 'module' });
@@ -409,8 +415,10 @@ function transcribe(pcm, windows, terms = [], { saved = {}, onResult, engine = '
       const head = Math.max(0, reg.start - reg.pad);
       return head >= prevEnd ? { ...reg, lo: Math.min(reg.lo, head - 0.05) } : reg;
     };
+    // となりの窓（同じ読み方の窓だけ。長い窓とまとまりごとの窓は別々に読む）
+    const sib = d => { const w = windows[i], x = windows[i + d]; return x && x.pass === w.pass ? x : null; };
     const region = () => {
-      const prevWin = i > 0 ? windows[i - 1].end : -Infinity;
+      const prevWin = sib(-1)?.end ?? -Infinity;
       return withHead(rawRegion(), split ? windows[i].parts[split.idx - 1]?.end ?? prevWin : prevWin);
     };
     const rawRegion = () => {
@@ -421,11 +429,12 @@ function transcribe(pcm, windows, terms = [], { saved = {}, onResult, engine = '
         return { start: p.start, end: p.end, pad: 0.3, lo: prev ? Math.max(p.start - 0.3, (prev.end + p.start) / 2) : p.start - 0.3, hi: nx ? Math.min(p.end + 0.3, (p.end + nx.start) / 2) : p.end + 0.3 };
       }
       // 前後を広げて読んでも、となりの区間の文字は使わない（区間と区間の間の真ん中まで）
-      const pw = windows[i - 1], nw = windows[i + 1];
+      const pw = sib(-1), nw = sib(1);
       return { start: w.start, end: w.end, pad: E.pads[attempt], lo: pw ? Math.max(w.start - 0.3, (pw.end + w.start) / 2) : w.start - 0.3, hi: nw ? Math.min(w.end + 0.3, (w.end + nw.start) / 2) : w.end + 0.3 };
     };
-    const low = (w, chunks) => E.minRate && w.speech > 1.5 && charCount(chunks) < E.minRate * w.speech;
-    const collect = () => windows.flatMap((_, k) => results[k] || []);
+    // 長い窓は読み直さない（同じ所をまとまりごとにも読むため）
+    const low = (w, chunks) => w.pass !== 'long' && E.minRate && w.speech > 1.5 && charCount(chunks) < E.minRate * w.speech;
+    const collect = () => windows.map((_, k) => results[k] || []);
     let finished = false;
     const finish = (fn, v) => {
       if (finished) return;
@@ -444,7 +453,10 @@ function transcribe(pcm, windows, terms = [], { saved = {}, onResult, engine = '
       const from = Math.max(0, Math.floor((r.start - r.pad) * ASR_RATE));
       const to = Math.min(pcm.length, Math.ceil((r.end + r.pad) * ASR_RATE));
       const audio = pcm.slice(from, to);
-      worker.postMessage({ type: 'run', id: i, audio, offset: from / ASR_RATE }, [audio.buffer]);
+      const id = i;
+      Promise.resolve(windows[id].pass === 'long' && attempt === 0 ? onStart?.(id) : null)
+        .catch(err => log('文字起こしの途中経過を保存できませんでした', errorText(err)))
+        .then(() => worker.postMessage({ type: 'run', id, audio, offset: from / ASR_RATE }, [audio.buffer]));
       setProgress(i / windows.length, `文字起こし中… ${i + 1} / ${windows.length}${attempt || split ? '（読み直し）' : ''}`);
     };
     worker.onmessage = e => {
@@ -516,6 +528,14 @@ function transcribe(pcm, windows, terms = [], { saved = {}, onResult, engine = '
         triedSplit = false;
         Promise.resolve(onResult?.(m.id, results[m.id])).catch(err => log('文字起こしの途中結果を保存できませんでした', errorText(err))).then(() => { i++; next(); });
       } else if (m.type === 'error') {
+        // 長い窓で失敗したとき（メモリ不足など）は、その窓を使わずに続ける（同じ所をまとまりごとにも読むため）
+        if (m.id != null && m.id === i && windows[i]?.pass === 'long') {
+          log(`文字起こし: 長い窓 ${i + 1} で失敗したため、まとまりごとの結果だけを使います`, m.message);
+          results[i] = [];
+          i++;
+          next();
+          return;
+        }
         finish(reject, new Error(m.message));
       }
     };
@@ -672,15 +692,20 @@ async function runAnalysis(job) {
       setStep('asr', 'active');
       try {
         const engine = job.asrEngine || 'whisper';
-        const windows = A.asr?.windows || transcriptionWindows(state.speech.regions, ENGINES[engine].window);
-        A.asr = { windows, results: A.asr?.results || {}, done: false };
+        // ReazonSpeech: 長い窓と、話のまとまりごとの2通りで読み、まとまりごとに文字の多い方を使う（asrWindows）
+        const windows = A.asr?.windows || (engine === 'reazon' ? asrWindows(state.speech.regions, state.rmsDb) : transcriptionWindows(state.speech.regions, ENGINES[engine].window));
+        A.asr = { windows, results: A.asr?.results || {}, started: A.asr?.started || {}, done: false };
         const savedN = Object.keys(A.asr.results).length;
         if (savedN) log(`保存済みの文字起こしの区間を再利用: ${savedN}/${windows.length}`);
-        const raw = await transcribe(pcm, windows, bp.asrTerms, {
+        const perWindow = await transcribe(pcm, windows, bp.asrTerms, {
           engine,
           saved: A.asr.results,
           onResult: async (i, chunks) => { A.asr.results[i] = chunks; await persistJob(job); },
+          started: A.asr.started || {},
+          onStart: async i => { A.asr.started = { ...(A.asr.started || {}), [i]: true }; await persistJob(job); },
         });
+        const raw = mergeAsrPasses(windows, perWindow, [...bp.items, ...bp.asrTerms]);
+        if (windows.some(w => w.pass)) log('字幕AIの2通りの読み方', { long: raw.filter(c => c.pass === 'long').length, region: raw.filter(c => c.pass === 'region').length });
         const fine = fineSpeech(state.rmsDb, state.speech.threshold);
         // ReazonSpeech: 1文字ごとの時刻と声の切れ目で文に分け、用語の書き方を直す
         // Whisper: 文ごとの時刻を、無音の切れ目に合わせて割り当て直す
@@ -688,7 +713,7 @@ async function runAnalysis(job) {
         const sentences = engine === 'reazon' && raw.some(c => c.tokens)
           ? tokensToChunks(raw, fine).map(c => fixTerms(c, [...bp.items, ...bp.asrTerms], bp.phrases))
           : alignSentences(raw, state.speech.regions);
-        state.chunks = refineSubtitleTiming(sentences, fine);
+        state.chunks = attachDoubts(refineSubtitleTiming(sentences, fine), raw);
         A.asr = { windows, done: true, chunks: state.chunks };
         await persistJob(job);
         await removeFile(job.id, PCM_NAME);
@@ -775,6 +800,22 @@ async function storeSource(job) {
   }
 }
 
+// 字幕の文に、意味が変わるおそれのある聞き落としの印をつける（chunk.doubts）。
+// raw: 2通りの読み方を比べた結果（否定の言葉・用語の違い）。文の終わりが言葉の途中で終わっている文にもつける
+function attachDoubts(chunks, raw) {
+  return chunks.map((c, i) => {
+    const ds = raw.filter(r => r.doubts?.length && r.end > c.start && r.start < c.end).flatMap(r => r.doubts);
+    const next = chunks[i + 1];
+    // 「…を」「…は」で終わる文は、すぐ後に続きを話しているなら、声の間で文を分けただけ
+    const particle = /[をがは]$/.test((c.text || '').replace(/[、。\s]+$/, ''));
+    if (cutEnding(c.text) && !(particle && next && next.start - c.end < 1.5)) ds.push('文の終わりが途中で切れている可能性（「〜しない」「〜します」など）');
+    return ds.length ? { ...c, doubts: [...new Set(ds)] } : c;
+  });
+}
+
+// 確認がまだの「意味が変わるおそれ」（字幕を手直ししたら、確認済みとして扱う）
+const openDoubts = u => (u.doubts?.length && u.text === u.aiText && !state.doubtOk?.has(u.id)) ? u.doubts : [];
+
 // 確認が必要な字幕（文字起こしの確からしさが低い言葉・入力された用語に直した所）に印をつける（u.check）
 function markChecks(units, chunks) {
   if (!chunks) return;
@@ -793,6 +834,8 @@ function markChecks(units, chunks) {
       }
     }
     u.check = words;
+    // 意味が変わるおそれのある聞き落とし（否定の言葉・文の終わり・用語）
+    u.doubts = [...new Set(chunks.filter(c => c.doubts?.length && c.end > (u.voiceStart ?? u.start) && c.start < (u.voiceEnd ?? u.end)).flatMap(c => c.doubts))];
   }
 }
 
@@ -814,6 +857,7 @@ function applyScript(u) {
     u.text = t;
     u.times = sc.times; // 字幕のページを、原稿の文字を話した時刻で切り替える
     u.check = [];
+    u.doubts = [];
     delete u.offScript;
   } else if (u.asrText) {
     u.offScript = true;
@@ -832,6 +876,7 @@ function makePlan(brief) {
     pace: bp.brief.style === 'tempo' ? 'tempo' : 'natural',
   });
   state.trims = {};
+  state.doubtOk = new Set();
   setBreakTerms(bp.items);
   markChecks(state.units, state.chunks);
   // 原稿があれば、字幕の文字を原稿にする（タイミングは文字起こしの時刻に合わせる）
@@ -987,13 +1032,27 @@ function subtitleEditor(u) {
   // 文字起こしが自信のない言葉・入力された用語に直した所を知らせる（直したら消える）
   const check = document.createElement('p');
   check.className = 'sub-check';
+  const doubt = document.createElement('div');
+  doubt.className = 'sub-doubt';
+  const okBtn = document.createElement('button');
+  okBtn.type = 'button';
+  okBtn.className = 'link-btn';
+  okBtn.textContent = 'このままでよい（確認しました）';
+  okBtn.addEventListener('click', () => { state.doubtOk.add(u.id); saveReview(); showReview(); });
+  const doubtText = document.createElement('span');
+  doubt.append(doubtText, okBtn);
   const showCheck = () => {
     const words = (u.check || []).filter(w => u.text === u.aiText && u.text.includes(w));
     check.textContent = words.length ? `確認してください: ${words.map(w => `「${w}」`).join('')}` : '';
     check.hidden = !words.length;
     box.classList.toggle('needs-check', !!words.length);
+    const ds = openDoubts(u);
+    doubtText.textContent = ds.length ? `要確認（このままでは意味が変わるおそれ）: ${ds.join('・')}。音声を聞いて字幕を直すか、正しければ「このままでよい」を押してください。` : '';
+    doubt.hidden = !ds.length;
+    box.classList.toggle('needs-doubt', !!ds.length);
   };
   box.appendChild(check);
+  box.appendChild(doubt);
   showCheck();
   if (u.subStart == null) return box;
 
@@ -1143,6 +1202,8 @@ function showReview() {
     else {
       const n = chosen.filter(u => u.check?.length && u.text === u.aiText).length;
       if (n) parts.push(`字幕のうち${n}場面に、聞き取りに自信のない言葉があります（オレンジ色の枠）。`);
+      const d = chosen.filter(u => openDoubts(u).length).length;
+      if (d) parts.push(`字幕のうち${d}場面は、否定の言葉・文の終わり・用語を聞き落とした可能性があり、意味が変わるおそれがあります（赤い枠）。確認するまで、字幕は完成していません。`);
     }
   } else parts.push('字幕なしで構成しました。');
   if (!state.src.audio) parts.push('音声がないため、手元の動きだけで選びました。');
@@ -1199,7 +1260,7 @@ function saveReview() {
   if (!job || job.stage !== 'review') return;
   clearTimeout(reviewTimer);
   reviewTimer = setTimeout(() => {
-    job.review = { selected: [...state.selected], brief: readBrief(), trims: { ...state.trims }, opening: state.opening, openingOn: $('optOpening').checked, openingDur: openingDur() };
+    job.review = { selected: [...state.selected], brief: readBrief(), trims: { ...state.trims }, opening: state.opening, openingOn: $('optOpening').checked, openingDur: openingDur(), doubtOk: [...state.doubtOk] };
     job.brief = job.review.brief;
     persistJob(job);
   }, 300);
@@ -1210,6 +1271,10 @@ $('btnRender').addEventListener('click', async () => {
   const clips = state.units.filter(u => state.selected.has(u.id));
   if (!clips.length || !state.job) return;
   const useSubs = !!state.chunks && $('optSubs').checked;
+  // 意味が変わるおそれのある字幕を確認しないまま書き出すときは、はっきり知らせる（完成した字幕とはみなさない）
+  const doubtful = useSubs ? clips.filter(u => openDoubts(u).length) : [];
+  if (doubtful.length && !confirm(`字幕のうち${doubtful.length}場面は、まだ確認されていません（否定の言葉・文の終わり・用語の聞き落としの可能性）。\n${doubtful.slice(0, 5).map(u => `・${formatTime(u.start)}「${u.text.slice(0, 20)}」`).join('\n')}\nこのまま書き出しますか？`)) return;
+  state.doubtfulAtRender = doubtful.map(u => ({ t: u.start, text: u.text, doubts: openDoubts(u) }));
   const useZoom = $('optZoom').checked;
   setBreakTerms(briefPlan(readBrief()).items);
   // 最後の場面は、話し終わりの後を少し延ばしてからフェードアウトする（声にフェードがかからないように）
@@ -1232,10 +1297,10 @@ $('btnRender').addEventListener('click', async () => {
   for (const f of await listFiles(job.id)) if (/^seg-|^output/.test(f.name)) await removeFile(job.id, f.name);
   const segments = planSegments(timeline);
   job.stage = 'render';
-  job.review = { selected: [...state.selected], brief: readBrief(), trims: { ...state.trims }, opening: state.opening, openingOn: $('optOpening').checked, openingDur: openingDur() };
+  job.review = { selected: [...state.selected], brief: readBrief(), trims: { ...state.trims }, opening: state.opening, openingOn: $('optOpening').checked, openingDur: openingDur(), doubtOk: [...state.doubtOk] };
   job.render = {
     timeline, segments, done: segments.map(() => false), gainDb: computeGainDb(clips), overlay, endFade: END_FADE, endHold: END_HOLD,
-    styleNote: styleSummary(timeline, useSubs, useZoom, overlay), outSec, startedAt: Date.now(), elapsed: 0, sessions: 0,
+    styleNote: styleSummary(timeline, useSubs, useZoom, overlay) + (state.doubtfulAtRender?.length ? ` / 字幕の要確認（未確認のまま書き出し）: ${state.doubtfulAtRender.map(d => `${formatTime(d.t)}「${d.text.slice(0, 16)}」`).join('、')}` : ''), outSec, startedAt: Date.now(), elapsed: 0, sessions: 0,
   };
   job.output = null;
   log('演出', job.render.styleNote);
@@ -1482,6 +1547,7 @@ async function continueJob(job, { reselected = false } = {}) {
     const ids = new Set(state.units.map(u => u.id));
     state.selected = new Set(job.review.selected.filter(id => ids.has(id)));
   }
+  state.doubtOk = new Set(job.review?.doubtOk || []);
   // 確認画面で「元に戻す」「取り除く」を選んだ場面を戻す
   for (const [id, v] of Object.entries(job.review?.trims || {})) {
     const u = state.units.find(x => x.id === id);

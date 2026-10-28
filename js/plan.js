@@ -307,6 +307,62 @@ export function transcriptionWindows(regions, maxLen = 28) {
   return windows;
 }
 
+// ReazonSpeech の読み方（2通り）。
+// - 長い窓（30秒まで）: 前後の話があると、文の終わりの言葉（「です」「しない」）や、文の後に続く文を落としにくい。
+//   続けて話している音声（手動編集の音声）で、文字の誤り率 16%→3%
+// - 話のまとまりごと: 長い無音をはさむと、無音の後の話を落とすことがあるため、まとまりごとにも読む
+// まとまりごとに、2通りのうち文字の多い方を使う（mergeAsrPasses）。字幕AIの誤りは、ほとんどが「言葉を落とす」ため
+export const ASR_LONG_WINDOW = 30;
+export function asrWindows(regions, rmsDb, maxLen = ASR_LONG_WINDOW) {
+  // 長すぎるまとまりは、真ん中あたり（全体の1/4〜3/4）の一番静かな所で分ける
+  const split = (a, b) => {
+    if (b - a <= maxLen || !rmsDb) return [{ start: a, end: b }];
+    const i0 = Math.ceil((a + (b - a) / 4) / FRAME_SEC), i1 = Math.floor((b - (b - a) / 4) / FRAME_SEC);
+    let k = i0;
+    for (let i = i0; i <= i1; i++) if (rmsDb[i] < rmsDb[k]) k = i;
+    const t = k * FRAME_SEC;
+    return [...split(a, t), ...split(t, b)];
+  };
+  const segs = regions.flatMap(r => split(r.start, r.end));
+  const long = [];
+  for (const r of segs) {
+    const cur = long[long.length - 1];
+    if (cur && r.end - cur.start <= maxLen) { cur.end = r.end; cur.speech += r.end - r.start; cur.parts.push({ start: r.start, end: r.end }); }
+    else long.push({ start: r.start, end: r.end, speech: r.end - r.start, parts: [{ start: r.start, end: r.end }], pass: 'long' });
+  }
+  const each = segs.map((r, k) => ({ start: r.start, end: r.end, speech: r.end - r.start, parts: [{ start: r.start, end: r.end }], pass: 'region', idx: k }));
+  return [...long, ...each];
+}
+
+// 否定の言葉（意味が逆になるため、聞き落とすと大きな誤りになる）
+const NEGATION_RE = /ない|なかっ|ません|ず[にのともで、。]|ず$|ダメ|だめ/;
+export const hasNegation = text => NEGATION_RE.test(text || '');
+
+// asrWindows の2通りの結果（results[窓の番号] = chunks）から、まとまりごとに文字の多い方を選んで、1つの結果にする。
+// 2通りの聞き取りで、否定の言葉や入力された用語（terms）の有無が違うまとまりには doubts（確認が必要な理由）をつける
+export function mergeAsrPasses(windows, results, terms = []) {
+  const regs = windows.filter(w => w.pass === 'region');
+  if (!regs.length) return windows.flatMap((_, k) => results[k] || []);
+  const count = toks => toks.reduce((n, k) => n + (k.s || '').replace(/[、。\s]/g, '').length, 0);
+  const longTokens = windows.flatMap((w, k) => w.pass === 'long' ? (results[k] || []).flatMap(c => c.tokens || []) : []);
+  const out = [];
+  regs.forEach((r, j) => {
+    const lo = j ? (regs[j - 1].end + r.start) / 2 : -Infinity, hi = j + 1 < regs.length ? (r.end + regs[j + 1].start) / 2 : Infinity;
+    const a = longTokens.filter(k => k.t >= lo && k.t < hi);
+    const wi = windows.indexOf(r);
+    const b = (results[wi] || []).flatMap(c => c.tokens || []).filter(k => k.t >= lo && k.t < hi);
+    const tokens = count(b) > count(a) ? b : a;
+    if (!tokens.length) return;
+    const text = tokens.map(k => k.s).join('');
+    const other = (tokens === b ? a : b).map(k => k.s).join('');
+    const doubts = [];
+    if (other && hasNegation(text) !== hasNegation(other)) doubts.push('否定の言葉（ない・ません）を聞き落としている可能性');
+    for (const t of terms) if (t.length >= 2 && other.includes(t) && !text.includes(t)) doubts.push(`「${t}」を聞き落としている可能性`);
+    out.push({ start: r.start, end: r.end, text, raw: text, timed: true, tokens: tokens.slice().sort((x, y) => x.t - y.t), pass: tokens === b ? 'region' : 'long', alt: other, doubts });
+  });
+  return out;
+}
+
 export function normalizeText(text) {
   return (text || '')
     .replace(/[\s、。，．,.！？!?・「」『』（）()…~〜]+/g, '')
@@ -533,13 +589,27 @@ export function untrimUnit(u) {
 
 // 文の最後の文字の後に、間をおいて文字起こしされていない声が続いている（言いかけてやめた・言い直しの頭などを
 // 字幕AIが聞き落とした）。内容のある言葉かもしれないので自動では取り除かず、取り除ける候補として知らせる
-function untranscribedTail(u, segs) {
+function untranscribedTail(u, segs, rmsDb) {
   const text = u.text || '';
-  if (!u.times || u.times.length !== text.length || segs.length < 2) return;
+  if (!u.times || u.times.length !== text.length || !segs.length) return;
   const lastT = u.times[u.times.length - 1] + CHAR_LAG;
   let k = -1;
   segs.forEach((s, j) => { if (s.start <= lastT + 0.1) k = j; });
-  if (k < 0 || k + 1 >= segs.length || segs[k + 1].start - segs[k].end < 0.15) return;
+  if (k < 0) return;
+  // 最後の文字の後も、間をおかずに 0.5秒以上声が続いている（「…続けないと、うまくいきま」）:
+  // 最後の文字のすぐ後の一番静かな所で切れる候補にする（言葉の切れ目が確かでないので、自動では切らない）
+  if ((k + 1 >= segs.length || segs[k + 1].start - segs[k].end < 0.15) && rmsDb && segs[k].end - lastT >= 0.6) {
+    const i0 = Math.round((lastT + 0.05) / FRAME_SEC), i1 = Math.round(Math.min(lastT + 0.4, segs[k].end - 0.3) / FRAME_SEC);
+    let q = i0;
+    for (let i = i0; i <= i1; i++) if (rmsDb[i] < rmsDb[q]) q = i;
+    if (i1 < i0) return;
+    const cutT = q * FRAME_SEC + FRAME_SEC / 2;
+    const rest = piecesDuration(segs.slice(k).map((s, j) => j ? s : { start: cutT, end: s.end }));
+    u.trimOption = { tail: true, keepEnd: cutT, dropStart: cutT + 0.02, text, reason: '文の後の、文字起こしされていない声' };
+    u.candidate = `文の後に、文字起こしされていない声が約${rest.toFixed(1)}秒続いています（言いかけ・言い直しの可能性があります。不要なら取り除いてください。声が続いているため、切れ目は確かではありません）`;
+    return;
+  }
+  if (k + 1 >= segs.length || segs[k + 1].start - segs[k].end < 0.15) return;
   const rest = piecesDuration(segs.slice(k + 1));
   if (rest < 0.4) return;
   u.trimOption = { tail: true, keepEnd: segs[k].end, dropStart: segs[k + 1].start, text, reason: '文の後の、文字起こしされていない声' };
@@ -603,7 +673,7 @@ export function buildUnits({ duration, rmsDb, speech, chunks, motion, pace }) {
         const fine = c.fine && c.fine.length ? c.fine : [];
         const fEnd = fine.length ? fine[fine.length - 1].end : -Infinity;
         const sp = [...fine, ...segs.filter(r => r.end > fEnd + 0.05).map(r => ({ start: Math.max(r.start, fEnd + 0.05), end: r.end }))];
-        untranscribedTail(u, sp.length ? sp : segs);
+        untranscribedTail(u, sp.length ? sp : segs, rmsDb);
       }
       units.push(u);
     });

@@ -108,6 +108,8 @@ self.onmessage = e => {
 const asrRequests = [];
 const browser = await chromium.launch({ executablePath: process.env.CHROME_PATH, args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
 page = await browser.newPage({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2 });
+// 書き出し前の確認（字幕の要確認が残っているとき）は、内容を記録してから「はい」を選ぶ
+page.on('dialog', async d => { console.log('[確認ダイアログ] ' + d.message().replace(/\n/g, ' / ')); await d.accept(); });
 const logs = [];
 page.on('console', m => logs.push(`[${m.type()}] ${m.text()}`));
 page.on('pageerror', e => logs.push('[pageerror] ' + e.message));
@@ -351,6 +353,7 @@ try {
         id: u.id, kind: u.kind, start: +u.start.toFixed(2), end: +u.end.toFixed(2), dur: +u.duration.toFixed(2),
         text: u.text, excluded: u.excluded || null, score: +u.score.toFixed(2), cx: +u.cx.toFixed(2),
         selected: s.selected.has(u.id), reasons: u.reasons, mustKeep: u.mustKeep || null,
+        candidate: u.candidate || null, doubts: u.doubts || [], trimOption: !!u.trimOption,
       })),
     };
   });
@@ -367,7 +370,7 @@ try {
     console.log(`構成し直し（${replan}秒）: ${await page.$eval('#total', el => el.textContent)} / ${await page.$eval('#fit', el => el.textContent)}`);
   }
   for (const u of plan.units) {
-    console.log(`${u.selected ? '■' : '□'} ${u.kind.padEnd(6)} ${u.start.toFixed(1).padStart(6)}-${u.end.toFixed(1).padStart(6)} score=${u.score} ${u.mustKeep ? '[必ず残す] ' : ''}${u.excluded ? '[除外:' + u.excluded + '] ' : ''}${u.text}`);
+    console.log(`${u.selected ? '■' : '□'} ${u.kind.padEnd(6)} ${u.start.toFixed(1).padStart(6)}-${u.end.toFixed(1).padStart(6)} score=${u.score} ${u.mustKeep ? '[必ず残す] ' : ''}${u.excluded ? '[除外:' + u.excluded + '] ' : ''}${u.text}${u.doubts?.length ? '  [要確認: ' + u.doubts.join('・') + ']' : ''}${u.candidate ? '  [候補: ' + u.candidate + ']' : ''}`);
   }
   await page.screenshot({ path: path.join(dir, `review-${tag}.png`), fullPage: true });
 

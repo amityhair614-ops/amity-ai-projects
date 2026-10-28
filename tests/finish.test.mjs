@@ -210,3 +210,20 @@ test('文字起こしをしたのに文字にならなかった短い声（2秒�
   const sel = selectUnits(units, 10, 7, 9).map(u => u.id);
   assert.deepEqual(sel, ['a', 'c']);
 });
+
+test('意味が変わるおそれのある聞き落とし: 2通りの聞き取りで否定・用語が違う、文の終わりが言葉の途中', async () => {
+  const { mergeAsrPasses, hasNegation } = await import('../js/plan.js');
+  const { cutEnding } = await import('../js/asrtext.js');
+  assert.ok(hasNegation('根元付近は軽くしない') && hasNegation('カバーできません') && !hasNegation('カバーできます'));
+  const tok = (t, s) => ({ t, s, p: 1 });
+  const w = [{ start: 0, end: 5, pass: 'long' }, { start: 0, end: 5, pass: 'region', idx: 0 }];
+  // 文字の多い方（うまくカバーできます）を使っても、もう一方に否定の言葉があれば知らせる
+  const r = mergeAsrPasses(w, { 0: [{ tokens: [...'うまくカバーできません'].map((c, i) => tok(i * 0.1, c)) }], 1: [{ tokens: [...'うまくカバーできますね'].map((c, i) => tok(i * 0.1, c)) }] }, ['ヘアカッター']);
+  assert.ok(r[0].doubts.some(d => d.includes('否定')));
+  const r2 = mergeAsrPasses(w, { 0: [{ tokens: [...'ヘアカッターです'].map((c, i) => tok(i * 0.1, c)) }], 1: [{ tokens: [...'へあかったあですよね'].map((c, i) => tok(i * 0.1, c)) }] }, ['ヘアカッター']);
+  assert.ok(r2[0].doubts.some(d => d.includes('ヘアカッター')));
+  // 文の終わりが言葉の途中
+  assert.ok(cutEnding('となればトップ表面の根元付近は軽く'));
+  assert.ok(cutEnding('根元付近は軽くし'));
+  for (const t of ['セルフカットやってみてください', '修正カットができない', 'この場所を軽くしてしまうと', 'それはどこなのか', 'うまくカバーできます']) assert.ok(!cutEnding(t), t);
+});
