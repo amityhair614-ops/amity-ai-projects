@@ -245,3 +245,8 @@ test('文の始まりの言葉（あとは）の途中で文が分かれたと�
   const chunks = tokensToChunks(raw, [{ start: 0, end: 1.25 }, { start: 1.85, end: 3.1 }]);
   assert.deepEqual(chunks.map(c => c.text.replace(/[、。]/g, '')), ['原因になってしまい', 'あとはうまく切りづらい']);
 });
+
+test('字幕の区切り: 話し言葉の「〜てる」「〜てた」を分けない', () => {
+  const lines = subtitlePages('それは100均に売ってるアイテムにあります', 2).flatMap(p => p.lines);
+  assert.ok(!lines.some(l => l.startsWith('る')), lines.join('／'));
+});
