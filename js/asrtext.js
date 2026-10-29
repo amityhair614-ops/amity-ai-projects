@@ -45,17 +45,20 @@ export function tokensToChunks(raw, fine = []) {
   const groups = [];
   let cur = [];
   const flush = () => { if (cur.length) groups.push(cur); cur = []; };
-  for (const k of tokens) {
+  for (const [ti, k] of tokens.entries()) {
     if (cur.length) {
       const prev = cur[cur.length - 1];
       const pause = fine.length ? pauseBetween(fine, prev.t, k.t) : Math.max(0, k.t - prev.t - 0.35);
       const sofar = cur.map(x => x.s).join('');
       // 文を分ける: 長い間 / 文の終わりらしい語尾（次が「が」「と」などの続きの言葉でない）のあとの間 / 長くなった文の間
-      const cont = CONTINUE_HEAD_RE.test(k.s), weakCont = WEAK_CONTINUE_RE.test(k.s);
+      // 「〜ない｜ように」「〜する｜ような」は、間があっても同じ文の続き
+      const ahead = tokens.slice(ti, ti + 3).map(x => x.s).join('');
+      const yoCont = /^よう[にな]/.test(ahead);
+      const cont = CONTINUE_HEAD_RE.test(k.s), weakCont = WEAK_CONTINUE_RE.test(k.s) || yoCont;
       const inWord = isKana(sofar[sofar.length - 1]) && isKana(k.s[0]); // カタカナ語の途中（「ヘ／アカッター」）では分けない
       const brk = pause >= 0.55 || (!cont && SENTENCE_END_RE.test(sofar) && pause >= 0.12) || (!weakCont && WEAK_END_RE.test(sofar) && pause >= 0.3)
         || (sofar.length >= 40 && pause >= 0.3) || k.t - prev.t > 2.5;
-      if (brk && !(inWord && pause < 0.8)) flush();
+      if (brk && !(inWord && pause < 0.8) && !(yoCont && pause < 0.55)) flush();
       // 読点: 「〜て」「〜ので」などのあとの、はっきりした間 / 長い間 / 同じ言葉で言い直した所（「このような、このような」）。
       // 「トップ」の「ッ」のような言葉の中の無音・1〜2文字の言葉（「で、も」）のあとには入れない
       else {

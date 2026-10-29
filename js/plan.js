@@ -1050,6 +1050,8 @@ function breakScore(text, i, inside, pause = 0) {
   if (!prev || !next || NO_LINE_START.includes(next) || next === 'ん') return -Infinity;
   // 否定・打ち消しの言葉を前の言葉から離さない（「軽く／しないように」と分けると、前のページだけで意味が逆になる）
   if (NEGATION_HEAD_RE.test(text.slice(i)) || (prev === 'く' && /^(?:し|な|さ)/.test(text.slice(i)))) return -Infinity;
+  // 「〜ない／ように」「〜する／ような」と、「よう」を前の言葉から切り離さない
+  if (/^よう[にな]/.test(text.slice(i)) && charType(prev) === 'hira') return -Infinity;
   // 文の終わりの言葉（「です／よね」「ます／よ」）を切り離さない
   if (/(?:です|ます|ません|でした|ました|だ)$/.test(text.slice(0, i)) && /^(?:よね|よ|ね|か)/.test(text.slice(i)) && !SENTENCE_STARTS.some(w => text.startsWith(w, i))) return -Infinity;
   if (inside && inside.has(i)) return -6; // 「すき／バサミ」のように用語の途中では切らない
