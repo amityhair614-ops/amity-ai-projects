@@ -1437,7 +1437,8 @@ async function runRender(job) {
     await persistJob(job);
     show(1, `書き出し完了（${formatSec((performance.now() - t0) / 1000)}${R.sessions > 1 ? `・${R.sessions}回に分けて処理、保存済みの区間 ${reused}個を再利用` : ''}）`);
     jobEnd('done');
-    log('書き出し完了', { sizeMB: +(out.size / 1e6).toFixed(1), sec: Math.round((performance.now() - t0) / 1000), sessions: R.sessions, reused });
+    // 完成動画1秒あたりの処理時間（iPhone の速さの目安）と、実際のビットレート
+    log('書き出し完了', { sizeMB: +(out.size / 1e6).toFixed(1), sec: Math.round((performance.now() - t0) / 1000), sessions: R.sessions, reused, secPerOutSec: +(R.elapsed / Math.max(1, R.outSec)).toFixed(2), mbps: +(out.size * 8 / Math.max(1, R.outSec) / 1e6).toFixed(1) });
     showResult(out, R.timeline);
   } catch (err) {
     jobEnd('error', err);

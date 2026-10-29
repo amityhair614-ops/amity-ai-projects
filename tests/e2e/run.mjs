@@ -317,7 +317,7 @@ try {
     const truthText = transcript.filter(c => !c.retake).map(c => c.text).join('');
     const got = chunks.map(c => c.text).join('');
     console.log('文字の一致率（正解との比較・目安）: ' + charAgreement(truthText, got));
-    if (transcript[0].phrases) {
+    if (transcript[0]?.phrases) {
       // 話した内容（言い直し前の発言も含む）と、文字起こし全体の一致率
       const said = transcript.map(c => c.retake ? c.phrases.map(p => p.text).join('') : c.text).join('');
       console.log('話した内容との一致率（言い直しも含む）: ' + charAgreement(said, got));
@@ -412,7 +412,7 @@ try {
     const probe = execSync(`ffprobe -v error -show_entries stream=codec_name,width,height:format=duration -of compact "${outFile}"`, { encoding: 'utf8' });
     console.log('ffprobe: ' + probe.trim().replace(/\n/g, ' | '));
   } catch {}
-  if ((realAsr || reazon) && transcript[0].phrases) await evaluateOutputTiming();
+  if ((realAsr || reazon) && transcript[0]?.phrases) await evaluateOutputTiming();
   if (editExpect) {
     const subs = await page.evaluate(() => window.amityDebug.timeline.flatMap(c => c.subtitles.map(p => p.lines.join(''))).join(''));
     const first = await page.evaluate(() => window.amityDebug.timeline.find(c => c.subtitles.length).subtitles.map(p => `${p.start.toFixed(2)}-${p.end.toFixed(2)} ${p.lines.join('／')}`).join(' | '));

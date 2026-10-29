@@ -390,21 +390,22 @@ const FONT_SIZE = 42;
 const LINE_HEIGHT = 1.4;
 const MAX_TEXT_W = OUT_W * 0.86;
 
-// 冒頭のテキスト: 白の太いゴシック体・大きめ・薄い黒の影（背景の帯はつけない）
-const TITLE_SIZE = 96;
-const TITLE_LINE_HEIGHT = 1.28;
-const TITLE_MAX_W = OUT_W * 0.84;
+// 冒頭のテキスト: 白の太いゴシック体・大きめ・黒の縁取り（手動編集のお手本と同じ。背景の帯はつけない）
+const TITLE_SIZE = 108;
+const TITLE_LINE_HEIGHT = 1.22;
+const TITLE_MAX_W = OUT_W * 0.86;
+const TITLE_OUTLINE = 0.13; // 縁取りの太さ（文字の大きさに対する割合）
 
 function drawOpening(ctx, op, t) {
   const alpha = openingAlpha(op, t);
   if (alpha <= 0) return;
   ctx.save();
   let size = TITLE_SIZE;
-  ctx.font = `800 ${size}px ${FONT_FAMILY}`;
-  const widest = Math.max(...op.lines.map(l => ctx.measureText(l).width));
+  ctx.font = `900 ${size}px ${FONT_FAMILY}`;
+  const widest = Math.max(...op.lines.map(l => ctx.measureText(l).width)) + size * TITLE_OUTLINE;
   if (widest > TITLE_MAX_W) {
     size = Math.floor(size * TITLE_MAX_W / widest);
-    ctx.font = `800 ${size}px ${FONT_FAMILY}`;
+    ctx.font = `900 ${size}px ${FONT_FAMILY}`;
   }
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
@@ -412,13 +413,17 @@ function drawOpening(ctx, op, t) {
   ctx.fillStyle = '#ffffff';
   const lh = size * TITLE_LINE_HEIGHT;
   const firstY = OUT_H * op.y - ((op.lines.length - 1) * lh) / 2;
-  // 影は2重（近くの薄い影で輪郭を読みやすく、広い影で明るい背景でも浮かせる）
-  for (const [color, blur, dy] of [['rgba(0, 0, 0, 0.35)', 18, 4], ['rgba(0, 0, 0, 0.45)', 4, 2]]) {
-    ctx.shadowColor = color;
-    ctx.shadowBlur = blur;
-    ctx.shadowOffsetY = dy;
-    op.lines.forEach((line, i) => ctx.fillText(line, OUT_W / 2, firstY + i * lh));
-  }
+  // 黒の縁取り（角を丸くする）の上に白い文字。縁取りに薄い影をつけて、明るい背景でも浮かせる
+  ctx.lineJoin = 'round';
+  ctx.miterLimit = 2;
+  ctx.lineWidth = size * TITLE_OUTLINE;
+  ctx.strokeStyle = 'rgba(0, 0, 0, 0.9)';
+  ctx.shadowColor = 'rgba(0, 0, 0, 0.35)';
+  ctx.shadowBlur = 10;
+  ctx.shadowOffsetY = 3;
+  op.lines.forEach((line, i) => ctx.strokeText(line, OUT_W / 2, firstY + i * lh));
+  ctx.shadowColor = 'transparent';
+  op.lines.forEach((line, i) => ctx.fillText(line, OUT_W / 2, firstY + i * lh));
   ctx.restore();
 }
 

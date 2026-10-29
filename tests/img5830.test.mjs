@@ -9,7 +9,7 @@ import { loadFixture, planFixture, compare } from './reference.mjs';
 const dir = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures/img5830');
 const { analysis, manual } = loadFixture(dir);
 const { timeline } = planFixture(analysis);
-const cmp = compare(manual, timeline);
+const cmp = compare(manual, timeline, analysis);
 
 test('IMG_5830: 完成の長さが 40〜42秒（お手本 40.93秒）', () => {
   assert.ok(cmp.outSec >= 40 && cmp.outSec <= 42, `${cmp.outSec.toFixed(2)}秒`);
@@ -50,4 +50,10 @@ test('IMG_5830: 字幕の意味が変わらない（否定を切り離さない�
   assert.ok(!all.includes('それもある') && !all.includes('つむじつむつ'), '言い直しの字幕');
   assert.ok(all.includes('すきバサミ') && !all.includes('きばさみ使'), '「すきばさみ」の文の区切り');
   for (const w of ['軽くしないように', '取り返しがつかない', '修正カットができない']) assert.ok(all.includes(w), w);
+});
+
+test('IMG_5830: 話の途中の間と字幕の切れ目が手動編集と同じくらい', () => {
+  const p = cmp.pauses, m = manual.pauses;
+  assert.ok(Math.abs(p.median - m.median) <= 0.06 && Math.abs(p.p90 - m.p90) <= 0.06 && p.max <= m.max + 0.05, JSON.stringify(p));
+  assert.ok(cmp.breaks.recall >= 0.75, `${(cmp.breaks.recall * 100).toFixed(0)}% ${cmp.breaks.missed.join(' / ')}`);
 });

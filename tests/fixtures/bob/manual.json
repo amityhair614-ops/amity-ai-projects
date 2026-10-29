@@ -1,0 +1,272 @@
+{
+ "source": "Amity_auto_for_Claude.mov（48.87秒。v0.9.0 のAI編集。元の撮影ではない）",
+ "manual": "Amity_manual_for_Claude.mov（46.14秒）",
+ "note": "手動編集（正解）と、v0.9.0 のAI編集の照合結果。元の撮影動画がないため、v0.9.0 のAI編集（言い直しの多くは削ってある）を元の動画の代わりにした。kept/removed は代わりの動画の秒。subtitles は手動編集の字幕（意味のまとまりの正解）。spoken は字幕の範囲の発言",
+ "kept": [
+  {
+   "srcStart": 0.0,
+   "srcEnd": 9.1,
+   "outStart": 0.0,
+   "outEnd": 9.1
+  },
+  {
+   "srcStart": 9.37,
+   "srcEnd": 16.3,
+   "outStart": 9.4,
+   "outEnd": 16.33
+  },
+  {
+   "srcStart": 16.73,
+   "srcEnd": 26.9,
+   "outStart": 16.27,
+   "outEnd": 26.44
+  },
+  {
+   "srcStart": 27.33,
+   "srcEnd": 34.37,
+   "outStart": 26.23,
+   "outEnd": 33.27
+  },
+  {
+   "srcStart": 34.57,
+   "srcEnd": 48.23,
+   "outStart": 33.13,
+   "outEnd": 46.79
+  }
+ ],
+ "removed": [
+  {
+   "srcStart": 9.1,
+   "srcEnd": 9.37,
+   "dur": 0.27
+  },
+  {
+   "srcStart": 16.3,
+   "srcEnd": 16.73,
+   "dur": 0.43
+  },
+  {
+   "srcStart": 26.9,
+   "srcEnd": 27.33,
+   "dur": 0.43
+  },
+  {
+   "srcStart": 34.37,
+   "srcEnd": 34.57,
+   "dur": 0.2
+  },
+  {
+   "srcStart": 48.23,
+   "srcEnd": 48.87,
+   "dur": 0.64
+  }
+ ],
+ "subtitles": [
+  {
+   "text": "セルフカットで",
+   "outStart": 0.8,
+   "outEnd": 1.6,
+   "srcStart": 0.8,
+   "srcEnd": 1.6,
+   "chars": 7
+  },
+  {
+   "text": "伸びて重くなったボブを軽くしていく際",
+   "outStart": 1.6,
+   "outEnd": 5.47,
+   "srcStart": 1.6,
+   "srcEnd": 5.47,
+   "chars": 18
+  },
+  {
+   "text": "この場所は絶対にすかないでください",
+   "outStart": 5.5,
+   "outEnd": 8.1,
+   "srcStart": 5.5,
+   "srcEnd": 8.1,
+   "chars": 17
+  },
+  {
+   "text": "それはどこなのか",
+   "outStart": 8.17,
+   "outEnd": 9.37,
+   "srcStart": 8.17,
+   "srcEnd": 9.37,
+   "chars": 8
+  },
+  {
+   "text": "トップの根元付近です",
+   "outStart": 9.6,
+   "outEnd": 12.83,
+   "srcStart": 9.57,
+   "srcEnd": 12.8,
+   "chars": 10
+  },
+  {
+   "text": "この場所を軽くしてしまうと、",
+   "outStart": 13.03,
+   "outEnd": 16.37,
+   "srcStart": 13.0,
+   "srcEnd": 16.83,
+   "chars": 13
+  },
+  {
+   "text": "アホ毛のようなピンピンした髪の毛がたくさんできてしまう",
+   "outStart": 16.43,
+   "outEnd": 20.73,
+   "srcStart": 16.89,
+   "srcEnd": 21.19,
+   "chars": 27
+  },
+  {
+   "text": "まとまりつかないようになってしまいます",
+   "outStart": 21.07,
+   "outEnd": 23.5,
+   "srcStart": 21.53,
+   "srcEnd": 23.96,
+   "chars": 19
+  },
+  {
+   "text": "傷んでも見えやすいです",
+   "outStart": 23.97,
+   "outEnd": 26.23,
+   "srcStart": 24.43,
+   "srcEnd": 26.69,
+   "chars": 11
+  },
+  {
+   "text": "こうなってしまうと髪の毛が伸びないと修正カットができないです",
+   "outStart": 26.4,
+   "outEnd": 31.53,
+   "srcStart": 26.86,
+   "srcEnd": 32.63,
+   "chars": 30
+  },
+  {
+   "text": "下手すれば半年以上伸ばし続けないと",
+   "outStart": 31.57,
+   "outEnd": 34.87,
+   "srcStart": 32.67,
+   "srcEnd": 36.31,
+   "chars": 17
+  },
+  {
+   "text": "うまくカバーできません",
+   "outStart": 35.8,
+   "outEnd": 38.2,
+   "srcStart": 37.24,
+   "srcEnd": 39.64,
+   "chars": 11
+  },
+  {
+   "text": "となれば、トップ表面の根元付近は軽くしない",
+   "outStart": 38.43,
+   "outEnd": 42.2,
+   "srcStart": 39.87,
+   "srcEnd": 43.64,
+   "chars": 20
+  },
+  {
+   "text": "それを頭に入れてセルフカットをやってみてください",
+   "outStart": 42.47,
+   "outEnd": 46.07,
+   "srcStart": 43.91,
+   "srcEnd": 47.51,
+   "chars": 24
+  }
+ ],
+ "spoken": [
+  {
+   "start": 0.8,
+   "end": 1.6,
+   "text": "セルフカットで",
+   "retake": false
+  },
+  {
+   "start": 1.6,
+   "end": 5.47,
+   "text": "伸びて重くなったボブを軽くしていく際",
+   "retake": false
+  },
+  {
+   "start": 5.5,
+   "end": 8.1,
+   "text": "この場所は絶対にすかないでください",
+   "retake": false
+  },
+  {
+   "start": 8.17,
+   "end": 9.37,
+   "text": "それはどこなのか",
+   "retake": false
+  },
+  {
+   "start": 9.57,
+   "end": 12.8,
+   "text": "トップの根元付近です",
+   "retake": false
+  },
+  {
+   "start": 13.0,
+   "end": 16.83,
+   "text": "この場所を軽くしてしまうと、",
+   "retake": false
+  },
+  {
+   "start": 16.89,
+   "end": 21.19,
+   "text": "アホ毛のようなピンピンした髪の毛がたくさんできてしまう",
+   "retake": false
+  },
+  {
+   "start": 21.53,
+   "end": 23.96,
+   "text": "まとまりつかないようになってしまいます",
+   "retake": false
+  },
+  {
+   "start": 24.43,
+   "end": 26.69,
+   "text": "傷んでも見えやすいです",
+   "retake": false
+  },
+  {
+   "start": 26.86,
+   "end": 32.63,
+   "text": "こうなってしまうと髪の毛が伸びないと修正カットができないです",
+   "retake": false
+  },
+  {
+   "start": 32.67,
+   "end": 36.31,
+   "text": "下手すれば半年以上伸ばし続けないと",
+   "retake": false
+  },
+  {
+   "start": 37.24,
+   "end": 39.64,
+   "text": "うまくカバーできません",
+   "retake": false
+  },
+  {
+   "start": 39.87,
+   "end": 43.64,
+   "text": "となれば、トップ表面の根元付近は軽くしない",
+   "retake": false
+  },
+  {
+   "start": 43.91,
+   "end": 47.51,
+   "text": "それを頭に入れてセルフカットをやってみてください",
+   "retake": false
+  }
+ ],
+ "duration": 46.14,
+ "pauses": {
+  "median": 0.15,
+  "p75": 0.25,
+  "p90": 0.3,
+  "max": 0.45,
+  "note": "手動編集の動画の音声を、アプリと同じ方法（50msごとの音量・細かい声の区間）で測った話の途中の間（1.5秒未満）"
+ }
+}

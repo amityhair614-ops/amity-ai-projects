@@ -228,11 +228,12 @@ export function detectSpeech(rmsDb, opts = {}) {
 // keepGap: 文の中でこれより短い間はそのまま残す / maxGap: 文の中の長い間は、ここまで縮める
 // natural は手動編集のお手本（無音の間の中央値 約0.2秒・90%が0.33秒以下・最長0.44秒）に合わせている。
 // 語尾は detectSpeech で消えていく小さな音まで含めてから tail を足すので、間を詰めても語尾は切れない
-// 文の中の息継ぎの間は、細かい声の区間（fineSpeech）のすき間で測る（splitAtPauses）。お手本の手動編集は、
-// 0.25秒以上の息継ぎの間を 0.05〜0.2秒まで詰めていた（固定テスト素材 tests/fixtures/img5830）
+// 文の中の息継ぎの間は、細かい声の区間（fineSpeech）のすき間で測る（splitAtPauses）。
+// natural は、手動編集2本（tests/fixtures/img5830・bob）の音声で同じだった間の長さ（話の途中の間の中央 0.15秒・
+// 90% 0.30秒・最長 0.45秒）になるように決めた。1本の動画の長さに合わせたものではない
 export const PACES = {
-  natural: { lead: 0.1, tail: 0.18, keepGap: 0.22, minGap: 0.14, maxGap: 0.22 },
-  tempo: { lead: 0.08, tail: 0.15, keepGap: 0.2, minGap: 0.12, maxGap: 0.18 },
+  natural: { lead: 0.1, tail: 0.18, keepGap: 0.26, minGap: 0.2, maxGap: 0.3 },
+  tempo: { lead: 0.08, tail: 0.15, keepGap: 0.22, minGap: 0.16, maxGap: 0.24 },
 };
 
 // 声の区間 segs を、その中の息継ぎの間（細かい声の区間 fine のすき間が minGap 以上）で分ける。
@@ -1027,11 +1028,12 @@ function sentenceBoundary(text, i) {
   if (!before || after.length < 2) return false;
   if (/[。！？!?]$/.test(text.slice(0, i))) return true;
   if (PLAIN_END_RE.test(before) && SENTENCE_STARTS.some(w => after.startsWith(w))) return true;
-  return STRONG_END_RE.test(before) && !/^[がけかよねのとしなわでもにはを]/.test(after);
+  return STRONG_END_RE.test(before) && (!/^[がけかよねのとしなわでもにはを]/.test(after) || SENTENCE_STARTS.some(w => after.startsWith(w)));
 }
 
 // 次の文の始まりによく使う言葉
-const SENTENCE_STARTS = ['しかも', 'それは', 'それを', 'それで', 'そして', 'この場所', 'このよう', 'その', 'でも', 'なので', 'だから', 'ですので', 'まず', '次に', 'あとは', 'ただ', 'となれば', 'こうなって', '下手すれば', 'そうなら'];
+// （特定の動画の言葉ではなく、一般的な接続の言葉・指示の言葉。前の語尾と合わせて判断する）
+const SENTENCE_STARTS = ['それは', 'それを', 'それで', 'それが', 'そして', 'しかも', 'また', 'さらに', 'でも', 'しかし', 'ただ', 'なので', 'だから', 'ですので', 'そのため', 'つまり', '例えば', 'まず', '次に', '最後に', 'あとは', 'もし', 'となれば', '下手すれば', 'この', 'その', 'こう', 'そう'];
 // 区切りやすい語尾（この後で区切ると、意味のまとまりで分かれる）
 const GOOD_ENDINGS = ['際', 'ように', 'ために', 'ので', 'から', 'けど', 'けれど', 'ても', 'たら', 'れば', 'なら', 'ながら', 'まで', 'より', 'など', 'とき', 'ときに', '際に', '時に', '場合は', '場合', 'なのか', 'ます', 'です', 'ました', 'でした', 'ません', 'ください'];
 // 助詞のあとにひらがなが続いても、ひとまとまりの言葉になる組み合わせ（「には」「でも」「です」「できる」など）
@@ -1048,6 +1050,8 @@ function breakScore(text, i, inside, pause = 0) {
   if (!prev || !next || NO_LINE_START.includes(next) || next === 'ん') return -Infinity;
   // 否定・打ち消しの言葉を前の言葉から離さない（「軽く／しないように」と分けると、前のページだけで意味が逆になる）
   if (NEGATION_HEAD_RE.test(text.slice(i)) || (prev === 'く' && /^(?:し|な|さ)/.test(text.slice(i)))) return -Infinity;
+  // 文の終わりの言葉（「です／よね」「ます／よ」）を切り離さない
+  if (/(?:です|ます|ません|でした|ました|だ)$/.test(text.slice(0, i)) && /^(?:よね|よ|ね|か)/.test(text.slice(i)) && !SENTENCE_STARTS.some(w => text.startsWith(w, i))) return -Infinity;
   if (inside && inside.has(i)) return -6; // 「すき／バサミ」のように用語の途中では切らない
   let sc = grammarScore(text, i, inside, prev, next);
   // 声の間は意味の切れ目の手がかり。ただし、言葉の途中らしい所（「でき」「アホ／毛」「こ／の」）では、間があっても優先しない
@@ -1069,8 +1073,8 @@ function grammarScore(text, i, inside, prev, next) {
   // 次の文の始まりらしい言葉（「…しない／それを」「…です／この場所を」）。字幕AIは句読点を出さないため
   if (!PARTICLES.includes(prev) && SENTENCE_STARTS.some(w => text.startsWith(w, i)) && charType(prev) !== 'kata') return 3;
   const before = text.slice(0, i);
-  // 「〜ないと／」「〜しまうと／」「〜すると／」: 条件の「と」のあとは区切りやすい
-  if (prev === 'と' && 'いうるたすく'.includes(text[i - 2] || '') && b !== 'hira' || /(?:ないと|うと|ると)$/.test(before) && !PARTICLE_PAIRS.includes('と' + next)) return 3;
+  // 「〜ないと／」「〜しまうと／」「〜すると／」: 条件の「と」のあとは、「〜なら」「〜れば」と同じく意味のまとまりの終わり
+  if (prev === 'と' && 'いうるたすく'.includes(text[i - 2] || '') && b !== 'hira' || /(?:ないと|うと|ると)$/.test(before) && !PARTICLE_PAIRS.includes('と' + next)) return 3.5;
   // 「〜ように／なって」「〜ので／」「〜ます／」: 意味のまとまりの終わり
   if (GOOD_ENDINGS.some(e => before.endsWith(e)) && !PARTICLES.includes(next)) return 3.5;
   // 「て・で」＋補助の言葉は分けない（「して／しまう」）
@@ -1156,7 +1160,7 @@ function linePages(text, maxChars, pauseAt) {
   const lenCost = n => (n < 4 ? 6 : 0) + 0.06 * (n - SUB_TARGET_CHARS) ** 2 + 1;
   // 文の境目（字幕AIは句点を出さないので、語尾と次の文の始まりの言葉から判断する）をまたぐページは作らない
   const ends = [];
-  for (let k = 1; k < L; k++) if (sentenceBoundary(text, k)) ends.push(k);
+  for (let k = 1; k < L; k++) if (!/[、。,\s]/.test(text[k]) && sentenceBoundary(text, k)) ends.push(k); // 読点の前ではなく後を境目とする
   const cost = new Array(L + 1).fill(Infinity), from = new Array(L + 1).fill(-1);
   cost[0] = 0;
   for (let j = 1; j <= L; j++) {
