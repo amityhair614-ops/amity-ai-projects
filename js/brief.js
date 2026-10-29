@@ -1,7 +1,7 @@
 // 編集前に入力する「動画の情報」（タイトル・内容・伝えたいこと・流れ・必ず残したい場面・希望時間・編集スタイル）。
 // どれも任意。入力された言葉は、場面の点数・必ず残す場面・選び方・文字起こしの用語に使う。
 // 入力から字幕の文字や場面を作ることはしない（話していない言葉を足さない・元の映像の順番を変えない）
-import { KEYWORDS, BEAUTY_TERMS, normalizeText, similarity, targetTolerance, outputLength } from './plan.js';
+import { KEYWORDS, BEAUTY_TERMS, normalizeText, similarity, targetTolerance, outputLength, formatTime } from './plan.js';
 import { kanaPhrases } from './asrtext.js';
 
 export const FORMATS = {
@@ -153,7 +153,35 @@ export function applyBrief(units, bp) {
       if (next && !next.reasons.includes('説明の続きの作業')) { next.score += 1.2; next.reasons.push('説明の続きの作業'); }
     }
   }
+  // 伝えたいことをくり返した発言（最後のまとめ）は、同じ説明のくり返しとして外さない（言い直しの合図・言いかけは外したまま）
+  if (bp.brief?.message?.trim()) {
+    for (const u of units) {
+      if (u.kind !== 'speech' || !u.text || !/^同じ説明のくり返し/.test(u.excluded || '')) continue;
+      if (matchStrength(bp.brief.message, u.text) < MUST_MIN) continue;
+      u.excluded = undefined;
+      u.reasons.push('伝えたいことのくり返し（まとめ）のため残しました');
+    }
+  }
   return { must };
+}
+
+// 構成の判断の一覧（確認画面に出す）: 伝えたいことに合う発言をどう扱ったか・話の内容から外した所・取り除いた所。
+// selected: 選んだ場面の id の集合
+export function briefDecisions(units, bp, selected) {
+  const out = [];
+  const q = t => `「${t.length > 18 ? t.slice(0, 18) + '…' : t}」`;
+  const msg = bp?.brief?.message?.trim();
+  if (msg) {
+    const hits = units.filter(u => u.kind === 'speech' && u.text && matchStrength(msg, u.text) >= 0.5);
+    out.push(hits.length
+      ? `伝えたいこと「${msg.slice(0, 30)}」に合う発言: ${hits.map(u => `${formatTime(u.start)}${q(u.text)}${selected.has(u.id) ? '' : '（使っていません）'}`).join('、')}`
+      : `伝えたいこと「${msg.slice(0, 30)}」に合う発言は見つかりませんでした（入力の文章を字幕や説明に足すことはしていません）。`);
+  }
+  const dropped = units.filter(u => u.kind === 'speech' && u.text && u.excluded && u.excluded !== 'つなぎ言葉のみ');
+  if (dropped.length) out.push(`言い直し・くり返しとして外した発言: ${dropped.map(u => `${formatTime(u.start)}${q(u.text)}（${u.excluded}）`).join('、')}`);
+  const trimmed = units.filter(u => u.trimmed && selected.has(u.id));
+  if (trimmed.length) out.push(`発言の一部を取り除いた所: ${trimmed.map(u => `${formatTime(u.start)} ${u.trimmed.reason}`).join('、')}`);
+  return out;
 }
 
 // テンポ重視: 長い場面より、短くまとまった場面を選びやすくする

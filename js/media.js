@@ -383,10 +383,10 @@ function toAudioBuffer(data, sr, from, to) {
 
 // ---------- 書き出し ----------
 
-// 字幕: 白の読みやすいゴシック体・最大2行・薄い黒の影。文字は動かさず、不透明度だけで出し入れする。
-// 大きさは手動編集のお手本（画面の幅に対して小さめ）に近づけ、髪や手元を隠す面積を減らしている
+// 字幕: 白の読みやすいゴシック体・1行・薄い黒の影。文字は動かさず、不透明度だけで出し入れする。
+// 大きさは手動編集のお手本（文字の高さが画面の幅の約3.2%＝1080の幅で約34px）に合わせ、髪や手元を隠す面積を減らしている
 const FONT_FAMILY = '"Hiragino Sans", "Hiragino Kaku Gothic ProN", "Noto Sans JP", "IPAGothic", sans-serif';
-const FONT_SIZE = 50;
+const FONT_SIZE = 42;
 const LINE_HEIGHT = 1.4;
 const MAX_TEXT_W = OUT_W * 0.86;
 

@@ -1,0 +1,345 @@
+{
+ "source": "IMG_5830.mp4 (48.67s)",
+ "manual": "タイトルなし(9).mp4 (40.93s)",
+ "ai": "amity-short-20261029-0828.mp4 (45.80s)",
+ "kept": [
+  {
+   "srcStart": 0.4,
+   "srcEnd": 7.57,
+   "outStart": 0.0,
+   "outEnd": 7.17
+  },
+  {
+   "srcStart": 7.73,
+   "srcEnd": 13.37,
+   "outStart": 7.17,
+   "outEnd": 12.8
+  },
+  {
+   "srcStart": 13.63,
+   "srcEnd": 19.17,
+   "outStart": 12.8,
+   "outEnd": 18.37
+  },
+  {
+   "srcStart": 19.4,
+   "srcEnd": 20.83,
+   "outStart": 18.37,
+   "outEnd": 19.8
+  },
+  {
+   "srcStart": 21.07,
+   "srcEnd": 24.9,
+   "outStart": 19.8,
+   "outEnd": 23.63
+  },
+  {
+   "srcStart": 25.2,
+   "srcEnd": 27.17,
+   "outStart": 23.63,
+   "outEnd": 25.6
+  },
+  {
+   "srcStart": 27.5,
+   "srcEnd": 30.03,
+   "outStart": 25.6,
+   "outEnd": 28.13
+  },
+  {
+   "srcStart": 30.63,
+   "srcEnd": 36.4,
+   "outStart": 28.13,
+   "outEnd": 33.9
+  },
+  {
+   "srcStart": 39.37,
+   "srcEnd": 40.37,
+   "outStart": 33.9,
+   "outEnd": 34.9
+  },
+  {
+   "srcStart": 41.83,
+   "srcEnd": 47.87,
+   "outStart": 34.9,
+   "outEnd": 40.93
+  }
+ ],
+ "removed": [
+  {
+   "srcStart": 0,
+   "srcEnd": 0.4,
+   "dur": 0.4
+  },
+  {
+   "srcStart": 7.57,
+   "srcEnd": 7.73,
+   "dur": 0.16
+  },
+  {
+   "srcStart": 13.37,
+   "srcEnd": 13.63,
+   "dur": 0.26
+  },
+  {
+   "srcStart": 19.17,
+   "srcEnd": 19.4,
+   "dur": 0.23
+  },
+  {
+   "srcStart": 20.83,
+   "srcEnd": 21.07,
+   "dur": 0.24
+  },
+  {
+   "srcStart": 24.9,
+   "srcEnd": 25.2,
+   "dur": 0.3
+  },
+  {
+   "srcStart": 27.17,
+   "srcEnd": 27.5,
+   "dur": 0.33
+  },
+  {
+   "srcStart": 30.03,
+   "srcEnd": 30.63,
+   "dur": 0.6
+  },
+  {
+   "srcStart": 36.4,
+   "srcEnd": 39.37,
+   "dur": 2.97
+  },
+  {
+   "srcStart": 40.37,
+   "srcEnd": 41.83,
+   "dur": 1.46
+  },
+  {
+   "srcStart": 47.87,
+   "srcEnd": 48.67,
+   "dur": 0.8
+  }
+ ],
+ "subtitles": [
+  {
+   "text": "セルフカットで梳きバサミを使って",
+   "outStart": 0.6,
+   "outEnd": 1.83,
+   "srcStart": 1.0,
+   "srcEnd": 2.23,
+   "chars": 16
+  },
+  {
+   "text": "すきバサミを使って",
+   "outStart": 1.83,
+   "outEnd": 3.9,
+   "srcStart": 2.23,
+   "srcEnd": 4.3,
+   "chars": 9
+  },
+  {
+   "text": "髪の量を軽くしていく際、",
+   "outStart": 3.9,
+   "outEnd": 7.0,
+   "srcStart": 4.3,
+   "srcEnd": 7.4,
+   "chars": 11
+  },
+  {
+   "text": "つむじや、つむじまわりを",
+   "outStart": 7.3,
+   "outEnd": 9.17,
+   "srcStart": 7.87,
+   "srcEnd": 9.73,
+   "chars": 11
+  },
+  {
+   "text": "軽くしないようにしましょう",
+   "outStart": 9.17,
+   "outEnd": 11.8,
+   "srcStart": 9.73,
+   "srcEnd": 12.37,
+   "chars": 13
+  },
+  {
+   "text": "もしこの辺りを",
+   "outStart": 11.87,
+   "outEnd": 14.07,
+   "srcStart": 12.43,
+   "srcEnd": 14.9,
+   "chars": 7
+  },
+  {
+   "text": "軽くしてしまうと",
+   "outStart": 14.07,
+   "outEnd": 15.3,
+   "srcStart": 14.9,
+   "srcEnd": 16.1,
+   "chars": 8
+  },
+  {
+   "text": "まとまりがつきません",
+   "outStart": 16.37,
+   "outEnd": 18.27,
+   "srcStart": 17.17,
+   "srcEnd": 19.07,
+   "chars": 10
+  },
+  {
+   "text": "ピンピンした髪の毛が",
+   "outStart": 18.53,
+   "outEnd": 21.43,
+   "srcStart": 19.57,
+   "srcEnd": 22.7,
+   "chars": 10
+  },
+  {
+   "text": "出てきてしまって",
+   "outStart": 21.43,
+   "outEnd": 23.23,
+   "srcStart": 22.7,
+   "srcEnd": 24.5,
+   "chars": 8
+  },
+  {
+   "text": "取り返しがつかないです",
+   "outStart": 23.47,
+   "outEnd": 25.6,
+   "srcStart": 24.73,
+   "srcEnd": 27.5,
+   "chars": 11
+  },
+  {
+   "text": "何をやっても収まらない",
+   "outStart": 25.93,
+   "outEnd": 28.23,
+   "srcStart": 27.83,
+   "srcEnd": 30.73,
+   "chars": 11
+  },
+  {
+   "text": "髪の毛が伸びないと",
+   "outStart": 28.27,
+   "outEnd": 30.2,
+   "srcStart": 30.77,
+   "srcEnd": 32.7,
+   "chars": 9
+  },
+  {
+   "text": "修正カットができないんですよね",
+   "outStart": 30.2,
+   "outEnd": 33.7,
+   "srcStart": 32.7,
+   "srcEnd": 36.2,
+   "chars": 15
+  },
+  {
+   "text": "それがあるので、",
+   "outStart": 33.97,
+   "outEnd": 34.9,
+   "srcStart": 39.43,
+   "srcEnd": 41.83,
+   "chars": 7
+  },
+  {
+   "text": "つむじやつむじまわりを",
+   "outStart": 34.9,
+   "outEnd": 37.0,
+   "srcStart": 41.83,
+   "srcEnd": 43.93,
+   "chars": 11
+  },
+  {
+   "text": "軽くしないようにしましょう",
+   "outStart": 37.27,
+   "outEnd": 40.3,
+   "srcStart": 44.2,
+   "srcEnd": 47.23,
+   "chars": 13
+  }
+ ],
+ "title": {
+  "lines": [
+   "つむじ",
+   "は",
+   "すくな"
+  ],
+  "outStart": 0,
+  "outEnd": 0.67,
+  "lineHeightPx512": 40,
+  "yCenter": 0.47
+ },
+ "subtitleStyle": {
+  "lines": 1,
+  "charHeightPx512": 16.5,
+  "yCenter": 0.902,
+  "position": "bottom"
+ },
+ "fade": {
+  "note": "最後の約0.9秒で黒くなる"
+ },
+ "spoken": [
+  {
+   "start": 0.9,
+   "end": 7.0,
+   "text": "セルフカットですきバサミを使って髪の量を軽くしていく際",
+   "retake": false
+  },
+  {
+   "start": 7.2,
+   "end": 12.3,
+   "text": "つむじやつむじまわりを軽くしないようにしておきましょう",
+   "retake": false
+  },
+  {
+   "start": 12.4,
+   "end": 19.0,
+   "text": "もしこの辺りを軽くしてしまうとまとまりがつきません",
+   "retake": false
+  },
+  {
+   "start": 19.4,
+   "end": 27.0,
+   "text": "しかもピンピンした髪の毛が出てきてしまって取り返しがつかないです",
+   "retake": false
+  },
+  {
+   "start": 27.4,
+   "end": 30.0,
+   "text": "何をやっても収まらない",
+   "retake": false
+  },
+  {
+   "start": 30.6,
+   "end": 36.3,
+   "text": "髪の毛が伸びないと修正カットができないんですよね",
+   "retake": false
+  },
+  {
+   "start": 36.8,
+   "end": 37.9,
+   "text": "それもある",
+   "retake": true
+  },
+  {
+   "start": 39.3,
+   "end": 40.3,
+   "text": "それがあるので",
+   "retake": false
+  },
+  {
+   "start": 40.4,
+   "end": 41.8,
+   "text": "つむじつむ",
+   "retake": true
+  },
+  {
+   "start": 41.8,
+   "end": 47.8,
+   "text": "つむじやつむじまわりを軽くしないようにしておきましょう",
+   "retake": false
+  }
+ ],
+ "note": "手動編集（正解）と元の動画の照合結果。kept/removed は元の動画の時刻（秒）。映像の縮小画と音声の特徴で1コマずつ対応させ、前にだけ進む最短経路で求めた（tests/fixtures/img5830/README.md）。spoken は元の動画で話した文（retake=言い直し）"
+}

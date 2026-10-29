@@ -359,6 +359,17 @@ try {
     };
   });
   fs.writeFileSync(path.join(dir, `plan-${tag}.json`), JSON.stringify(plan, null, 1));
+  // --dump-analysis=FILE: 解析の結果（音量・声の区間・文字起こし・動き）を保存する。構成の回帰テスト（tests/fixtures）に使う
+  const dumpPath = arg('dump-analysis');
+  if (dumpPath) {
+    const a = await page.evaluate(() => {
+      const s = window.amityDebug;
+      return { duration: s.src.duration, rmsDb: Array.from(s.rmsDb, v => +v.toFixed(1)), speech: s.speech, chunks: s.chunks, motion: s.motion };
+    });
+    fs.writeFileSync(dumpPath, JSON.stringify(a));
+    console.log('解析の結果を保存: ' + dumpPath);
+    if (process.argv.includes('--plan-only')) { await browser.close(); process.exit(0); }
+  }
   console.log(plan.summary);
   console.log(plan.total);
   console.log('完成時間: ' + (await page.$eval('#fit', el => (el.hidden ? '(表示なし)' : el.textContent))));

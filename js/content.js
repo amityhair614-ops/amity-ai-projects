@@ -124,6 +124,29 @@ function stutter(text) {
   return null;
 }
 
+// 文の途中で言葉を言いかけてやめ、言い直した（「それがあるので、つむじ、つむ、つむじや…」）。
+// 2〜4文字の言葉 w のあとに、w の頭の一部だけ（言いかけ）が続き、もう一度 w を言っている所。最後の w から残す。
+// 言いかけの部分がない、ただのくり返し（「つむじつむじ」）は 3文字以上の言葉のときだけ（「まあまあ」「いろいろ」は外さない）
+// 返り値は { from, cut, repeated }（from〜cut の文字を取り除く）か null
+function innerStutter(text) {
+  for (let i = 1; i < text.length - 4; i++) {
+    for (let len = 4; len >= 2; len--) {
+      const w = text.slice(i, i + len);
+      if (w.length < len || /[、。,.\s]/.test(w) || normalizeText(w).length < len) continue;
+      for (let k = len - 1; k >= 0; k--) {
+        if (k === 0 && len < 3) continue;
+        const frag = w.slice(0, k);
+        const at = i + len + k;
+        if (text.slice(i + len, at) !== frag || text.slice(at, at + len) !== w) continue;
+        // 残す部分が短すぎる（文の終わりのくり返し）ときは取り除かない
+        if (text.length - at <= len + 1) continue;
+        return { from: i, cut: at, repeated: text.slice(i, at) };
+      }
+    }
+  }
+  return null;
+}
+
 // 文ごとの判定。chunks は時刻順の文（{ start, end, text }）。返り値は同じ数の配列:
 // { drop: 理由（自動で外す）, candidate: 理由（候補として出す）, trim: { cut, reason, high } } の組み合わせ、または null
 export function analyzeContent(chunks) {
@@ -169,7 +192,9 @@ export function analyzeContent(chunks) {
     }
     // 4. 文の中のくり返し
     const st = stutter(t);
-    if (st) set(i, { trim: { cut: st.cut, reason: `くり返した「${st.repeated}」`, high: true } });
+    if (st) { set(i, { trim: { cut: st.cut, reason: `くり返した「${st.repeated}」`, high: true } }); continue; }
+    const inner = innerStutter(t);
+    if (inner) set(i, { trim: { from: inner.from, cut: inner.cut, reason: `言いかけてやめた「${inner.repeated}」`, high: true } });
   }
 
   // 5. 文の終わりで言い出してやめ、次の文で同じ言葉から言い直した（「それはどこなのか、トップの」「トップの根元付近です」）。
@@ -201,6 +226,12 @@ export function analyzeContent(chunks) {
       const prefix = a.slice(0, Math.min(6, a.length));
       const restart = prefix.length >= 5 && b.startsWith(prefix) && a.length <= b.length + 3;
       const extra = extraTerms(text[i], text[j]);
+      // 短い発言（3〜8文字）を言いかけてやめ、すぐ同じ言い出しで言い直した（「それもある」→「それがあるので…」）。
+      // 言い出しの2文字が同じで、あとの文の頭が前の発言とほぼ同じ（1〜2文字違い）。前の発言にしかない用語があるときは別の説明
+      if (extra >= 0 && a.length <= 8 && b.length >= a.length + 3 && a.slice(0, 2) === b.slice(0, 2) && near(i, j, 4)
+        && similarity(a, b.slice(0, a.length)) >= 0.5 && a !== b.slice(0, a.length)) {
+        set(i, { drop: `言いかけてやめた「${text[i]}」（すぐ後で言い直し）` }); break;
+      }
       if (extra < 0) {
         // 用語が違う: 別の説明。ただし文全体がほぼ同じで、違う用語が「1文字違い」（猛量／毛量など）なら、
         // 文字起こしの間違いかもしれないので候補にする（サイド／バック、0度／45度 は別の説明）

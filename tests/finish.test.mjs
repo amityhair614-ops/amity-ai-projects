@@ -18,14 +18,14 @@ test('冒頭のテキスト: タイトルから最大3行の案を作る（言�
   assert.deepEqual(openingText('ハサミ\nすきバサミ\n以外にもある\n4行目'), ['ハサミ', 'すきバサミ', '以外にもある']);
 });
 
-test('冒頭のテキスト: 標準は2秒、表示時間は0.8〜4秒で変えられる、ふわっと出て消える', () => {
+test('冒頭のテキスト: 標準は1秒（お手本は約0.7秒）、表示時間は0.6〜4秒で変えられる、すばやく出て消える', () => {
   const op = openingPlan(['ハサミ']);
-  assert.ok(Math.abs(op.end - op.start - 2) < 1e-9);
+  assert.ok(Math.abs(op.end - op.start - 1) < 1e-9);
   assert.ok(Math.abs(openingPlan(['ハサミ'], 3).end - openingPlan(['ハサミ'], 3).start - 3) < 1e-9);
   assert.ok(Math.abs(openingPlan(['ハサミ'], 10).end - openingPlan(['ハサミ'], 10).start - 4) < 1e-9, '長すぎる指定は4秒まで');
   assert.equal(openingAlpha(op, op.start), 0);
   assert.equal(openingAlpha(op, (op.start + op.end) / 2), 1);
-  assert.ok(openingAlpha(op, op.start + 0.1) > 0 && openingAlpha(op, op.start + 0.1) < 1);
+  assert.ok(openingAlpha(op, op.start + 0.05) > 0 && openingAlpha(op, op.start + 0.05) < 1);
   assert.equal(openingAlpha(op, op.end + 0.01), 0);
   assert.equal(openingPlan([]), null);
   // 最初の場面で手元が上の方で動くときは、文字を下げる
@@ -33,7 +33,7 @@ test('冒頭のテキスト: 標準は2秒、表示時間は0.8〜4秒で変え�
   assert.ok(low.y > op.y);
 });
 
-test('最後のフェード: 0.9秒でなめらかに黒くなり、最後の0.3秒は真っ黒・無音のまま終わる', () => {
+test('最後のフェード: 0.9秒でなめらかに黒くなり、最後の0.2秒は真っ黒・無音のまま終わる', () => {
   const total = 60, endAt = total - END_HOLD;
   assert.equal(endFadeAlpha(total - 2, total), 0);
   assert.equal(endFadeAlpha(endAt - END_FADE, total), 0);
@@ -180,14 +180,19 @@ test('画質: 1080pの素材では、拡大になる（ぼやける）ズーム�
   assert.ok(buildTimeline(clips, { srcW: 2160, srcH: 3840, zoom: true }).some(c => c.zoom));
 });
 
-test('字幕の区切り: 「〜して」「〜際に」の後で分け、言葉の途中（「まと／まり」「頭に／入れて」）では分けない', () => {
-  const join = t => subtitlePages(t, t.length * 0.15).map(p => p.lines.join('／'));
-  assert.deepEqual(join('アホ毛のようなピンピンした髪の毛がたくさんできてしまってまとまりつかないようになってしまいます'),
-    ['アホ毛のようなピンピンした髪の毛が／たくさんできてしまって', 'まとまりつかないようになってしまいます']);
-  assert.deepEqual(join('それを頭に入れてセルフカットやってみてください'), ['それを頭に入れて／セルフカットやってみてください']);
-  assert.equal(join('セルフカットで伸びて重くなったボブを軽くしていく際にこの場所は絶対にすかないでください').at(-1), 'この場所は絶対にすかないでください');
+test('字幕の区切り: 1行だけ・15文字以内で、言葉の途中（「まと／まり」「頭に／入れて」）・否定の前（「軽く／しない」）では分けない', () => {
+  const pages = t => subtitlePages(t, t.length * 0.15).map(p => { assert.equal(p.lines.length, 1, '2行にしない'); return p.lines[0]; });
+  const a = pages('アホ毛のようなピンピンした髪の毛がたくさんできてしまってまとまりつかないようになってしまいます');
+  for (const x of a) assert.ok(x.length <= 15, x);
+  assert.ok(a.some(x => x.startsWith('まとまり')) && !a.some(x => x.endsWith('まと')));
+  assert.deepEqual(pages('それを頭に入れてセルフカットやってみてください'), ['それを頭に入れて', 'セルフカットやってみてください']);
+  assert.equal(pages('セルフカットで伸びて重くなったボブを軽くしていく際にこの場所は絶対にすかないでください').at(-1), '絶対にすかないでください');
   // 「して／しまう」「て／ください」は分けない
-  for (const p of join('こうなってしまうと髪の毛が伸びないと修正カットができないです')) assert.ok(!p.includes('て／しま'));
+  for (const x of pages('こうなってしまうと髪の毛が伸びないと修正カットができないです')) assert.ok(!x.startsWith('しま'), x);
+  // 否定の言葉を前の言葉から離さない（前のページだけで意味が逆にならないように）
+  for (const t of ['つむじやつむじ周りを軽くしないようにしておきましょう', '髪の毛が伸びないと修正カットができないんですよね']) {
+    for (const x of pages(t)) assert.ok(!/^(?:しない|ない|できない)/.test(x) && !/軽く$/.test(x), x);
+  }
 });
 
 test('入力した用語と漢字の所だけが違う言葉（同じ読みの聞き間違い）を直して、確認の印をつける', () => {
@@ -221,12 +226,14 @@ test('意味が変わるおそれのある聞き落とし: 2通りの聞き取�
   for (const t of ['セルフカットやってみてください', '修正カットができない', 'この場所を軽くしてしまうと', 'それはどこなのか', 'うまくカバーできます']) assert.ok(!cutEnding(t), t);
 });
 
-test('字幕の区切り（実際の撮影音声の文）: 「でき」「アホ毛のような」を分けず、次の文の始まり（それを・この場所）で分ける', () => {
-  const join = t => subtitlePages(t, t.length * 0.15).map(p => p.lines.join('／'));
-  assert.deepEqual(join('この場所を軽くしてしまうとアホ毛のようなピンピンした髪の毛がたくさんできてしまってまとまりつかないようになってしまいます'),
-    ['この場所を軽くしてしまうと／アホ毛のようなピンピンした髪の毛が', 'たくさんできてしまって／まとまりつかないように', 'なってしまいます']);
-  assert.deepEqual(join('となればトップ表面の根元付近は軽くしないそれを頭に入れてセルフカットやってみてください'),
-    ['となればトップ表面の根元付近は軽くしない', 'それを頭に入れて／セルフカットやってみてください']);
+test('字幕の区切り（実際の撮影音声の文）: 「でき」「アホ毛のような」を分けず、1つの字幕に2つの文を入れない', () => {
+  const pages = t => subtitlePages(t, t.length * 0.15).map(p => p.lines.join('／'));
+  const a = pages('この場所を軽くしてしまうとアホ毛のようなピンピンした髪の毛がたくさんできてしまってまとまりつかないようになってしまいます');
+  assert.equal(a[0], 'この場所を軽くしてしまうと');
+  for (const x of a) assert.ok(!/^(毛|き|の|ような)/.test(x) && x.length <= 15, x);
+  // 「…軽くしない」で文が終わり「それを…」から次の文: 2つの文を1つの字幕にしない
+  const b = pages('となればトップ表面の根元付近は軽くしないそれを頭に入れてセルフカットやってみてください');
+  assert.ok(b.some(x => x.endsWith('軽くしない')) && b.some(x => x.startsWith('それを')), b.join(' | '));
   // 声の間（字幕AIの時刻のずれ）が言葉の途中にあっても、言葉の途中では分けない
   const p = subtitlePages('この場所を軽くしてしまうとアホ毛のようなピンピンした髪の毛がたくさんできてしまってまとまりつかないようになってしまいます', 8, 18, 2, i => (i % 3 === 0 ? 0.4 : 0));
   for (const x of p.flatMap(q => q.lines)) assert.ok(!/^(毛|き|の)/.test(x), x);
@@ -249,4 +256,12 @@ test('文の始まりの言葉（あとは）の途中で文が分かれたと�
 test('字幕の区切り: 話し言葉の「〜てる」「〜てた」を分けない', () => {
   const lines = subtitlePages('それは100均に売ってるアイテムにあります', 2).flatMap(p => p.lines);
   assert.ok(!lines.some(l => l.startsWith('る')), lines.join('／'));
+});
+
+test('用語の途中で文を分けない（「セルフカットです｜きばさみ」は「セルフカットで すきばさみ」）', () => {
+  const tok = (s, t0, step = 0.12) => [...s].map((c, i) => ({ s: c, t: +(t0 + i * step).toFixed(2), p: 1 }));
+  const raw = [{ start: 0, end: 5, tokens: [...tok('セルフカットです', 0), ...tok('きばさみ使って髪を軽くします', 1.05)] }];
+  const chunks = tokensToChunks(raw, [{ start: 0, end: 0.95 }, { start: 1.05, end: 3 }]).map(c => fixTerms(c));
+  assert.equal(chunks.length, 1);
+  assert.equal(chunks[0].text.replace(/[、。]/g, ''), 'セルフカットですきバサミ使って髪を軽くします');
 });

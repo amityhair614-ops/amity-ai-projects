@@ -30,6 +30,9 @@ function pauseBetween(fine, a, b) {
 // 文字起こしの区間ごとの結果（tokens: { t: 元の動画の時刻, s: 文字, p: 確からしさ }）を、
 // 声の切れ目（fine: 細かい発話区間）で文に分ける。句読点は声の間から入れる（モデルは句読点を出さない）。
 // 返り値の各文: { start, end, text, raw, timed, tokens, times }（times は text の1文字ごとの時刻）
+// 用語の読み（ひらがな・4文字以上。文の区切りの直しに使う）
+const TERM_READINGS = [...new Set([...BEAUTY_TERMS, { reading: 'スキバサミ' }].flatMap(t => [t.reading, ...(t.variants || [])])
+  .filter(r => r && /^[ぁ-ゖァ-ヶー]+$/.test(r)).map(toHira).filter(r => r.length >= 4))];
 const SENTENCE_HEADS = ['あとは', 'それは', 'それを', 'そうなら', 'そして', 'でも', 'なので', 'だから', 'まずは', 'ただ', 'となれば', 'こうなって'];
 
 export function tokensToChunks(raw, fine = []) {
@@ -74,13 +77,27 @@ export function tokensToChunks(raw, fine = []) {
       if (n) { b.unshift(...a.splice(a.length - n, n)); break; }
     }
   }
+  // 用語の途中で文が分かれた（「セルフカットです｜きばさみ」= 「セルフカットで｜すきばさみ」）: 前の文の終わりの
+  // 1〜2文字と次の文の頭で用語の読みになるときは、その文字を次の文に移し、間が短ければ1つの文にする
+  for (let g = 0; g + 1 < groups.length; g++) {
+    const a = groups[g], b = groups[g + 1];
+    const head = toHira(b.slice(0, 8).map(k => k.s).join(''));
+    if (TERM_READINGS.some(r => head.startsWith(r))) continue;
+    const n = [1, 2].find(n => n < a.length && TERM_READINGS.some(r => toHira(a.slice(-n).map(k => k.s).join('') + head).startsWith(r)));
+    if (!n) continue;
+    b.unshift(...a.splice(a.length - n, n));
+    if (b[0].t - a[a.length - 1].t < 0.8) { groups.splice(g, 2, [...a, ...b]); g--; }
+  }
   // 2. 間なく続けて話した長い文は、はっきりした文の終わり（〜ます。〜です。）で分ける
   const split = [];
   for (const g of groups) {
     let start = 0;
     for (let i = 1; i < g.length; i++) {
       const before = g.slice(start, i).map(x => x.s).join('');
-      if (before.length >= 4 && g.length - i >= 4 && SENTENCE_END_RE.test(before) && !CONTINUE_HEAD_RE.test(g[i].s)) {
+      // 「です｜きばさみ」のように、区切ると用語（すきばさみ）の途中になる所では分けない
+      const after = toHira(g.slice(i, i + 8).map(x => x.s).join(''));
+      const inTerm = !TERM_READINGS.some(r => after.startsWith(r)) && [1, 2].some(n => TERM_READINGS.some(r => toHira(before.slice(-n) + after).startsWith(r)));
+      if (before.length >= 4 && g.length - i >= 4 && SENTENCE_END_RE.test(before) && !CONTINUE_HEAD_RE.test(g[i].s) && !inTerm) {
         split.push(g.slice(start, i));
         start = i;
       }

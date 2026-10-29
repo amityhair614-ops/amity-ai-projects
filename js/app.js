@@ -20,7 +20,7 @@ import {
 } from './diag.js';
 import { STEP, videoKey, nudge, collectEdits, applyEdits, resetEdits, shifted, formatClock } from './subedit.js';
 import {
-  FORMATS, EMPTY_BRIEF, normalizeBrief, hasText, briefPlan, applyBrief, applyStyle, targetRange, fitReport, fmt,
+  FORMATS, EMPTY_BRIEF, normalizeBrief, hasText, briefPlan, applyBrief, applyStyle, briefDecisions, targetRange, fitReport, fmt,
 } from './brief.js';
 
 const $ = id => document.getElementById(id);
@@ -912,6 +912,7 @@ function makePlan(brief) {
   if (fixes.size) used.push(`入力した言葉に合わせて字幕を直しました（確認の印を付けています）: ${[...fixes].slice(0, 8).map(([k, n]) => n > 1 ? `${k}（${n}か所）` : k).join('、')}`);
   else if (state.chunks && (bp.phrases.length || bp.asrTerms.length)) used.push('入力した言葉で字幕を直した所はありませんでした。');
   if (state.opening === undefined && bp.brief.title) used.push('冒頭のテキストは、動画タイトルから作りました（下で文字・行・表示時間を直せます）。');
+  if (state.chunks) used.push(...briefDecisions(state.units, bp, state.selected));
   state.briefUsed = used;
   state.briefWarnings = [];
   if (bp.mustItems.length && !state.chunks) state.briefWarnings.push('「必ず残したい説明や場面」は文字起こし（字幕）をONにしたときだけ照合できます。今回は照合していません。');
@@ -928,7 +929,7 @@ function makePlan(brief) {
 $('openingText').addEventListener('input', () => { state.opening = $('openingText').value; saveReview(); });
 $('optOpening').addEventListener('change', saveReview);
 $('openingDur').addEventListener('change', saveReview);
-const openingDur = () => OPENING_DURATIONS.includes(+$('openingDur').value) ? +$('openingDur').value : 2;
+const openingDur = () => OPENING_DURATIONS.includes(+$('openingDur').value) ? +$('openingDur').value : 1;
 $('openingReset').addEventListener('click', () => {
   state.opening = openingLines(readBrief().title).join('\n');
   $('openingText').value = state.opening;
@@ -1285,7 +1286,7 @@ $('btnRender').addEventListener('click', async () => {
     srcW: state.src.width, srcH: state.src.height, zoom: useZoom, subtitles: useSubs, style: state.brief?.style,
   });
   const outSec = timeline.reduce((s, c) => s + c.outDuration, 0);
-  // 冒頭のテキスト（標準2秒・選べる）と最後のフェードアウト（0.9秒＋黒い画面0.3秒）
+  // 冒頭のテキスト（標準1秒・選べる）と最後のフェードアウト（0.9秒＋黒い画面0.2秒）
   const lines = $('optOpening').checked ? openingText(state.opening ?? '') : [];
   const overlay = { opening: openingPlan(lines, openingDur(), timeline[0]), total: outSec };
   // 保存できる容量を確かめる（区間のファイルと完成したMP4が一時的に両方必要）

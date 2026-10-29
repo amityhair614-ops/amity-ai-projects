@@ -39,9 +39,9 @@ test('ハサミのような短い音がとびとびに続くだけの区間は�
 
 test('間の整理: 文の中の短い間は残し、長い間は自然な長さまで縮める', () => {
   const P = PACES.natural;
-  const segs = [{ start: 1, end: 2 }, { start: 2.3, end: 3 }, { start: 5, end: 6 }];
+  const segs = [{ start: 1, end: 2 }, { start: 2.2, end: 3 }, { start: 5, end: 6 }];
   const pieces = shapePieces(segs, 0, 10, P);
-  assert.equal(pieces.length, 2, '0.3秒の間はそのまま、2秒の間で分ける');
+  assert.equal(pieces.length, 2, '0.2秒の間はそのまま、2秒の間で分ける');
   assert.ok(Math.abs(pieces[0].start - (1 - P.lead)) < 1e-9, '話し始めの前に余白');
   assert.equal(pieces[1].end, 6 + P.tail, '話し終わりの後に余白（語尾を切らない）');
   const kept = (pieces[0].end - 3) + (5 - pieces[1].start);
@@ -50,7 +50,7 @@ test('間の整理: 文の中の短い間は残し、長い間は自然な長さ
   // 前後の声に食い込まない
   const tight = shapePieces([{ start: 1, end: 2 }], 0.95, 2.1, P);
   assert.deepEqual(tight, [{ start: 0.95, end: 2.1 }]);
-  // テンポ重視は間が短い（0.3秒の間も縮める）
+  // テンポ重視は間が短い
   const t = shapePieces(segs, 0, 10, PACES.tempo);
   assert.ok((t.at(-2).end - 3) + (5 - t.at(-1).start) < kept);
 });
