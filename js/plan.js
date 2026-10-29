@@ -1735,8 +1735,8 @@ function timedPages(clip, text) {
 // ---------- 冒頭のテキスト・最後のフェード ----------
 
 // 冒頭に大きく出す短い文字（白の太いゴシック・最大3行）。表示は約2秒で、ふわっと出てふわっと消える
-// お手本の手動編集は、冒頭の約0.7秒だけ・画面の中央（文字の中心が高さの47%）に出していた。初期設定は1秒・高さの45%
-export const OPENING = { maxLines: 3, maxChars: 9, start: 0, duration: 1.0, minDuration: 0.6, maxDuration: 4.0, fadeIn: 0.1, fadeOut: 0.25, y: 0.45 };
+// お手本の手動編集は、冒頭の約0.7秒だけ・画面の中央（文字の中心が高さの47%）に出していた。初期設定は1秒・高さの47%
+export const OPENING = { maxLines: 3, maxChars: 9, start: 0, duration: 1.0, minDuration: 0.6, maxDuration: 4.0, fadeIn: 0.1, fadeOut: 0.25, y: 0.47 };
 // 冒頭のテキストの表示時間の選択肢（秒）
 export const OPENING_DURATIONS = [0.7, 1.0, 1.5, 2.0, 3.0];
 
