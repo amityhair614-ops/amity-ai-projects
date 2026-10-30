@@ -1098,7 +1098,8 @@ function grammarScore(text, i, inside, prev, next) {
   if ('てで'.includes(prev) && AUX_AFTER_TE.includes(next)) return -2;
   // 「〜して」「〜しまって」「〜入れて」のあと（文の途中の区切り）。「で」は助詞のことも多いので、
   // 前が動詞の形（っ・ん・い・し・き・り・べ・め・れ・せ・け）のときだけ
-  if (prev === 'て' && !PARTICLES.includes(next)) return 3;
+  // ただし「伸びて／重くなったボブ」のように、後ろが名詞を修飾する（〜た・〜い＋名詞）ときは、名詞までがひとまとまり
+  if (prev === 'て' && !PARTICLES.includes(next)) return /^[^をにがはで、。]{1,6}[たい][一-鿿々ァ-ヶ]/.test(text.slice(i)) ? 1.5 : 3;
   // 「で」は「読んで／」のような形でも、後ろが「き」「す」（「でき」「です」）なら言葉の途中なので分けない
   if (prev === 'で' && 'んい'.includes(text[i - 2] || '') && !PARTICLES.includes(next) && charType(next) !== 'hira') return 2.5;
   // 助詞の後（「…を」「…に」）。ただし「の」は名詞のつながりが多いので低め
