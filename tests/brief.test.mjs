@@ -156,15 +156,20 @@ test('文字起こし用の用語: 入力にある辞書外の言葉だけを渡
   assert.ok(bp.asrTerms.length <= 30);
 });
 
-test('編集スタイル: テンポ重視はズームの間隔が短く、それでも 1.10 倍まで', () => {
+test('控えめなズーム: 1.03〜1.06倍・1分に2回まで・20秒以上あける。1080の幅の動画（拡大になる）ではズームしない', () => {
   const clip = (s, e) => ({ pieces: [{ start: s, end: e }], text: '', motion: 0.8, cx: 0.5, box: [0.35, 0.65, 0.4, 0.6] });
   const clips = [];
   for (let s = 0; s < 60; s += 4) clips.push(clip(s, s + 3));
-  const simple = buildTimeline(clips, { srcW: 2160, srcH: 3840, zoom: true, style: 'simple' }).filter(c => c.zoom);
-  const tempo = buildTimeline(clips, { srcW: 2160, srcH: 3840, zoom: true, style: 'tempo' }).filter(c => c.zoom);
-  assert.ok(tempo.length > simple.length, `${tempo.length} > ${simple.length}`);
-  for (const c of [...simple, ...tempo]) assert.ok(c.zoom.z >= 1.03 && c.zoom.z <= 1.10, String(c.zoom.z));
-  for (const c of simple) assert.ok(c.zoom.z <= 1.08);
+  for (const style of ['simple', 'tempo']) {
+    const z = buildTimeline(clips, { srcW: 2160, srcH: 3840, zoom: true, style }).filter(c => c.zoom);
+    assert.ok(z.length >= 1 && z.length <= 2, `${style}: ${z.length}回`);
+    for (const c of z) assert.ok(c.zoom.z >= 1.03 && c.zoom.z <= 1.06, String(c.zoom.z));
+    for (let i = 1; i < z.length; i++) assert.ok(z[i].outStart - (z[i - 1].outStart + z[i - 1].outDuration) >= 12);
+  }
+  // 1080×1920 の動画: ズームすると元の画素を拡大することになるので、ズームしない（理由を残す）
+  const low = buildTimeline(clips, { srcW: 1080, srcH: 1920, zoom: true });
+  assert.ok(!low.some(c => c.zoom));
+  assert.equal(low.zoomSkipped, 'resolution');
 });
 
 test('テンポ重視は長い場面より短い場面を選びやすい', () => {

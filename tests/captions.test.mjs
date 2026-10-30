@@ -13,7 +13,7 @@ test('つなぎ言葉・調子をとる「ね」・「という」・文の頭�
 
 test('意味を変える言葉・言葉の一部は省かない', () => {
   for (const t of ['でもレイヤーを入れるとなると', 'もしボブを軽くして', 'それは表面の髪が長いからです', '毛先がはねるので注意',
-    '重くて仕方ないということであれば', 'なので', 'だから軽くしない', '45度で引き出します', '切ってるね']) {
+    '重くて仕方ないということであれば', 'だから軽くしない', '45度で引き出します', '切ってるね']) {
     assert.equal(displayText(t).text, t, t);
   }
 });
@@ -23,4 +23,10 @@ test('文の中で省いた文字の時刻も一緒に外す（ページの切�
   const c = cleanForDisplay(text, [0, 1, 2, 3, 4, 5]);
   assert.equal(c.text, 'ボブを軽く');
   assert.deepEqual(c.times, [0, 1, 2, 4, 5]);
+});
+
+test('接続の言葉だけのページ（「なので」「そうなると」）は字幕を出さない（音声は残す）', () => {
+  assert.equal(displayText('なので').text, '');
+  assert.equal(displayText('そうなると').text, '');
+  assert.equal(displayText('でも').text, 'でも');
 });

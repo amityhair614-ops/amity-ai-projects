@@ -361,7 +361,7 @@ test('字幕の手直し: 0.1秒ずつ動かし、保存・読み込み・全体
   const tl = buildTimeline(again.map(u => ({ ...u, ...shifted(u, saved.offset) })), { subtitles: true });
   const p = tl[0].subtitles[0];
   assert.ok(Math.abs(p.start - (10.7 - 10 - 0.1)) < 1e-6, JSON.stringify(p));
-  assert.equal(p.lines.join(''), 'パネルを0度で引き出します');
+  assert.equal(tl[0].subtitles.map(x => x.lines.join('')).join(''), 'パネルを0度で引き出します');
   // 動かせるのは場面の前後1秒まで・長さは0.3秒以上
   for (let i = 0; i < 50; i++) nudge(again[0], 'start', -0.1);
   assert.equal(again[0].subStart, 9);

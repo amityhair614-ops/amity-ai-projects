@@ -7,7 +7,9 @@
 //
 // 省くのは、確かに意味に関わらない言葉だけ:
 // - つなぎ言葉（えー・えっと・あのー・まあ・うーん）
-// - ページの頭の「なので」「ですので」「それで」「そうなると」「で、」「じゃあ」（前のページとのつながりは、話のテンポで伝わる）
+// - ページの頭の「なので」「ですので」「それで」「そして」「それから」「そうなると」「なぜかというと」「で、」「じゃあ」
+//   （前のページとのつながりは、話のテンポで伝わる）
+// - ページの終わりの「〜際に」の「に」（「軽くしていく際」）
 // - 文の途中の、調子をとる「ね」（「レイヤーがね、ついていない」「その分ね」）。名詞＋助詞（が・を・は・に・で・も・と）の後、
 //   または「その分」「それを」などの後の「ね」だけ（「毛先がはねる」のように言葉の一部の「ね」は省かない）
 // - 形容詞の後の「という」（「まとまりやすいというメリット」→「まとまりやすいメリット」。後ろに名詞が続くときだけ）
@@ -15,9 +17,9 @@
 // 「でも」「もし」「ただ」「だから」など、省くと意味が変わる言葉は省かない。「それは」「それも」のように、
 // 文の中で何かを指している指示語も省かない。否定の言葉・用語・数字・注意の言葉を含む部分は、省く対象にならない
 const FILLER_RE = /^(?:えー+と?|えっと|ええと|あのー?|あの[、,]|まあ|まぁ|うーん|んー)[、,\s]*/;
-const HEAD_CONNECTIVE_RE = /^(?:なので|ですので|それで|そうなると|で[、,]|じゃあ)[、,\s]*/;
+const HEAD_CONNECTIVE_RE = /^(?:なので|ですので|それで|そして|それから|そうなると|なぜかというと|で[、,]|じゃあ)[、,\s]*/;
 // 調子をとる「ね」: 漢字・カタカナの言葉＋助詞の後、「分」の後、指示語＋助詞の後。後ろに言葉が続くときだけ
-const INTERJECTION_NE_RE = /((?:[一-鿿々ァ-ヶー]|それ|これ|あれ)[がをはにでもと]|分)ね(?=[^、。\s]{2})/g;
+const INTERJECTION_NE_RE = /((?:[一-鿿々ァ-ヶー]|それ|これ|あれ)[がをはにでもとの]|分|[一-鿿][ぁ-ゖ]?な)ね(?=[^、。\s]{2})/g;
 // 形容詞（〜い）・「〜ない」の後の「という」＋名詞
 const TOIU_RE = /([いな])という(?=[一-鿿々ァ-ヶ])/g;
 const HEAD_DEMONSTRATIVE_RE = /^(?:それ|あれ|これ)[、,]\s*/;
@@ -59,11 +61,19 @@ export function displayText(text) {
   const c = cleanForDisplay((text || '').trim());
   let t = c.text;
   const omitted = [...c.omitted];
+  // つなぎ言葉・接続の言葉だけのページ（「なので」「そうなると」「えっと」）は、字幕を出さない（音声はそのまま）
+  const lone = t.replace(/[、。,\s]/g, '');
+  if (lone && (FILLER_RE.test(lone) || HEAD_CONNECTIVE_RE.test(lone)) && !lone.replace(FILLER_RE, '').replace(HEAD_CONNECTIVE_RE, '')) {
+    return { text: '', omitted: [...omitted, lone] };
+  }
   for (let guard = 0; guard < 4; guard++) {
     const m = t.match(FILLER_RE) || t.match(HEAD_CONNECTIVE_RE) || t.match(HEAD_DEMONSTRATIVE_RE);
     if (!m || restLen(t.slice(m[0].length)) < MIN_REST) break;
     omitted.push(m[0].replace(/[、,\s]+$/, ''));
     t = t.slice(m[0].length);
   }
-  return { text: t.replace(/^[、,\s]+|[、。,\s]+$/g, ''), omitted };
+  t = t.replace(/^[、,\s]+|[、。,\s]+$/g, '');
+  // ページの終わりの「〜際に」は「〜際」（「軽くしていく際に」→「軽くしていく際」）
+  if (/際に$/.test(t)) { t = t.slice(0, -1); omitted.push('に'); }
+  return { text: t, omitted };
 }

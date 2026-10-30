@@ -234,7 +234,7 @@
     <p class="lead">カット解説動画から、字幕付きのYouTube動画を自動で作ります。動画の内容や完成時間を入力すると、それに合わせて場面を選びます。処理はすべてこのiPhoneの中で行い、動画はどこにも送信しません。</p>
   </header>
 
-  <div class="banner"><b>テスト版です（v0.9.4）。</b> 手動編集のお手本（4本）と比べて、①字幕を「文字起こし」とは別の工程で作り、意味のまとまり・息継ぎごとの短い1行（5〜12文字が目安）にしました ②つなぎ言葉・調子をとる「ね」・「という」などは字幕にだけ書きません（音声は残します。否定の言葉・用語・数字は省きません）③文の終わりの間・最初と最後の余白を手動編集に近づけました。<b>これらは iPhone 実機ではまだ確認できていません。</b>うまく動かない場合は、下の「診断情報」をコピーして送ってください（書き出しの速さ・画質の設定も記録しています）。</div>
+  <div class="banner"><b>テスト版です（v0.9.5）。</b> ①文字起こしAIが見落とす言いかけを、音の繰り返しから見つけて取り除きます（確かでないものは確認対象として表示）②字幕は原則10文字以内の1行で、意味のまとまりごとにテンポよく切り替えます（単語の途中では区切りません。否定・用語・数字は省きません）③4Kなどの解像度に余裕がある動画では、控えめなズーム（1.03〜1.06倍・1分に2回まで）を入れます。<b>これらは iPhone 実機ではまだ確認できていません。</b>うまく動かない場合は、下の「診断情報」をコピーして送ってください。</div>
 
   <div class="recover" id="recover" role="alert" hidden>
     <b>前回の処理が途中で止まりました</b>
@@ -267,7 +267,7 @@
       <li><span>カット技術の重要場面を残す<small>手元の動きの量と美容の用語で判定する簡易版。映像の内容までは理解しません</small></span><span class="badge warn">簡易版</span></li>
       <li><span>言い直し・くり返しの判断<small>文字起こしが必要。「いや、〜じゃなくて」などの訂正・同じ説明のくり返し・文の中のくり返しを取り除きます。用語が違う説明は外さず、確かでないものは候補として出します</small></span><span class="badge warn">パソコンで確認</span></li>
       <li><span>日本語字幕の自動生成<small>端末内のAI。初期は日本語専用の ReazonSpeech（1文字ごとの時刻で声に合わせる）、軽い Whisper base も選べます。入力した用語で書き間違いを直し、自信のない言葉はオレンジ色で知らせます。原稿を貼り付けると、原稿の文字で字幕を出します</small></span><span class="badge warn">パソコンで確認</span></li>
-      <li><span>字幕・冒頭のテキスト・最後のフェード<small>字幕は白のゴシック体・1行（5〜12文字が目安）・薄い影で画面の下に、意味のまとまりごとに切り替え。冒頭は動画タイトルから作った太字のテキスト（文字・行・表示時間を直せます）。最後の0.9秒で映像が黒くなり、音声も小さくなって、0.2秒黒い画面のまま終わります</small></span><span class="badge warn">パソコンで確認</span></li>
+      <li><span>字幕・冒頭のテキスト・最後のフェード<small>字幕は白のゴシック体・1行（原則10文字以内）・薄い影で画面の下に、意味のまとまりごとに切り替え。冒頭は動画タイトルから作った太字のテキスト（文字・行・表示時間を直せます）。最後の0.9秒で映像が黒くなり、音声も小さくなって、0.2秒黒い画面のまま終わります</small></span><span class="badge warn">パソコンで確認</span></li>
       <li><span>自然なズーム<small>手元がまとまって動く場面を中心に、ゆっくり1.03〜1.08倍で寄る・引く。15秒以上あけ、手元が切れる場合や、元の動画の画素が足りず拡大でぼやける場合（1080pの元動画など）はしない。色や質感の加工はしません</small></span><span class="badge warn">パソコンで確認</span></li>
       <li><span>動画の内容・完成時間・編集スタイルの入力<small>入力した言葉で場面の点数を上げ、「必ず残したい場面」は時間を超えても残します。収まらないときは理由と予定時間を表示</small></span><span class="badge warn">パソコンで確認</span></li>
       <li><span>途中から再開<small>Safariを閉じると一時停止し、もう一度開くと続きから再開します（閉じている間は進みません）。解析の結果と書き終えた区間を端末内に保存し、やり直しません。保存データは消えることがあります</small></span><span class="badge warn">パソコンで確認</span></li>
@@ -394,8 +394,8 @@
         </select></label>
         <button type="button" class="link-btn" id="openingReset">動画タイトルから作り直す</button>
       </div>
-      <label class="option"><input type="checkbox" id="optSubs" checked><span>字幕を入れる <small class="note" id="optSubsNote" style="margin:0"></small><br><small class="note" style="margin:0">白のゴシック体・1行（5〜12文字が目安・最大15文字）・薄い影。意味のまとまり・息継ぎごとに、話すテンポで画面の下に表示します。つなぎ言葉や「〜ね」「という」は字幕にだけ書かず、音声はそのまま残します（否定の言葉・用語・数字は省きません）</small></span></label>
-      <label class="option"><input type="checkbox" id="optZoom" checked><span>自然なズーム<br><small class="note" style="margin:0">手元がまとまって動く場面だけ、ゆっくり1.03〜1.08倍に寄る・引く（15秒以上あけて、ハサミや手元が切れない場合のみ。1080pの元動画では、拡大でぼやけるためズームしません）</small></span></label>
+      <label class="option"><input type="checkbox" id="optSubs" checked><span>字幕を入れる <small class="note" id="optSubsNote" style="margin:0"></small><br><small class="note" style="margin:0">白のゴシック体・1行（原則10文字以内・5〜10文字が目安）・薄い影。意味のまとまり・息継ぎごとに、話すテンポで画面の下に表示します。つなぎ言葉や「〜ね」「という」は字幕にだけ書かず、音声はそのまま残します（否定の言葉・用語・数字は省きません）</small></span></label>
+      <label class="option"><input type="checkbox" id="optZoom" checked><span>自然なズーム<br><small class="note" style="margin:0">長めの場面で、ゆっくり1.03〜1.06倍に寄る・引く（1分に2回まで・20秒以上あけて、ハサミや手元が切れない場合のみ。1080pの元動画では、拡大で髪の細かさが落ちるためズームしません）</small></span></label>
       <p class="note" style="margin-top:0">最後の約0.9秒で映像がなめらかに黒くなり（音声も同時に小さくなります）、最後の0.2秒は黒い画面のまま終わります。</p>
     </div>
     <button class="btn block" id="btnRender">この内容でMP4を書き出す</button>
@@ -439,7 +439,7 @@
     </ul>
   </section>
 
-  <footer>Amity AI動画編集 ・ テスト版 v0.9.4</footer>
+  <footer>Amity AI動画編集 ・ テスト版 v0.9.5</footer>
 </main>
 <script type="module" src="js/app.js"></script>
 </body>

@@ -15,6 +15,7 @@ import {
   END_FADE, END_HOLD, extendEnding, outputLength, OPENING_DURATIONS,
 } from './plan.js';
 import { tokensToChunks, fixTerms, checkRanges, alignScript, assignScript, cutEnding } from './asrtext.js';
+import { findRestarts } from './acoustic.js';
 import {
   previousJob, log, setEnv, jobStart, jobStage, jobProgress, jobEnd, report, clearLogs, errorText,
 } from './diag.js';
@@ -683,6 +684,18 @@ async function runAnalysis(job) {
     }
     if (!state.rmsDb) state.rmsDb = new Float32Array(Math.ceil(src.duration / FRAME_SEC));
     state.speech = state.rmsDb.some(v => v !== 0) ? detectSpeech(state.rmsDb) : { regions: [], voice: [], threshold: 0 };
+    // 音の繰り返しで、文字起こしAIが見落とす言い直しを探す（音声がある間だけ。結果は保存して再開時に使う）
+    if (pcm && state.speech.threshold && !A.restarts) {
+      try {
+        A.restarts = findRestarts(pcm, fineSpeech(state.rmsDb, state.speech.threshold));
+        if (A.restarts.length) log('音の繰り返しで見つけた言いかけ', A.restarts);
+        await persistJob(job);
+      } catch (err) {
+        log('言いかけの音の検出に失敗（使わずに続行）', errorText(err));
+        A.restarts = [];
+      }
+    }
+    state.restarts = A.restarts || [];
     log('音声の解析完了', { mode: A.audio?.mode ?? getAudioMode(), speechRegions: state.speech.regions.length, sounds: state.speech.sounds?.length ?? 0 });
 
     // 2. 文字起こし（区間ごとに保存。失敗しても続ける）
@@ -874,7 +887,7 @@ function makePlan(brief) {
   const bp = briefPlan(brief);
   state.brief = bp.brief;
   state.units = buildUnits({
-    duration: src.duration, rmsDb: state.rmsDb, speech: state.speech, chunks: state.chunks, motion: state.motion,
+    duration: src.duration, rmsDb: state.rmsDb, speech: state.speech, chunks: state.chunks, motion: state.motion, restarts: state.restarts,
     pace: bp.brief.style === 'tempo' ? 'tempo' : 'natural',
   });
   state.trims = {};
@@ -1173,7 +1186,9 @@ function styleSummary(timeline, useSubs, useZoom, overlay) {
   }
   if (useZoom) {
     const z = timeline.filter(c => c.zoom);
-    parts.push(z.length ? `ズーム: ${z.length}か所（${z.map(c => formatTime(c.outStart) + ' ' + c.zoom.z.toFixed(2) + '倍').join('、')}）` : 'ズーム: 合う場面がなかったため なし');
+    parts.push(z.length ? `ズーム: ${z.length}か所（${z.map(c => formatTime(c.outStart) + ' ' + c.zoom.z.toFixed(2) + '倍').join('、')}）`
+      : timeline.zoomSkipped === 'resolution' ? 'ズーム: なし（元の動画の解像度では拡大になり、髪の細かさが落ちるため。4Kで撮影した動画では控えめにズームします）'
+      : 'ズーム: 合う場面がなかったため なし');
   } else {
     parts.push('ズーム: なし');
   }
@@ -1544,6 +1559,7 @@ async function continueJob(job, { reselected = false } = {}) {
   // 解析は終わっている: 保存した結果から構成を作り直し、選んだ場面を戻す
   const A = job.analysis;
   state.rmsDb = A.audio?.rmsDb || new Float32Array(Math.ceil(state.src.duration / FRAME_SEC));
+  state.restarts = A.restarts || [];
   state.speech = A.audio?.rmsDb ? detectSpeech(state.rmsDb) : { regions: [], voice: [], threshold: 0 };
   state.chunks = A.asr?.done ? A.asr.chunks : null;
   state.motion = A.motion?.data || null;

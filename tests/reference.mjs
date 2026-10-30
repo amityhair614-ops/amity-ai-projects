@@ -27,7 +27,7 @@ export function planFixture(analysis, targetSec = 45) {
   const { duration, rmsDb, speech, motion } = analysis;
   const chunks = rebuildChunks(analysis);
   setBreakTerms([]);
-  const units = buildUnits({ duration, rmsDb, speech, chunks, motion });
+  const units = buildUnits({ duration, rmsDb, speech, chunks, motion, restarts: analysis.restarts || [] });
   const { target, max } = targetRange(targetSec);
   const sel = selectUnits(units, duration, target, max);
   const timeline = buildTimeline(extendEnding(sel, speech.voice, duration), { subtitles: true });
@@ -93,13 +93,14 @@ export function breakRecall(manualTexts, autoTexts) {
 }
 
 // 字幕に出さなくても意味が伝わる言葉（つなぎ言葉・調子をとる「ね」・「という」・文の頭の「なので」など）が、字幕に出た回数
-const UNNEEDED = [/(?:^|、)(?:えー+と?|えっと|ええと|あのー?|まあ|まぁ|うーん)/, /^(?:なので|ですので|それで|そうなると|じゃあ)/, /(?:[一-鿿々ァ-ヶー]|それ|これ)[がをはにでもと]ね(?=..)|分ね/, /[いな]という(?=[一-鿿々ァ-ヶ])/];
+const UNNEEDED = [/(?:^|、)(?:えー+と?|えっと|ええと|あのー?|まあ|まぁ|うーん)/, /^(?:なので|ですので|それで|そして|それから|そうなると|なぜかというと|じゃあ)/, /(?:[一-鿿々ァ-ヶー]|それ|これ)[がをはにでもとの]ね(?=..)|分ね|[一-鿿][ぁ-ゖ]?なね(?=..)/, /[いな]という(?=[一-鿿々ァ-ヶ])/];
 export function subtitleStats(texts, durs) {
   const lens = texts.map(t => normalizeText(t).length);
   return {
     n: texts.length,
     avgChars: lens.reduce((a, b) => a + b, 0) / Math.max(1, lens.length),
     over12: lens.filter(n => n > 12).length,
+    within10: lens.filter(n => n <= 10).length / Math.max(1, lens.length),
     avgSec: durs.reduce((a, b) => a + b, 0) / Math.max(1, durs.length),
     maxSec: Math.max(0, ...durs),
     unneeded: texts.reduce((a, t) => a + UNNEEDED.filter(re => re.test(t)).length, 0),
@@ -123,7 +124,7 @@ export function report(manual, cmp) {
   out.push(`      お手本 ${manual.subtitles.length}枚（すべて1行・文字数 中央 ${median(mLens)} 最大 ${Math.max(...mLens)}・表示 中央 ${f(median(mDurs))}秒 最大 ${f(Math.max(...mDurs))}秒）`);
   const a = subtitleStats(cmp.pages.map(p => p.text), cmp.pages.map(p => p.end - p.start));
   const b = subtitleStats(manual.subtitles.map(x => x.text), manual.subtitles.map(x => x.outEnd - x.outStart));
-  out.push(`字幕の平均: 自動 ${a.avgChars.toFixed(1)}文字・${f(a.avgSec)}秒（12文字より長い ${a.over12}枚・不要な言葉 ${a.unneeded}回） / お手本 ${b.avgChars.toFixed(1)}文字・${f(b.avgSec)}秒（12文字より長い ${b.over12}枚・不要な言葉 ${b.unneeded}回）`);
+  out.push(`字幕の平均: 自動 ${a.avgChars.toFixed(1)}文字・${f(a.avgSec)}秒（10文字以内 ${(a.within10 * 100).toFixed(0)}%・12文字より長い ${a.over12}枚・不要な言葉 ${a.unneeded}回） / お手本 ${b.avgChars.toFixed(1)}文字・${f(b.avgSec)}秒（10文字以内 ${(b.within10 * 100).toFixed(0)}%・不要な言葉 ${b.unneeded}回）`);
   out.push(`字幕の切れ目: お手本の切れ目のうち自動でも切れ目 ${(cmp.breaks.recall * 100).toFixed(0)}%${cmp.breaks.missed.length ? '（違う所: ' + cmp.breaks.missed.join('、') + '）' : ''}`);
   if (cmp.pauses) {
     const p = cmp.pauses, m = manual.pauses || {};

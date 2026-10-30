@@ -180,18 +180,19 @@ test('画質: 1080pの素材では、拡大になる（ぼやける）ズーム�
   assert.ok(buildTimeline(clips, { srcW: 2160, srcH: 3840, zoom: true }).some(c => c.zoom));
 });
 
-test('字幕の区切り: 1行だけ・15文字以内で、言葉の途中（「まと／まり」「頭に／入れて」）・否定の前（「軽く／しない」）では分けない', () => {
+test('字幕の区切り: 1行だけ・原則10文字以内で、言葉の途中（「まと／まり」「頭に／入れて」）・否定の前（「軽く／しない」）では分けない', () => {
   const pages = t => subtitlePages(t, t.length * 0.15).map(p => { assert.equal(p.lines.length, 1, '2行にしない'); return p.lines[0]; });
   const a = pages('アホ毛のようなピンピンした髪の毛がたくさんできてしまってまとまりつかないようになってしまいます');
-  for (const x of a) assert.ok(x.length <= 15, x);
+  for (const x of a) assert.ok(x.length <= 14, x);
   assert.ok(a.some(x => x.startsWith('まとまり')) && !a.some(x => x.endsWith('まと')));
-  assert.deepEqual(pages('それを頭に入れてセルフカットやってみてください'), ['それを頭に入れて', 'セルフカットやってみてください']);
-  assert.equal(pages('セルフカットで伸びて重くなったボブを軽くしていく際にこの場所は絶対にすかないでください').at(-1), '絶対にすかないでください');
+  // 10文字を超える所は、自然な切れ目（「〜やって／みてください」）で分ける
+  assert.deepEqual(pages('それを頭に入れてセルフカットやってみてください'), ['それを頭に入れて', 'セルフカットやって', 'みてください']);
+  assert.equal(pages('セルフカットで伸びて重くなったボブを軽くしていく際にこの場所は絶対にすかないでください').at(-1), 'すかないでください');
   // 「して／しまう」「て／ください」は分けない
   for (const x of pages('こうなってしまうと髪の毛が伸びないと修正カットができないです')) assert.ok(!x.startsWith('しま'), x);
   // 否定の言葉を前の言葉から離さない（前のページだけで意味が逆にならないように）
   for (const t of ['つむじやつむじ周りを軽くしないようにしておきましょう', '髪の毛が伸びないと修正カットができないんですよね']) {
-    for (const x of pages(t)) assert.ok(!/^(?:しない|ない|できない)/.test(x) && !/軽く$/.test(x), x);
+    for (const x of pages(t)) assert.ok(!/^(?:しない|ない|なく)/.test(x) && !/軽く$/.test(x), x);
   }
 });
 
@@ -229,8 +230,8 @@ test('意味が変わるおそれのある聞き落とし: 2通りの聞き取�
 test('字幕の区切り（実際の撮影音声の文）: 「でき」「アホ毛のような」を分けず、1つの字幕に2つの文を入れない', () => {
   const pages = t => subtitlePages(t, t.length * 0.15).map(p => p.lines.join('／'));
   const a = pages('この場所を軽くしてしまうとアホ毛のようなピンピンした髪の毛がたくさんできてしまってまとまりつかないようになってしまいます');
-  assert.equal(a[0], 'この場所を軽くしてしまうと');
-  for (const x of a) assert.ok(!/^(毛|き|の|ような)/.test(x) && x.length <= 15, x);
+  assert.deepEqual(a.slice(0, 2), ['この場所を', '軽くしてしまうと']);
+  for (const x of a) assert.ok(!/^(毛|き|の|ような)/.test(x) && x.length <= 14, x);
   // 「…軽くしない」で文が終わり「それを…」から次の文: 2つの文を1つの字幕にしない
   const b = pages('となればトップ表面の根元付近は軽くしないそれを頭に入れてセルフカットやってみてください');
   assert.ok(b.some(x => x.endsWith('軽くしない')) && b.some(x => x.startsWith('それを')), b.join(' | '));

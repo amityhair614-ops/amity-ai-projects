@@ -91,7 +91,7 @@
    "outStart": 8.17,
    "outEnd": 9.37,
    "srcStart": 8.17,
-   "srcEnd": 9.37,
+   "srcEnd": 9.1,
    "chars": 8
   },
   {
@@ -107,7 +107,7 @@
    "outStart": 13.03,
    "outEnd": 16.37,
    "srcStart": 13.0,
-   "srcEnd": 16.83,
+   "srcEnd": 16.3,
    "chars": 13
   },
   {
@@ -139,7 +139,7 @@
    "outStart": 26.4,
    "outEnd": 31.53,
    "srcStart": 26.86,
-   "srcEnd": 32.63,
+   "srcEnd": 26.9,
    "chars": 30
   },
   {
@@ -147,7 +147,7 @@
    "outStart": 31.57,
    "outEnd": 34.87,
    "srcStart": 32.67,
-   "srcEnd": 36.31,
+   "srcEnd": 34.37,
    "chars": 17
   },
   {
@@ -196,7 +196,7 @@
   },
   {
    "start": 8.17,
-   "end": 9.37,
+   "end": 9.1,
    "text": "それはどこなのか",
    "retake": false
   },
@@ -208,7 +208,7 @@
   },
   {
    "start": 13.0,
-   "end": 16.83,
+   "end": 16.3,
    "text": "この場所を軽くしてしまうと、",
    "retake": false
   },
@@ -232,13 +232,13 @@
   },
   {
    "start": 26.86,
-   "end": 32.63,
+   "end": 26.9,
    "text": "こうなってしまうと髪の毛が伸びないと修正カットができないです",
    "retake": false
   },
   {
    "start": 32.67,
-   "end": 36.31,
+   "end": 34.37,
    "text": "下手すれば半年以上伸ばし続けないと",
    "retake": false
   },
