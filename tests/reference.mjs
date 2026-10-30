@@ -49,7 +49,12 @@ export function compare(manual, timeline, analysis) {
   const removed = manual.removed.map(r => ({ ...r, usedSec: sumOverlap(used, r.srcStart, r.srcEnd) }));
   // お手本が残した文（言い直しでない文）のうち、自動の構成で使った割合
   const spoken = manual.spoken.map(s => ({ ...s, cover: sumOverlap(used, s.start, s.end) / (s.end - s.start) }));
-  const pages = timeline.flatMap(c => c.subtitles.map(p => ({ start: p.start, end: p.end, lines: p.lines, text: p.lines.join('') })));
+  // 場面をまたいで続けて出した同じ字幕（cont）は、前のページの続き（1枚と数える）
+  const pages = [];
+  for (const p of timeline.flatMap(c => c.subtitles)) {
+    if (p.cont && pages.length) { pages[pages.length - 1].end = p.end; continue; }
+    pages.push({ start: p.start, end: p.end, lines: p.lines, text: p.lines.join('') });
+  }
   return {
     outSec, manualSec: manual.duration ?? manual.kept.reduce((s, k) => s + k.srcEnd - k.srcStart, 0),
     iou: both / (usedSec + keptSec - both), extraSec: usedSec - both, missingSec: keptSec - both,

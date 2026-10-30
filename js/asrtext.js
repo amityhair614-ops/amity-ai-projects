@@ -1,6 +1,7 @@
 // 文字起こし結果（1文字ごとの時刻つき）から、字幕の文・用語の直し・確認が必要な箇所・原稿との照合を作る。
 // ブラウザAPIを使わないので Node でテストできる
 import { BEAUTY_TERMS, moraCount } from './plan.js';
+import { formatNumbers } from './captions.js';
 
 const PUNCT = /[、。，．,.！？!?\s「」『』（）()…・]/;
 const toKata = t => t.replace(/[ぁ-ゖ]/g, c => String.fromCharCode(c.charCodeAt(0) + 0x60));
@@ -58,13 +59,15 @@ export function tokensToChunks(raw, fine = []) {
       const inWord = isKana(sofar[sofar.length - 1]) && isKana(k.s[0]); // カタカナ語の途中（「ヘ／アカッター」）では分けない
       const brk = pause >= 0.55 || (!cont && SENTENCE_END_RE.test(sofar) && pause >= 0.12) || (!weakCont && WEAK_END_RE.test(sofar) && pause >= 0.3)
         || (sofar.length >= 40 && pause >= 0.3) || k.t - prev.t > 2.5;
-      if (brk && !(inWord && pause < 0.8) && !(yoCont && pause < 0.55)) flush();
+      // 数と数える言葉（「一｜回」「三｜センチ」）の間では分けない（「いっ…かい」のように間があっても）
+      const numJoin = /[〇一二三四五六七八九十百千0-9]$/.test(prev.s) && /^[回度本枚個人歳秒分日年割段つセミパ%％]/.test(k.s) && pause < 1.2;
+      if (brk && !(inWord && pause < 0.8) && !(yoCont && pause < 0.55) && !numJoin) flush();
       // 読点: 「〜て」「〜ので」などのあとの、はっきりした間 / 長い間 / 同じ言葉で言い直した所（「このような、このような」）。
       // 「トップ」の「ッ」のような言葉の中の無音・1〜2文字の言葉（「で、も」）のあとには入れない
       else {
         const clause = sofar.split('、').pop();
         const restart = clause.length >= 2 && clause.startsWith(k.s + (tokens[tokens.indexOf(k) + 1]?.s || ''));
-        if (!NO_COMMA_BEFORE.includes(k.s[0]) && !inWord && clause.length >= 3
+        if (!NO_COMMA_BEFORE.includes(k.s[0]) && !inWord && !numJoin && clause.length >= 3
           && ((pause >= 0.35 && COMMA_AFTER_RE.test(sofar)) || pause >= 0.45 || (pause >= 0.25 && restart))) { cur.push({ ...k, comma: true }); continue; }
       }
     }
@@ -407,4 +410,18 @@ export function assignScript(aligned, units) {
 // 1つの場面だけの原稿の文字（ほかの場面がない場合の簡易版）
 export function scriptTextFor(aligned, u) {
   return assignScript(aligned, [u]).get(u)?.text ?? '';
+}
+
+// 数の聞き間違いの可能性（数そのものは音声で確かめられないことが多いので、直さずに要確認にする）:
+// 前後（±20秒）で話している数がどれも1けたなのに、1つだけ桁がとても大きい数（「1回、2回、3回、4回」の後の「123度」）。
+// 返り値: chunks と同じ順の、理由の配列
+export function numberDoubts(chunks) {
+  const nums = chunks.map(c => formatNumbers(c.text || '').numbers.filter(n => n.value != null).map(n => ({ ...n, t: c.start })));
+  const all = nums.flat();
+  return nums.map(list => list.filter(n => n.value >= 100).flatMap(n => {
+    const near = all.filter(m => m !== n && Math.abs(m.t - n.t) <= 20 && m.value != null);
+    if (!near.length || !near.every(m => m.value < 10)) return [];
+    const lo = Math.min(...near.map(m => m.value)), hi = Math.max(...near.map(m => m.value));
+    return [`「${n.label}${n.counter}」は数の聞き間違いの可能性（前後の数は${lo === hi ? lo : `${lo}〜${hi}`}）。音声を確認してください`];
+  }));
 }

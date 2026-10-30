@@ -15,7 +15,7 @@ import {
   END_FADE, END_HOLD, extendEnding, outputLength, OPENING_DURATIONS, BEAUTY_TERMS,
 } from './plan.js';
 import { verifyUnits, verifiedRaw, attachAudioFixes, briefWords, domainWords } from './verify.js';
-import { tokensToChunks, fixTerms, checkRanges, alignScript, assignScript, cutEnding } from './asrtext.js';
+import { tokensToChunks, fixTerms, checkRanges, alignScript, assignScript, cutEnding, numberDoubts } from './asrtext.js';
 import { findRestarts } from './acoustic.js';
 import {
   previousJob, log, setEnv, jobStart, jobStage, jobProgress, jobEnd, report, clearLogs, errorText,
@@ -562,7 +562,7 @@ function verifyTranscript(pcm, units, words, { saved = {}, onResult } = {}) {
     $('btnSkipAsr').onclick = () => { log('字幕AIの確かめをスキップ'); finish(reject, new Error('スキップしました')); };
     const next = () => {
       while (i < units.length && results[i]) i++;
-      if (i >= units.length) return finish(resolve, units.map((u, k) => results[k] || { tokens: u.tokens, fixes: [] }));
+      if (i >= units.length) return finish(resolve, units.map((u, k) => results[k] || { tokens: u.tokens.filter(t => !t.ctx), fixes: [] }));
       const u = units[i];
       const from = Math.max(0, Math.floor(u.start * ASR_RATE)), to = Math.min(pcm.length, Math.ceil(u.end * ASR_RATE));
       const audio = pcm.slice(from, to);
@@ -579,7 +579,7 @@ function verifyTranscript(pcm, units, words, { saved = {}, onResult } = {}) {
         // このまとまりだけ確かめられなかった: 元の文字起こしのまま続ける
         if (m.id != null && m.id === i) {
           log(`字幕AIの確かめ: まとまり ${i + 1} で失敗したため、元の文字起こしを使います`, m.message);
-          results[i] = { tokens: units[i].tokens, fixes: [], tried: 0, failed: true };
+          results[i] = { tokens: units[i].tokens.filter(t => !t.ctx), fixes: [], tried: 0, failed: true };
           i++;
           next();
           return;
@@ -886,8 +886,9 @@ async function storeSource(job) {
 // 字幕の文に、意味が変わるおそれのある聞き落としの印をつける（chunk.doubts）。
 // passes: 3通りの読み方の結果（否定の言葉・用語の有無が違う文）。文の終わりが言葉の途中で終わっている文にもつける
 function attachDoubts(chunks, passes, terms) {
+  const numDs = numberDoubts(chunks);
   return chunks.map((c, i) => {
-    const ds = passDoubts(c, passes, terms);
+    const ds = [...passDoubts(c, passes, terms), ...numDs[i]];
     const next = chunks[i + 1];
     // 「…を」「…は」で終わる文は、すぐ後に続きを話しているなら、声の間で文を分けただけ
     const particle = /[をがは]$/.test((c.text || '').replace(/[、。\s]+$/, ''));

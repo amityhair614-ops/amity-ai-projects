@@ -93,7 +93,7 @@ async function recognize(audio) {
 // 文字起こしのまとまり unit を、同じ音声で確かめる（verify.js）。audio は unit.start からの音声
 async function verify(audio, offset, unit, words) {
   const E = await encode(ort, enc, audio);
-  if (!E) return { tokens: unit.tokens, fixes: [], suggest: [], tried: 0 };
+  if (!E) return { tokens: unit.tokens.filter(k => !k.ctx), fixes: [], suggest: [], tried: 0 };
   const r = await verifySegment(ortModel(ort, dec, joi), E.eo, E.T, E.D, offset, unit, symbols, { words });
   return { tokens: r.tokens, fixes: r.fixes, suggest: r.suggest, tried: r.tried };
 }

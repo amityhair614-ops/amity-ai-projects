@@ -170,7 +170,7 @@ test('verify: 決まりの値（固定テスト素材で測った正しい直し
   assert.ok(VERIFY.endMin <= 2.17 && VERIFY.endMin > 0);
 });
 
-test('verify: 長さで分けたまとまりの端（となりの声が窓にかかる所）の文字は直さない', () => {
+test('verify: 長さで分けたまとまりは、となりの声を文脈として窓に入れ、その文字は直さない', () => {
   // 0.5秒ごとの文字（間0.3秒）が20秒続く: 長さで分ける。「下手」の後の間が一番長いが、送りがなの前なので分けない
   const toks = [];
   for (let k = 0; k < 40; k++) toks.push({ s: k === 20 ? '下' : k === 21 ? '手' : 'あ', t: k * 0.5 + (k >= 22 ? 0.15 : 0) });
@@ -178,7 +178,11 @@ test('verify: 長さで分けたまとまりの端（となりの声が窓にか
   const u = verifyUnits(toks, fine, null, { maxSec: 12 });
   assert.ok(u.length >= 2);
   assert.ok(u.slice(1).every(x => x.lockHead > 0) && u.slice(0, -1).every(x => x.lockTail > 0));
-  assert.ok(!u.some(x => x.tokens[0].t === toks[22].t), u.map(x => x.tokens.map(k => k.s).join('')).join(' | '));
+  const own = x => x.tokens.filter(k => !k.ctx);
+  assert.ok(!u.some(x => own(x)[0].t === toks[22].t), u.map(x => own(x).map(k => k.s).join('')).join(' | '));
+  // となりのまとまりの文字は文脈として窓に入れ（ctx）、結果には含めない。全部の文字がちょうど1回ずつ
+  assert.equal(u.flatMap(own).length, toks.length);
+  assert.ok(u.slice(1).every(x => x.tokens[0].ctx && x.tokens.filter(k => k.ctx && k.t < own(x)[0].t).length === x.lockHead));
   // まとまりの最後が「…です下手」（「すれば」は次のまとまり）のとき、「下手」を入力した言葉に置き換えない
   const base = [...'できないです下手'].map((s, k) => ({ s, t: k * 0.15 }));
   const ed = proposeEdits(base, { words: ['絶対'], firstProb: () => 0, lockTail: 3 });
@@ -194,4 +198,39 @@ test('verify: 美容の用語で、直すほどではないが音声とかなり
   const chunks = attachAudioFixes([{ start: 0, end: 8, text: '絶対につかないでください' }], [], [{ from: 'つかない', to: 'すかない', t0: 6.2 }]);
   assert.deepEqual(chunks[0].suggest, [{ from: 'つかない', to: 'すかない' }]);
   assert.equal(chunks[0].text, '絶対につかないでください');
+});
+
+test('verify: 聞き分けにくい美容の言葉の組・カタカナの伸ばす音・「〜ないで」の候補を作る（音声で確かめてから直す）', () => {
+  const mk = t => [...t].map((s, k) => ({ s, t: k * 0.12 }));
+  const tos = (t, kind) => proposeEdits(mk(t)).filter(e => e.kind === kind).map(e => t.slice(e.i, e.j) + '→' + e.to.join(''));
+  assert.ok(tos('ハサミで切る', 'confuse').includes('ハサミ→すきバサミ'));
+  assert.ok(tos('ハサミで切る', 'confuse').includes('切る→すく'));
+  assert.ok(tos('すきバサミで', 'confuse').includes('すきバサミ→ハサミ'));
+  assert.ok(!tos('すきバサミで', 'confuse').includes('ハサミ→すきバサミ'));
+  assert.ok(tos('ここは切らないで', 'confuse').includes('切ら→すか'));
+  assert.ok(tos('短くする', 'confuse').includes('短く→軽く'));
+  assert.ok(!tos('少なくする', 'confuse').length);
+  assert.ok(tos('するのがベタなのか', 'sound').includes('→ー'));
+  assert.ok(endingCandidates('ここはすかない').includes('で'));
+  // 選び方: 音声の方がはっきり合うときだけ入れ替え、近いときは要確認
+  const e = (kind, i, j, to, score, ac) => ({ kind, i, j, to: [...to], score, ac });
+  let c = chooseEdits([e('confuse', 0, 2, 'すく', 0.2, -0.5)]);
+  assert.equal(c.length, 0);
+  assert.equal(c.suggest.length, 1);
+  c = chooseEdits([e('sound', 4, 4, 'ー', 2.82, 0.88)]);
+  assert.equal(c.length, 1);
+  c = chooseEdits([e('term', 3, 5, 'ボブ', -4.6, -7.9)]);
+  assert.equal(c.length, 0);
+  assert.equal(c.suggest[0].to.join(''), 'ボブ');
+});
+
+test('verify: 文脈のとなりの文字を除いた、まとまりの文字がまるごと・頭だけ消える直しはしない／助詞・語尾を言葉にしない', () => {
+  const mk = t => [...t].map((s, k) => ({ s, t: k * 0.12 }));
+  // 「です」のあと（文脈）「それもあるそれ」（このまとまり）「それが」（文脈）: 別の読み方にない言いかけでも文字は消さない
+  const base = mk('ですそれもあるそれそれが');
+  const pass = mk('ですそれが');
+  const ed = proposeEdits(base, { passes: [pass], lockHead: 2, lockTail: 3 }).filter(e => e.kind === 'pass' && !e.to.length);
+  assert.equal(ed.length, 0, JSON.stringify(ed));
+  const t = proposeEdits(mk('見えやすいです'), { words: ['場所'], firstProb: () => 0 }).filter(e => e.kind === 'term');
+  assert.ok(!t.some(e => e.i >= 5), JSON.stringify(t.map(e => [e.i, e.j])));
 });

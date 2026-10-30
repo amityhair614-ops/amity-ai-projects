@@ -1,0 +1,304 @@
+{
+ "source": "IMG_5992.mp4（57.90秒）",
+ "manual": "タイトルなし(20261030-230244).mp4（55.67秒）",
+ "ai": "amity-short-20261031-0746.mp4（54.67秒・v0.9.7）",
+ "duration": 55.67,
+ "targetSec": 60,
+ "pauses": {
+  "median": 0.15,
+  "p75": 0.25,
+  "p90": 0.3,
+  "max": 0.45,
+  "note": "手動編集の動画の音声を測った話の途中の間（1.5秒未満）"
+ },
+ "note": "手動編集（正解）と元の動画の照合結果。kept/removed は元の動画の秒（2コマ以内の小さなカットは見分けられない）。subtitles は手動編集の字幕23枚（画面の字幕の帯を見つけて読んだ）。言い間違いはほとんどない動画（spoken はすべて retake なし）",
+ "kept": [
+  {
+   "srcStart": 0.93,
+   "srcEnd": 18.27,
+   "outStart": 0.0,
+   "outEnd": 17.23
+  },
+  {
+   "srcStart": 18.47,
+   "srcEnd": 29.73,
+   "outStart": 17.23,
+   "outEnd": 28.53
+  },
+  {
+   "srcStart": 30.3,
+   "srcEnd": 34.73,
+   "outStart": 28.53,
+   "outEnd": 33.0
+  },
+  {
+   "srcStart": 35.07,
+   "srcEnd": 57.7,
+   "outStart": 33.0,
+   "outEnd": 55.67
+  }
+ ],
+ "removed": [
+  {
+   "srcStart": 0,
+   "srcEnd": 0.93,
+   "dur": 0.93
+  },
+  {
+   "srcStart": 18.27,
+   "srcEnd": 18.47,
+   "dur": 0.2
+  },
+  {
+   "srcStart": 29.73,
+   "srcEnd": 30.3,
+   "dur": 0.57
+  },
+  {
+   "srcStart": 34.73,
+   "srcEnd": 35.07,
+   "dur": 0.34
+  },
+  {
+   "srcStart": 57.7,
+   "srcEnd": 57.9,
+   "dur": 0.2
+  }
+ ],
+ "subtitles": [
+  {
+   "text": "セルフカットで",
+   "outStart": 1.0,
+   "outEnd": 2.1,
+   "srcStart": 1.93,
+   "srcEnd": 3.07,
+   "chars": 7
+  },
+  {
+   "text": "伸びて重くなった髪を",
+   "outStart": 2.1,
+   "outEnd": 4.23,
+   "srcStart": 3.07,
+   "srcEnd": 5.21,
+   "chars": 10
+  },
+  {
+   "text": "すきバサミで軽くしていく際",
+   "outStart": 4.23,
+   "outEnd": 6.93,
+   "srcStart": 5.2,
+   "srcEnd": 7.91,
+   "chars": 13
+  },
+  {
+   "text": "同じ場所に",
+   "outStart": 7.37,
+   "outEnd": 8.07,
+   "srcStart": 8.4,
+   "srcEnd": 9.14,
+   "chars": 5
+  },
+  {
+   "text": "何度も入れないようにしましょう",
+   "outStart": 8.07,
+   "outEnd": 10.67,
+   "srcStart": 9.13,
+   "srcEnd": 11.74,
+   "chars": 15
+  },
+  {
+   "text": "もし何度も同じ場所に",
+   "outStart": 11.03,
+   "outEnd": 13.67,
+   "srcStart": 12.07,
+   "srcEnd": 14.71,
+   "chars": 10
+  },
+  {
+   "text": "入れてしまうと",
+   "outStart": 13.67,
+   "outEnd": 15.0,
+   "srcStart": 14.7,
+   "srcEnd": 16.04,
+   "chars": 7
+  },
+  {
+   "text": "必ずスカスカになってしまいます",
+   "outStart": 15.0,
+   "outEnd": 17.27,
+   "srcStart": 16.03,
+   "srcEnd": 18.51,
+   "chars": 15
+  },
+  {
+   "text": "こうなると取り返しがつかないです",
+   "outStart": 17.47,
+   "outEnd": 19.57,
+   "srcStart": 18.67,
+   "srcEnd": 20.77,
+   "chars": 16
+  },
+  {
+   "text": "髪の毛が伸びないと修正が効かないです",
+   "outStart": 19.7,
+   "outEnd": 23.17,
+   "srcStart": 20.93,
+   "srcEnd": 24.37,
+   "chars": 18
+  },
+  {
+   "text": "下手すれば",
+   "outStart": 23.43,
+   "outEnd": 24.13,
+   "srcStart": 24.67,
+   "srcEnd": 25.34,
+   "chars": 5
+  },
+  {
+   "text": "半年以上伸ばさないとうまくいかないです",
+   "outStart": 24.13,
+   "outEnd": 28.53,
+   "srcStart": 25.33,
+   "srcEnd": 29.74,
+   "chars": 19
+  },
+  {
+   "text": "ではどうやって軽くするのがベストなのか",
+   "outStart": 28.7,
+   "outEnd": 33.1,
+   "srcStart": 30.47,
+   "srcEnd": 35.17,
+   "chars": 19
+  },
+  {
+   "text": "持った束の真ん中辺りから",
+   "outStart": 33.1,
+   "outEnd": 35.43,
+   "srcStart": 35.17,
+   "srcEnd": 37.51,
+   "chars": 12
+  },
+  {
+   "text": "一度ずつ入れていく",
+   "outStart": 35.43,
+   "outEnd": 38.07,
+   "srcStart": 37.5,
+   "srcEnd": 40.11,
+   "chars": 9
+  },
+  {
+   "text": "1回、2回、3回、4回",
+   "outStart": 38.07,
+   "outEnd": 41.27,
+   "srcStart": 40.1,
+   "srcEnd": 43.31,
+   "chars": 8
+  },
+  {
+   "text": "4回は多いかもしれないですが",
+   "outStart": 41.27,
+   "outEnd": 43.2,
+   "srcStart": 43.3,
+   "srcEnd": 45.24,
+   "chars": 14
+  },
+  {
+   "text": "1〜3度ぐらい",
+   "outStart": 43.2,
+   "outEnd": 45.2,
+   "srcStart": 45.23,
+   "srcEnd": 47.24,
+   "chars": 7
+  },
+  {
+   "text": "入れていくようにやっていきましょう",
+   "outStart": 45.2,
+   "outEnd": 47.23,
+   "srcStart": 47.23,
+   "srcEnd": 49.31,
+   "chars": 17
+  },
+  {
+   "text": "グラデーションのように",
+   "outStart": 47.27,
+   "outEnd": 48.4,
+   "srcStart": 49.33,
+   "srcEnd": 50.44,
+   "chars": 11
+  },
+  {
+   "text": "徐々に毛先に向かって",
+   "outStart": 48.4,
+   "outEnd": 50.3,
+   "srcStart": 50.43,
+   "srcEnd": 52.34,
+   "chars": 10
+  },
+  {
+   "text": "すきバサミをずらしていく",
+   "outStart": 50.3,
+   "outEnd": 51.97,
+   "srcStart": 52.33,
+   "srcEnd": 54.01,
+   "chars": 12
+  },
+  {
+   "text": "そのようなやり方で軽くしていってください",
+   "outStart": 52.3,
+   "outEnd": 55.53,
+   "srcStart": 54.33,
+   "srcEnd": 57.57,
+   "chars": 20
+  }
+ ],
+ "spoken": [
+  {
+   "start": 1.8,
+   "end": 11.75,
+   "text": "セルフカットで伸びて重くなった髪をすきバサミで軽くしていく際に同じ場所に何度も入れないようにしておきましょう",
+   "retake": false
+  },
+  {
+   "start": 11.69,
+   "end": 18.1,
+   "text": "もし何度も同じ場所に入れてしまうと必ずスカスカになってしまいます",
+   "retake": false
+  },
+  {
+   "start": 18.21,
+   "end": 20.65,
+   "text": "こうなると取り返しがつかないです",
+   "retake": false
+  },
+  {
+   "start": 20.75,
+   "end": 24.25,
+   "text": "髪の毛が伸びないと修正がきかないです",
+   "retake": false
+  },
+  {
+   "start": 23.68,
+   "end": 29.6,
+   "text": "下手すれば半年以上伸ばさないとうまくいかないです",
+   "retake": false
+  },
+  {
+   "start": 29.89,
+   "end": 39.85,
+   "text": "どうやって軽くするのがベタなのか持った束の真ん中辺りから一度ずつ入れていきます一",
+   "retake": false
+  },
+  {
+   "start": 40.04,
+   "end": 49.6,
+   "text": "回二回三回四回四回はね多いかもしれないですが百二十三度ぐらいね入れていくようにやっていきましょう",
+   "retake": false
+  },
+  {
+   "start": 48.35,
+   "end": 57.5,
+   "text": "グラデーションのように徐々に毛先に向かってすきバサミをずらしていくそのようなやり方で軽くしていってください",
+   "retake": false
+  }
+ ]
+}

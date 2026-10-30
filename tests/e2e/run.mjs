@@ -367,7 +367,7 @@ try {
   if (dumpPath) {
     const a = await page.evaluate(() => {
       const s = window.amityDebug;
-      return { duration: s.src.duration, rmsDb: Array.from(s.rmsDb, v => +v.toFixed(1)), speech: s.speech, chunks: s.chunks, motion: s.motion, ...(s.asrVerify ? { verify: s.asrVerify } : {}) };
+      return { duration: s.src.duration, rmsDb: Array.from(s.rmsDb, v => +v.toFixed(1)), speech: s.speech, chunks: s.chunks, motion: s.motion, restarts: s.restarts || [], ...(s.asrVerify ? { verify: s.asrVerify } : {}) };
     });
     fs.writeFileSync(dumpPath, JSON.stringify(a));
     console.log('解析の結果を保存: ' + dumpPath);

@@ -1,7 +1,7 @@
 // 編集プランを作る純粋関数（ブラウザAPIを使わないので Node でテストできる）
 import { analyzeContent } from './content.js';
 
-import { displayText, cleanForDisplay } from './captions.js';
+import { displayText, cleanForDisplay, formatNumbers } from './captions.js';
 
 export const FRAME_SEC = 0.05; // 音量を測る単位（50ms）
 export const OUT_W = 1080;
@@ -49,6 +49,9 @@ export const BEAUTY_TERMS = [
   { term: 'すきバサミ', reading: 'スキバサミ', variants: ['スキーバサミ', 'すきばさみ', 'スキバサミ', '隙鋏', '好きバサミ'] },
   { term: 'チョップカット', variants: ['チョップカッと', 'チャップカット', 'チョップカッド', 'ちょっとカット'] },
   { term: '丸み', reading: 'マルミ', variants: ['マルミ', 'まるみ'] },
+  { term: '根元', reading: 'ネモト', variants: ['ねもと', '根本'] },
+  { term: '生え際', reading: 'ハエギワ', variants: ['はえぎわ', '生え技'] },
+  { term: 'つむじ', reading: 'ツムジ', variants: ['ツムジ', '旋毛'] },
   { term: '軽さ', reading: 'カルサ', variants: ['カルサ'] },
   { term: '0度', variants: ['ゼロド', 'ゼロ度', '零度'] },
   { term: '45度', variants: ['45ド', '四十五度'] },
@@ -463,6 +466,10 @@ export function passDoubts(c, passes, terms = []) {
   const out = [];
   if (texts.some(t => hasNegation(t) !== hasNegation(c.text))) out.push('否定の言葉（ない・ません）を聞き落としている可能性');
   for (const t of terms) if (t.length >= 2 && !(c.text || '').includes(t) && texts.some(x => x.includes(t))) out.push(`「${t}」を聞き落としている可能性`);
+  // 数（回数・長さ）の聞き取りが読み方によって違う
+  const nums = t => formatNumbers(t).numbers.map(n => n.label + n.counter).join('・');
+  const mine = nums(c.text || ''), other = texts.map(nums).find(x => x && x !== mine);
+  if (other) out.push(`数の聞き取りが読み方によって違います（${mine || 'なし'} / ${other}）`);
   return out;
 }
 
@@ -1111,6 +1118,9 @@ const NEGATION_HEAD_RE = /^(?:ない|なく|なかっ|なけれ|ません|ず[�
 function breakScore(text, i, inside, pause = 0) {
   const prev = text[i - 1], next = text[i];
   if (!prev || !next || NO_LINE_START.includes(next) || next === 'ん') return -Infinity;
+  // 数と数える言葉（「1回」「3cm」「1〜3度」）の途中では切らない
+  if ((charType(prev) === 'num' && (charType(next) === 'num' || /^(?:[〜~.%]|cm|mm|[回度本枚個人歳秒分日年割段つ]|時間|週間|[ヶか]月|カ月|[箇か]所|ヶ所|番目)/.test(text.slice(i))))
+    || '〜~'.includes(prev) || '〜~'.includes(next)) return -Infinity;
   // 否定・打ち消しの言葉を前の言葉から離さない（「軽く／しないように」と分けると、前のページだけで意味が逆になる）
   if (NEGATION_HEAD_RE.test(text.slice(i)) || (prev === 'く' && /^(?:し|な|さ)/.test(text.slice(i)) && !SENTENCE_STARTS.some(w => text.startsWith(w, i)))) return -Infinity;
   // 「カット／して」「修正／する」: 名詞と「する」を切り離さない
@@ -1119,6 +1129,8 @@ function breakScore(text, i, inside, pause = 0) {
   if (PARTICLES.includes(next) && charType(prev) !== 'hira' && !'、。'.includes(prev)) return -5;
   // 「と／いう」「ても／らう」「ても／いい」、調子をとる「ね」を前の言葉から切り離さない
   if ((prev === 'と' && /^いう/.test(text.slice(i))) || (prev === 'も' && text[i - 2] === 'て' && 'らい'.includes(next)) || next === 'ね') return -Infinity;
+  // 「〜か／もしれない」「〜かも／しれない」を切り離さない
+  if ((prev === 'か' && /^もしれ/.test(text.slice(i))) || (/かも$/.test(text.slice(0, i)) && /^しれ/.test(text.slice(i)))) return -Infinity;
   // 「〜ない／ように」「〜する／ような」と、「よう」を前の言葉から切り離さない
   if (/^よう[にな]/.test(text.slice(i)) && charType(prev) === 'hira') return -Infinity;
   // 文の終わりの言葉（「です／よね」「ます／よ」）を切り離さない
@@ -1458,12 +1470,23 @@ export function buildTimeline(clips, opts = {}) {
   // 字幕の位置: いつも下（お手本と同じ）。文字を小さめにして、髪や手元を隠す面積を減らしている
   for (const c of tl) c.subPos = 'bottom';
 
-  // 字幕のフェード: 前後に字幕が切れ目なく続くときは短く
+  // 場面の最後の字幕が短すぎて読めないとき（場面の終わりで切れる）は、次の場面の最初の字幕が出るまでのすき間に
+  // 同じ字幕を続けて出す（字幕は場面ごとに描くので、次の場面に続きのページを入れる。フェードはかけない）
+  for (let i = 0; i + 1 < tl.length; i++) {
+    const L = tl[i].subtitles[tl[i].subtitles.length - 1], N = tl[i + 1];
+    if (!L || L.end < tl[i].outStart + tl[i].outDuration - 0.05) continue;
+    const need = readTime(L) - (L.end - L.start);
+    const room = (N.subtitles[0]?.start ?? N.outStart + N.outDuration) - 0.05 - L.end;
+    const add = Math.min(need, room, READ_SEC.shift + 0.2);
+    if (add > 0.05) N.subtitles.unshift({ ...L, start: L.end, end: L.end + add, cont: true, omitted: undefined, doubt: undefined });
+  }
+
+  // 字幕のフェード: 前後に字幕が切れ目なく続くときは短く（同じ字幕の続きにはかけない）
   const pages = tl.flatMap(c => c.subtitles.map(p => Object.assign(p, { pos: c.subPos })));
   pages.forEach((p, i) => {
     const prev = pages[i - 1], next = pages[i + 1];
-    p.fadeIn = prev && Math.abs(prev.end - p.start) < 0.05 && prev.pos === p.pos ? FADE_SHORT : FADE;
-    p.fadeOut = next && Math.abs(next.start - p.end) < 0.05 && next.pos === p.pos ? FADE_SHORT : FADE;
+    p.fadeIn = p.cont ? 1e-6 : prev && Math.abs(prev.end - p.start) < 0.05 && prev.pos === p.pos ? FADE_SHORT : FADE;
+    p.fadeOut = next?.cont ? 1e-6 : next && Math.abs(next.start - p.end) < 0.05 && next.pos === p.pos ? FADE_SHORT : FADE;
   });
 
   // 自然なズーム: 手元がまとまって動いている2秒以上の場面だけ、ゆっくり 1.03〜1.08 倍まで寄る。
@@ -1823,7 +1846,7 @@ function timedPages(clip, text) {
   let inline = [];
   if (text === clip.text && clip.times?.length === text.length) {
     const c = cleanForDisplay(text, clip.times);
-    if (c.omitted.length) { clip = { ...clip, text: c.text, times: c.times }; text = c.text; inline = c.omitted; }
+    if (c.text !== text) { clip = { ...clip, text: c.text, times: c.times }; text = c.text; inline = c.omitted; }
   }
   // 手直しで表示時刻が変わっていても、その範囲の中の発話だけを使う
   const fine = (clip.fine || []).map(r => ({ start: Math.max(r.start, clip.subStart), end: Math.min(r.end, clip.subEnd) })).filter(r => r.end > r.start);
@@ -1843,10 +1866,33 @@ function timedPages(clip, text) {
     // 短すぎて読めないページは、次のページの直前まで延ばす（文字は省かない）
     if (out[i].end - out[i].start < 0.5) out[i].end = Math.min(limit, out[i].start + 0.5);
   }
+  readable(out, clip.outStart, clipEnd);
   const shown = markIncomplete(toDisplay(out));
   // 字幕で省いた言葉（文の中の「ね」「という」と、ページの頭の「なので」など）。確認・診断情報に出す
   shown.omitted = [...inline, ...shown.flatMap(p => p.omitted || [])];
   return shown;
+}
+
+// 読み取れる表示時間（文字数に合わせる）。短く速く話した所の字幕（「グラデーションのように」0.56秒）は、
+// 前のページとの間のすき間から少し早く出し始め（最大0.3秒）、まだ足りなければ次のページへの切り替えを少し遅らせる
+// （次のページも読める長さを残す。最大0.3秒）。声とのずれは0.3秒以内にとどめる
+export const READ_SEC = { base: 0.3, perChar: 0.08, min: 0.8, shift: 0.3 };
+const readTime = p => Math.max(READ_SEC.min, READ_SEC.base + READ_SEC.perChar * p.lines.join('').length);
+function readable(pages, clipStart, clipEnd = Infinity) {
+  for (let i = 0; i < pages.length; i++) {
+    const p = pages[i];
+    let need = readTime(p) - (p.end - p.start);
+    if (need <= 0) continue;
+    const prevEnd = i ? pages[i - 1].end : clipStart;
+    const early = Math.min(need, READ_SEC.shift, Math.max(0, p.start - prevEnd));
+    p.start -= early; need -= early;
+    const next = pages[i + 1];
+    if (need > 0 && next && next.start <= p.end + 1e-6) {
+      const late = Math.min(need, READ_SEC.shift, Math.max(0, (next.end - next.start) - readTime(next)));
+      p.end += late; next.start += late;
+    } else if (need > 0 && !next) p.end = Math.min(clipEnd, p.end + need); // 場面の最後の字幕は、場面の終わりまで延ばしてよい
+  }
+  return pages;
 }
 
 // 文の途中で終わっている字幕（「結べなく」「やっていき」）。文字起こしAIが文の終わり（「なります」「ましょう」）を

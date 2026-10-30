@@ -23,16 +23,20 @@ export const VERIFY = {
   termMin: -4.5, // 入力した言葉への直し: これより下なら直さない（入力した言葉は話に出てきやすいので、その分を足して比べる）
   domainMin: -3, // 美容の用語（入力していない言葉）への直し
   termSure: -1.5, // これより下で直したときは「要確認」
+  termNear: -6, // 入力した言葉で、直さなかったが要確認として知らせる下限
   termAcMin: -10, // 偏りを差し引く前の差がこれより大きく負なら、音声に合っていないとみなす
   passMin: 3, // 別の読み方の結果への直し（偏りを差し引かない、音声だけの差）
   passEdgeMin: 6,
   endMin: 1.5, // 文の終わりの聞き落とし（「結べなく」→「結べなくなります」）
   endAcMin: 0,
   endSure: 2.5,
+  confuseMin: 1, // 聞き分けにくい美容の言葉の組: 音声の方が合うとき（偏りを差し引いた点数）
+  confuseSure: 2.5,
+  confuseNear: -1, // これより上で入れ替えなかったときは「要確認」
+  soundMin: 2, // カタカナの言葉の最後の「ー」（「ベタ」→「ベター」 +2.8）
   firstMin: Math.log(4e-4), // 入力した言葉の最初の文字が、その位置で出てくる確からしさの下限（候補を絞る）
   domainFirstMin: Math.log(5e-3), // 美容の用語（入力していない言葉）のとき
   pad: 0.3,
-  lock: 3, // 長さで分けたまとまりの端の、直さない文字の数
 };
 export const FRAME = 0.04;
 import { moraCount } from './plan.js';
@@ -257,6 +261,18 @@ function supersequence(a, b) {
   return out;
 }
 
+// 聞き分けにくい美容の言葉の組（正規表現 → 入れ替えた言葉）。動詞は形を変えて使うので、よく使う形ごとに
+// （「すく」＝ 髪の量を減らす。「切る」＝ 長さを変える。意味が違うので、音声で確かめる）
+const CONFUSIONS = [
+  [/(?<!す|き|ス)ハサミ/g, () => 'すきバサミ'],
+  [/すきバサミ/g, () => 'ハサミ'],
+  [/切ら(?=な)/g, () => 'すか'], [/すか(?=な)/g, () => '切ら'],
+  [/切っ(?=[てた])/g, () => 'すい'], [/すい(?=[てた])/g, () => '切っ'],
+  [/切る/g, () => 'すく'], [/すく(?![なす])/g, () => '切る'],
+  [/切り(?![バ])/g, () => 'すき'], [/すき(?![バなだ])/g, () => '切り'],
+  [/短く/g, () => '軽く'], [/軽く/g, () => '短く'],
+];
+
 // 文の終わりの、聞き落としやすい続き（話し言葉の文の終わりの形。どの動画でも同じ）
 export function endingCandidates(text) {
   const t = text.replace(/[、。\s]+$/, '');
@@ -264,6 +280,7 @@ export function endingCandidates(text) {
   if (/まし$/.test(t)) return ['た', 'ょう'];
   if (/なく$/.test(t)) return ['なります', 'なる', 'なって', 'なりません', 'ないです'];
   if (/[^っ]く$/.test(t)) return ['します', 'する', 'なります', 'なる', 'しない', 'しません'];
+  if (/[かさたまらわが]ない$/.test(t)) return ['で', 'です', 'でください'];
   if (/(?:[てで]いき|でき|[きしちにびみりぎ])$/.test(t) && !/(?:とき|好き|向き|付き|辺り|周り|通り)$/.test(t)) return ['ます', 'ました', 'ましょう', 'ません', 'たい'];
   return [];
 }
@@ -292,7 +309,8 @@ export function proposeEdits(base, { passes = [], words = [], firstProb = null, 
     const key = `${e.i},${e.j},${e.to.join('')}`;
     if (seen.has(key) || (e.i === e.j && !e.to.length)) return;
     if (text.slice(e.i, e.j).join('') === e.to.join('')) return;
-    if (e.i < lockHead || Math.max(e.j, e.i + 1) > base.length - lockTail) return;
+    // 文脈として入れたとなりの文字（ctx）は直さない（すぐ前・すぐ後への差し込みはよい）
+    if (e.i < lockHead || (e.j > e.i ? e.j > base.length - lockTail : e.i > base.length - lockTail)) return;
     seen.add(key);
     edits.push(e);
   };
@@ -301,9 +319,11 @@ export function proposeEdits(base, { passes = [], words = [], firstProb = null, 
     // 書き方だけの違い（ギリギリ・ぎりぎり）は同じ文字とみなして照らし合わせる
     for (const d of diffRegions(text.map(toHira), p.map(k => toHira(k.s)))) {
       if (d.j - d.i > 14 || d.l - d.k > 14) continue;
-      // まとまりの頭・終わりの文字を消すだけの直しはしない（音声の端は聞き取りにくく、話した言葉を消してしまうことがある）
-      if (d.k === d.l && (d.i === 0 || d.j === text.length)) continue;
-      const edge = (d.i === 0 || d.j === text.length) && d.l - d.k < d.j - d.i;
+      // まとまりの頭・終わりの文字を消すだけの直しはしない（音声の端は聞き取りにくく、話した言葉を消してしまうことがある）。
+      // 文脈として入れたとなりの文字（lockHead・lockTail）を除いた、このまとまりの文字の頭・終わり
+      const head = d.i <= lockHead, tail = d.j >= text.length - lockTail;
+      if (d.k === d.l && (head || tail)) continue;
+      const edge = (head || tail) && d.l - d.k < d.j - d.i;
       add({ kind: 'pass', i: d.i, j: d.j, to: p.slice(d.k, d.l).map(k => k.s), times: p.slice(d.k, d.l).map(k => k.t), edge });
       // 両方の文字を残した並び（「ボをね」と「ボブを」→「ボブをね」。片方が落とした文字を足すだけの直し）
       const both = supersequence(text.slice(d.i, d.j), p.slice(d.k, d.l).map(k => k.s));
@@ -325,6 +345,9 @@ export function proposeEdits(base, { passes = [], words = [], firstProb = null, 
           const dur = (base[u + n]?.t ?? base[u + n - 1].t + 0.12) - base[u].t, need = 0.12 * moraCount(w);
           if (Math.abs(dur - need) > Math.max(0.3, 0.5 * need)) continue;
           if (isPunct(from) || /^[ぁ-ゖ]$/.test(from)) continue; // 助詞1文字（「を」「ね」）を言葉に置き換えない
+          if (toHira(from) === toHira(w)) continue; // 書き方だけの違い（「ばさみ」→「バサミ」）は用語の直し（fixTerms）にまかせる
+          // ひらがなのない言葉（「場所」「ボブ」）で、ひらがなを含む所（「です」「方を」）を置き換えない（助詞・語尾を言葉にしない）
+          if (!/[ぁ-ゖ]/.test(w) && /[ぁ-ゖ]/.test(from)) continue;
           // 否定の言葉を消したり足したりしない（後ろの文字も含めて見る。「つきませ｜ん」）
           const tail = text.slice(u + n, u + n + 3).join('');
           if (NEG_RE.test(from + tail) !== NEG_RE.test(w + tail)) continue;
@@ -335,7 +358,23 @@ export function proposeEdits(base, { passes = [], words = [], firstProb = null, 
       }
     }
   }
-  // 3. 文の終わりの聞き落とし（次の文字まで間があく所・まとまりの最後）
+  // 3. 聞き分けにくい美容の言葉の組（「ハサミ」と「すきバサミ」、「切る」と「すく」、「短く」と「軽く」）。どちらも話に出る言葉なので、
+  //    音声の方がはっきり合うときだけ入れ替える（近いときは要確認）
+  const joined = text.join('');
+  for (const [re, to] of CONFUSIONS) {
+    for (const m of joined.matchAll(re)) {
+      const i = m.index, j = i + m[0].length;
+      if (i < 0 || text.slice(0, i).join('').length !== i) continue; // 1文字1トークンでない所は使わない
+      add({ kind: 'confuse', i, j, to: [...to(m[0])] });
+    }
+  }
+  // 4. カタカナの言葉の最後の伸ばす音（「ベタ」と「ベター」）: 字幕AIは「ー」を落としたり足したりしやすい
+  for (let u = 0; u < base.length; u++) {
+    if (!KATA.test(text[u]) || KATA.test(text[u + 1] || '') || u === 0 || !KATA.test(text[u - 1])) continue;
+    if (text[u] === 'ー') add({ kind: 'sound', i: u, j: u + 1, to: [] });
+    else add({ kind: 'sound', i: u + 1, j: u + 1, to: ['ー'] });
+  }
+  // 5. 文の終わりの聞き落とし（次の文字まで間があく所・まとまりの最後）
   for (let u = 0; u < base.length; u++) {
     const gap = (u + 1 < base.length ? base[u + 1].t : segEnd) - base[u].t;
     if (gap < 0.35) continue;
@@ -354,6 +393,8 @@ export function chooseEdits(scored, opt = VERIFY) {
     // 別の読み方の結果: 文の頭・終わりの文字を消す直しは、音声の端の影響を受けやすいので、もっとはっきりした差のときだけ
     if (e.kind === 'pass') return e.ac >= (e.edge ? opt.passEdgeMin : opt.passMin);
     if (e.kind === 'end') return e.score >= opt.endMin && e.ac >= opt.endAcMin;
+    if (e.kind === 'confuse') return e.score >= opt.confuseMin && e.ac >= 0;
+    if (e.kind === 'sound') return e.score >= opt.soundMin && e.ac >= 0;
     // 元の言葉に文字を足すだけの直し（「方」→「方法」）は、足した文字の音が聞こえるときだけ（文の終わりの補いと同じ）
     if (e.extend) return e.ac >= opt.endAcMin && e.score >= opt.endMin;
     return e.score >= (e.domain ? opt.domainMin : opt.termMin) && e.ac >= opt.termAcMin;
@@ -375,13 +416,16 @@ export function chooseEdits(scored, opt = VERIFY) {
     let check = false, note = '';
     if (e.kind === 'term') { check = e.score < opt.termSure; note = check ? '入力した言葉に直しました（音声との一致が低め）' : ''; }
     if (e.kind === 'end') { check = e.score < opt.endSure || flip; note = check ? '文の終わりを音声から補いました' : ''; }
+    if (e.kind === 'confuse') { check = e.score < opt.confuseSure; note = check ? '聞き分けにくい言葉を、音声に合う方に直しました' : ''; }
     if (flip) note = '文の終わりが否定か肯定か、音声だけでははっきりしません';
     used.push({ ...e, check, note, margin: runner });
   }
   used.sort((a, b) => a.i - b.i);
   // 美容の用語で、直すほどではないが音声とかなり合う候補（入力した言葉なら直す差）は、直さずに「要確認」として知らせる
-  const near = scored.filter(e => e.kind === 'term' && e.domain && !e.extend && Number.isFinite(e.score)
-    && e.score >= opt.termMin && e.score < opt.domainMin && e.ac >= opt.termAcMin).sort((a, b) => b.score - a.score);
+  // 入力した言葉も、直す決まりの少し下（−6まで）なら要確認として知らせる（「部分」は「ボブ」の可能性。点数は −2.8〜−4.6 でゆれる）
+  const near = scored.filter(e => Number.isFinite(e.score) && ((e.kind === 'term' && !e.extend && e.ac >= opt.termAcMin
+    && (e.domain ? e.score >= opt.termMin && e.score < opt.domainMin : e.score >= opt.termNear && e.score < opt.termMin))
+    || (e.kind === 'confuse' && e.score >= opt.confuseNear && !(e.score >= opt.confuseMin && e.ac >= 0)))).sort((a, b) => b.score - a.score);
   const suggest = [];
   for (const e of near) {
     const lo = e.i, hi = e.j;
@@ -423,11 +467,11 @@ export async function verifySegment(model, eo, T, D, offset, seg, symbols, { wor
   const id = new Map(symbols.map((s, i) => [s, i]).filter(([s]) => s));
   const toFrame = t => Math.max(0, Math.min(T - 1, Math.round((t - offset) / FRAME)));
   const base = seg.tokens.filter(k => id.has(k.s));
-  if (!base.length) return { tokens: seg.tokens, fixes: [], tried: 0 };
+  if (!base.length) return { tokens: seg.tokens.filter(k => !k.ctx), fixes: [], tried: 0 };
   const ids = base.map(k => id.get(k.s)), frames = base.map(k => toFrame(k.t));
   const watchIds = [...new Set(words.map(w => id.get([...(w.w || w)][0])).filter(x => x != null))];
   const L = await baseLattice(model, eo, T, D, ids, frames, { watch: watchIds });
-  if (!Number.isFinite(L.ll)) return { tokens: seg.tokens, fixes: [], tried: 0 };
+  if (!Number.isFinite(L.ll)) return { tokens: seg.tokens.filter(k => !k.ctx), fixes: [], tried: 0 };
   const firstProb = (u, ch) => {
     const w = id.get(ch);
     if (w == null) return -Infinity;
@@ -454,7 +498,8 @@ export async function verifySegment(model, eo, T, D, offset, seg, symbols, { wor
   const chosen = chooseEdits(scored);
   const res = applyEdits(base, chosen, seg.end);
   const suggest = chosen.suggest.map(e => ({ from: base.slice(e.i, e.j).map(k => k.s).join(''), to: e.to.join(''), t0: base[e.i].t, score: +e.score.toFixed(2) }));
-  return { ...res, suggest, tried: scored.length, scored };
+  // 文脈として入れたとなりの文字は、結果に含めない（そのまとまりの結果に入る）
+  return { ...res, tokens: res.tokens.filter(k => !k.ctx), suggest, tried: scored.length, scored };
 }
 
 // ---------- アプリでの使い方 ----------
@@ -504,13 +549,19 @@ export function verifyUnits(tokens, fine = [], passes = null, { gap = 0.6, maxSe
   const units = groups.flatMap(g => split(g).map((ks, n, all) => ({ ks, forcedHead: n > 0, forcedTail: n + 1 < all.length })));
   return units.map(({ ks, forcedHead, forcedTail }, n) => {
     const prev = units[n - 1]?.ks, next = units[n + 1]?.ks;
-    const t0 = ks[0].t, t1 = ks[ks.length - 1].t;
-    const start = Math.max(0, prev ? Math.max(t0 - 0.5, (prev[prev.length - 1].t + t0) / 2) : t0 - 0.5);
-    const end = next ? Math.min(t1 + 0.6, (t1 + next[0].t) / 2) : t1 + 0.6;
+    // 長さで分けた所では、となりのまとまりの声（最大1.2秒）も窓に入れ、その文字は直さない文脈として使う（ctx）。
+    // 窓の端で声が切れると、端の言葉の点数が乱れるため（「下手」→「絶対」）
+    const head = forcedHead ? prev.filter(k => k.t >= ks[0].t - 1.2).slice(-8) : [];
+    const tail = forcedTail ? next.filter(k => k.t <= ks[ks.length - 1].t + 1.2).slice(0, 8) : [];
+    const all = [...head.map(k => ({ ...k, ctx: true })), ...ks, ...tail.map(k => ({ ...k, ctx: true }))];
+    const t0 = all[0].t, t1 = all[all.length - 1].t;
+    const pk = forcedHead ? null : prev, nk = forcedTail ? null : next;
+    const start = Math.max(0, pk ? Math.max(t0 - 0.5, (pk[pk.length - 1].t + t0) / 2) : t0 - 0.5);
+    const end = nk ? Math.min(t1 + 0.6, (t1 + nk[0].t) / 2) : t1 + 0.6;
     const inside = k => k.t >= start && k.t < end;
     return {
-      start, end, lockHead: forcedHead ? VERIFY.lock : 0, lockTail: forcedTail ? VERIFY.lock : 0,
-      tokens: ks.map(({ t, s, p }) => ({ t, s, p })),
+      start, end, lockHead: head.length, lockTail: tail.length,
+      tokens: all.map(({ t, s, p, ctx }) => (ctx ? { t, s, p, ctx } : { t, s, p })),
       passes: passes ? Object.values(passes).map(P => P.filter(inside).map(({ t, s, p }) => ({ t, s, p }))) : [],
     };
   });
