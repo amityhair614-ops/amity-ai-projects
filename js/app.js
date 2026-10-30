@@ -922,7 +922,10 @@ function markChecks(units, chunks) {
     }
     u.check = words;
     // 意味が変わるおそれのある聞き落とし（否定の言葉・文の終わり・用語）
-    u.doubts = [...new Set(chunks.filter(c => c.doubts?.length && c.end > (u.voiceStart ?? u.start) && c.start < (u.voiceEnd ?? u.end)).flatMap(c => c.doubts))];
+    // 文と場面が少し重なっているだけ（文の端の余白）のときは、その場面の印にしない
+    const a0 = u.voiceStart ?? u.start, a1 = u.voiceEnd ?? u.end;
+    const overlaps = c => Math.min(c.end, a1) - Math.max(c.start, a0) >= Math.min(0.5, 0.4 * (c.end - c.start));
+    u.doubts = [...new Set(chunks.filter(c => c.doubts?.length && overlaps(c)).flatMap(c => c.doubts))];
   }
 }
 
