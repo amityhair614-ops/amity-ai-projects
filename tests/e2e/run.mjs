@@ -11,6 +11,7 @@
 //     --target=秒     完成動画の長さ（30/45/60 はボタン、それ以外は自由入力）
 //     --style=tempo   編集スタイル
 //     --brief         タイトル・内容・伝えたいこと・流れ・必ず残したい場面を入力する
+//     --title=… / --content=… / --items=…  動画タイトル・動画の説明（内容）・使用アイテムを入力する
 //     --replan=秒     構成の確認画面で長さを変えて「構成し直す」を押す
 //
 // 事前に `python3 -m http.server 8123` をリポジトリ直下で起動しておく。
@@ -35,6 +36,7 @@ const realAsr = (process.argv.find(a => a.startsWith('--real-asr=')) || '').spli
 const reazon = (process.argv.find(a => a.startsWith('--reazon=')) || '').slice('--reazon='.length);
 const titleArg = (process.argv.find(a => a.startsWith('--title=')) || '').slice('--title='.length);
 const itemsArg = (process.argv.find(a => a.startsWith('--items=')) || '').slice('--items='.length);
+const contentArg = (process.argv.find(a => a.startsWith('--content=')) || '').slice('--content='.length);
 const scriptArg = (process.argv.find(a => a.startsWith('--script=')) || '').slice('--script='.length);
 const zoom = process.argv.includes('--zoom') ? true : process.argv.includes('--no-zoom') ? false : null;
 const noSubs = process.argv.includes('--no-subs');
@@ -287,6 +289,7 @@ try {
   if (await page.$('#optEngine')) await page.selectOption('#optEngine', reazon ? 'reazon' : 'whisper');
   if (titleArg) await page.fill('#bTitle', titleArg);
   if (itemsArg) await page.fill('#bItems', itemsArg);
+  if (contentArg) await page.fill('#bContent', contentArg);
   if (scriptArg) await page.fill('#bScript', fs.readFileSync(scriptArg, 'utf8'));
   if (withBrief) {
     await page.fill('#bTitle', 'ボブのカット解説');
@@ -364,7 +367,7 @@ try {
   if (dumpPath) {
     const a = await page.evaluate(() => {
       const s = window.amityDebug;
-      return { duration: s.src.duration, rmsDb: Array.from(s.rmsDb, v => +v.toFixed(1)), speech: s.speech, chunks: s.chunks, motion: s.motion };
+      return { duration: s.src.duration, rmsDb: Array.from(s.rmsDb, v => +v.toFixed(1)), speech: s.speech, chunks: s.chunks, motion: s.motion, ...(s.asrVerify ? { verify: s.asrVerify } : {}) };
     });
     fs.writeFileSync(dumpPath, JSON.stringify(a));
     console.log('解析の結果を保存: ' + dumpPath);

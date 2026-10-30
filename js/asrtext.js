@@ -169,9 +169,13 @@ function editDistance(a, b) {
 // 返り値: 直した chunk（fixed: 直した箇所 [{ from, to, at, len, check }]）
 // phrases: 入力したタイトル・説明に出てくるひらがなの言葉（5文字以上。「すかないで」など）。
 // 文字起こしの中に、最初の1文字だけが違う同じ長さの言葉（「つかないで」）があれば、聞き間違いとして直して印をつける
-export function fixTerms(chunk, userTerms = [], phrases = []) {
+// audioChecked: 字幕AIの聞き取りを音声で確かめた後（verify.js）。入力した言葉に「似ている」だけの直し（読みの違う言葉への置き換え）は
+// 音声で確かめた方を信じて行わず、suggest（要確認として知らせる候補）にする。入力情報だけで、話していない言葉に置き換えないため
+export function fixTerms(chunk, userTerms = [], phrases = [], { audioChecked = false } = {}) {
   let text = chunk.text, times = chunk.times ? [...chunk.times] : null;
-  const fixed = [];
+  const fixed = [], suggest = [];
+  // 似ているだけの直し: 音声で確かめた後は、置き換えずに知らせる
+  const guess = (at, len, to, rec) => (audioChecked ? suggest.push({ from: rec.from, to }) : replaceAt(at, len, to, rec));
   const replaceAt = (at, len, to, rec) => {
     if (times) {
       const t0 = times[at] ?? times[times.length - 1] ?? 0, t1 = times[at + len - 1] ?? t0;
@@ -196,7 +200,7 @@ export function fixTerms(chunk, userTerms = [], phrases = []) {
       const dist = editDistance(kana, w);
       const suffix = (() => { let n = 0; while (n < Math.min(kana.length, w.length) && kana[kana.length - 1 - n] === w[w.length - 1 - n]) n++; return n; })();
       if (Math.abs(word.length - w.length) <= 1 && (dist <= 1 || (dist <= 2 && w.length >= 6 && suffix >= 4))) {
-        replaceAt(m.index, word.length, w, { from: word, to: w, check: true });
+        guess(m.index, word.length, w, { from: word, to: w, check: true });
       }
     }
   }
@@ -212,7 +216,7 @@ export function fixTerms(chunk, userTerms = [], phrases = []) {
       for (let k = 0; k < w.length; k++) if (seg[k] !== w[k]) diffs.push(k);
       const ok = diffs.length === 2 && diffs[1] === diffs[0] + 1 && w.length >= 6 && diffs.every(k => isKanji(seg[k]) && isKanji(w[k]));
       if (ok) {
-        replaceAt(at, w.length, w, { from: seg, to: w, check: true });
+        guess(at, w.length, w, { from: seg, to: w, check: true });
         break;
       }
     }
@@ -222,12 +226,12 @@ export function fixTerms(chunk, userTerms = [], phrases = []) {
     for (let at = 0; at + ph.length <= text.length; at++) {
       const w = text.slice(at, at + ph.length);
       if (w[0] !== ph[0] && w.slice(1) === ph.slice(1) && /^[\u3041-\u3096]$/.test(w[0])) {
-        replaceAt(at, ph.length, ph, { from: w, to: ph, check: true });
+        guess(at, ph.length, ph, { from: w, to: ph, check: true });
         at += ph.length - 1;
       }
     }
   }
-  return { ...chunk, text, times, fixed: [...(chunk.fixed || []), ...fixed] };
+  return { ...chunk, text, times, fixed: [...(chunk.fixed || []), ...fixed], ...(suggest.length ? { suggest } : {}) };
 }
 
 // 文の終わりが言葉の途中で終わっている（「…は軽く」「…軽くし」「…でき」）。字幕AIが「しない」「します」などを

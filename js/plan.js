@@ -56,6 +56,7 @@ export const BEAUTY_TERMS = [
 ];
 
 const isKata = c => !!c && /[\u30a0-\u30ff]/.test(c);
+const isKanjiChar = c => !!c && /[\u4e00-\u9fff々]/.test(c);
 const toKata = t => t.replace(/[\u3041-\u3096]/g, c => String.fromCharCode(c.charCodeAt(0) + 0x60));
 
 function editDistance(a, b) {
@@ -760,7 +761,17 @@ function applyRestart(u, r, P) {
   const want = moraCount(text) * before / total;
   let k = 1, best = Infinity;
   for (let i = 1; i < text.length; i++) { const d = Math.abs(moraCount(text.slice(0, i)) - want); if (d < best) { best = d; k = i; } }
-  if (u.times && u.times.length === text.length) {
+  // 1文字ごとの時刻があれば、取り除いた後の音声（話し直した所 r.next から）に入る最初の文字から字幕にする
+  // （話の長さの割合で決めると、字幕AIが言いかけの文字を出さなかったとき「ギリギリ」のような話し直した言葉まで消してしまう）
+  // 字幕AIの1文字ごとの時刻は 0.3秒ほど前後することがあるので、カタカナ・漢字の言葉の途中になったら、その言葉の頭まで戻す
+  // （消しすぎるより、話し直した言葉を残す方を選ぶ）
+  const timed = u.times && u.times.length === text.length;
+  const byTime = timed ? u.times.findIndex(t => t >= r.next - 0.05) : -1;
+  const sameRun = (a, b) => (isKanjiChar(a) && isKanjiChar(b)) || (isKata(a) && isKata(b));
+  if (byTime >= 1) {
+    k = byTime;
+    while (k > 1 && sameRun(text[k - 1], text[k])) k--;
+  } else if (timed) {
     let bestGap = -1;
     for (const i of [k - 1, k, k + 1]) {
       if (i < 1 || i >= text.length) continue;

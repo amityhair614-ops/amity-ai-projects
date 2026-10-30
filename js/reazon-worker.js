@@ -9,7 +9,8 @@
 //
 // モデルの構成（RNN-T）: エンコーダー（音声の特徴→512次元×25回/秒）・デコーダー（直前の2文字）・ジョイナー（次の文字の確率）
 import * as ort from 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.22.0/dist/ort.wasm.min.mjs';
-import { fbank, FB_BINS } from './fbank.js';
+import { encode, greedy, ortModel, parseSymbols } from './rnnt.js';
+import { verifySegment } from './verify.js';
 
 ort.env.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.22.0/dist/';
 ort.env.wasm.numThreads = 1; // 複数スレッドには特別なサーバー設定が必要なため1つで動かす
@@ -27,8 +28,6 @@ const FILES = {
 };
 const SIZES = { encoder: 154670139, decoder: 2959337, joiner: 2696970, tokens: 45754 }; // 進み具合の表示用（目安）
 const CACHE = 'amity-asr-reazon-v1';
-const FRAME_SEC = 0.04; // エンコーダーの出力1つ分の時間
-const CONTEXT = 2;
 
 let enc = null, dec = null, joi = null, symbols = null;
 
@@ -75,12 +74,7 @@ async function load() {
     p: { status: 'progress', file: 'reazonspeech', loaded: Object.values(loaded).reduce((a, b) => a + b, 0), total: Object.values(SIZES).reduce((a, b) => a + b, 0) },
   });
   const get = name => download(name, n => { loaded[name] = n; progress(); });
-  const text = new TextDecoder().decode(await get('tokens'));
-  symbols = [];
-  for (const line of text.split('\n')) {
-    const m = line.match(/^(.*)\s(\d+)$/);
-    if (m) symbols[Number(m[2])] = m[1].replace(/▁/g, '');
-  }
+  symbols = parseSymbols(new TextDecoder().decode(await get('tokens')));
   const opts = { executionProviders: ['wasm'], graphOptimizationLevel: 'all' };
   dec = await ort.InferenceSession.create(await get('decoder'), opts);
   joi = await ort.InferenceSession.create(await get('joiner'), opts);
@@ -90,41 +84,18 @@ async function load() {
   bytes = null;
 }
 
-async function decoderOut(ctx) {
-  const y = new ort.Tensor('int64', BigInt64Array.from(ctx.map(BigInt)), [1, CONTEXT]);
-  const r = await dec.run({ y });
-  return r.decoder_out;
-}
-
 // audio（16kHz）を文字にする。返り値は1文字ごとの { t: 時刻（秒）, s: 文字, p: 確からしさ 0〜1 }
 async function recognize(audio) {
-  const { frames, data } = fbank(audio);
-  if (frames < 10) return [];
-  const x = new ort.Tensor('float32', data, [1, frames, FB_BINS]);
-  const xl = new ort.Tensor('int64', BigInt64Array.from([BigInt(frames)]), [1]);
-  const e = await enc.run({ x, x_lens: xl });
-  const out = e.encoder_out;
-  const T = Number(e.encoder_out_lens.data[0]);
-  const D = out.dims[2];
-  const ctx = new Array(CONTEXT).fill(0); // 0 は「文字なし（blank）」
-  let dOut = await decoderOut(ctx);
-  const tokens = [];
-  for (let t = 0; t < T; t++) {
-    const eo = new ort.Tensor('float32', out.data.subarray(t * D, (t + 1) * D), [1, D]);
-    const r = await joi.run({ encoder_out: eo, decoder_out: dOut });
-    const logit = r.logit.data;
-    let best = 0, max = -Infinity;
-    for (let k = 0; k < logit.length; k++) if (logit[k] > max) { max = logit[k]; best = k; }
-    if (best === 0) continue;
-    let sum = 0;
-    for (let k = 0; k < logit.length; k++) sum += Math.exp(logit[k] - max);
-    const s = symbols[best] ?? '';
-    if (s && !/^<.*>$/.test(s)) tokens.push({ t: +(t * FRAME_SEC).toFixed(2), s, p: +(1 / sum).toFixed(3) });
-    ctx.push(best);
-    ctx.shift();
-    dOut = await decoderOut(ctx);
-  }
-  return tokens;
+  const E = await encode(ort, enc, audio);
+  return E ? greedy(ort, dec, joi, E, symbols) : [];
+}
+
+// 文字起こしのまとまり unit を、同じ音声で確かめる（verify.js）。audio は unit.start からの音声
+async function verify(audio, offset, unit, words) {
+  const E = await encode(ort, enc, audio);
+  if (!E) return { tokens: unit.tokens, fixes: [], suggest: [], tried: 0 };
+  const r = await verifySegment(ortModel(ort, dec, joi), E.eo, E.T, E.D, offset, unit, symbols, { words });
+  return { tokens: r.tokens, fixes: r.fixes, suggest: r.suggest, tried: r.tried };
 }
 
 self.onmessage = async e => {
@@ -139,6 +110,9 @@ self.onmessage = async e => {
       const duration = m.audio.length / 16000;
       const chunks = text ? [{ start: 0, end: duration, text, raw: text, timed: true, tokens }] : [];
       self.postMessage({ type: 'result', id: m.id, chunks });
+    } else if (m.type === 'verify') {
+      const r = await verify(m.audio, m.offset, m.unit, m.words || []);
+      self.postMessage({ type: 'verified', id: m.id, ...r });
     }
   } catch (err) {
     self.postMessage({ type: 'error', id: m.id, message: String(err && err.message ? err.message : err) });

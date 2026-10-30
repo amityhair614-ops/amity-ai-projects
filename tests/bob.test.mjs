@@ -34,3 +34,14 @@ test('bob: 字幕は1行・15文字以内で、手動編集の字幕の切れ目
   }
   assert.ok(cmp.breaks.recall >= 0.8, `${(cmp.breaks.recall * 100).toFixed(0)}% ${cmp.breaks.missed.join(' / ')}`);
 });
+
+test('bob: 字幕AIの聞き取りを音声で確かめた結果（v0.9.7）: 「ボブを」・言い直しの所の文字の乱れがない・「すかない」は要確認', () => {
+  const all = cmp.pages.map(p => p.text).join('');
+  assert.ok(all.includes('伸びて重くなったボブを') && !all.includes('部分を'));
+  // 3通りの読み方を合わせたときに混ざった「うまくいきうません／まくカバー」は、音声で確かめて「うまくカバーできません」に
+  assert.ok(all.includes('うまくカバーできません') && !all.includes('いきうません') && !cmp.pages.some(p => p.text.startsWith('まく')));
+  // 「つかないで」は「すかないで」の可能性が高いが、音声だけでは決めきれないので直さずに要確認にする
+  const c = analysis.chunks.find(x => x.text.includes('つかないで'));
+  assert.ok(c && c.suggest?.some(g => g.to === 'すかない'));
+});
+

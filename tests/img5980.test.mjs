@@ -35,3 +35,15 @@ test('IMG_5980: 字幕は1行・平均10文字前後（12文字を超えるの�
   // 単語の途中で切らない
   for (const p of cmp.pages) assert.ok(!/^(?:辺り|際|返し|てください|ください)/.test(p.text), p.text);
 });
+
+test('IMG_5980: 字幕AIの聞き取りを音声で確かめた結果（v0.9.7）: 聞き間違い・文の終わりの聞き落としを直し、言いかけを取り除いた後の音声に合わせる', () => {
+  const all = cmp.pages.map(p => p.text).join('');
+  // 「なった方を」→「なったボブを」（入力したタイトルの「ボブ」が音声に合う）・文の終わり（「結べなく」「やっていき」）を音声から補う
+  for (const w of ['ギリギリ結べるように', 'なったボブを', 'やればやるほど', '結べなくなります', 'やっていきましょう']) assert.ok(all.includes(w), w);
+  assert.ok(!all.includes('なった方を'), 'なった方を');
+  assert.ok(!cmp.pages.some(p => /(?:結べなく|やっていき)$/.test(p.text)), '文の終わりが切れた字幕');
+  // 直した所は analysis.json に記録している（音声の点数つき）
+  const fixes = analysis.verify.fixes.map(f => `${f.from}→${f.to}`);
+  for (const f of ['→なります', '方→ボブ', '→ましょう']) assert.ok(fixes.includes(f), f);
+});
+

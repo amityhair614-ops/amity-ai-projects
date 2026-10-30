@@ -12,8 +12,9 @@ import {
 import {
   detectSpeech, transcriptionWindows, asrWindows, mergeAsrPasses, passDoubts, buildUnits, selectUnits, buildTimeline, formatTime, FRAME_SEC, trimUnit, untrimUnit,
   cleanSubtitle, alignSentences, refineSubtitleTiming, fineSpeech, setBreakTerms, openingLines, openingText, openingPlan,
-  END_FADE, END_HOLD, extendEnding, outputLength, OPENING_DURATIONS,
+  END_FADE, END_HOLD, extendEnding, outputLength, OPENING_DURATIONS, BEAUTY_TERMS,
 } from './plan.js';
+import { verifyUnits, verifiedRaw, attachAudioFixes, briefWords, domainWords } from './verify.js';
 import { tokensToChunks, fixTerms, checkRanges, alignScript, assignScript, cutEnding } from './asrtext.js';
 import { findRestarts } from './acoustic.js';
 import {
@@ -548,6 +549,50 @@ function transcribe(pcm, windows, terms = [], { saved = {}, onResult, onStart, s
   });
 }
 
+// 文字起こしのまとまり（verifyUnits）を、字幕AIのモデルで同じ音声と照らし合わせて確かめる（verify.js）。
+// 返り値は units と同じ順の { tokens, fixes, tried }。保存済みのまとまりはやり直さない
+function verifyTranscript(pcm, units, words, { saved = {}, onResult } = {}) {
+  const results = { ...saved };
+  if (units.every((_, k) => results[k])) return Promise.resolve(units.map((_, k) => results[k]));
+  return new Promise((resolve, reject) => {
+    const worker = new Worker(ENGINES.reazon.worker, { type: 'module' });
+    let i = 0, finished = false;
+    const finish = (fn, v) => { if (finished) return; finished = true; worker.terminate(); $('btnSkipAsr').hidden = true; fn(v); };
+    $('btnSkipAsr').hidden = false;
+    $('btnSkipAsr').onclick = () => { log('字幕AIの確かめをスキップ'); finish(reject, new Error('スキップしました')); };
+    const next = () => {
+      while (i < units.length && results[i]) i++;
+      if (i >= units.length) return finish(resolve, units.map((u, k) => results[k] || { tokens: u.tokens, fixes: [] }));
+      const u = units[i];
+      const from = Math.max(0, Math.floor(u.start * ASR_RATE)), to = Math.min(pcm.length, Math.ceil(u.end * ASR_RATE));
+      const audio = pcm.slice(from, to);
+      setProgress(i / units.length, `字幕AIの聞き取りを音声で確かめています… ${i + 1} / ${units.length}`);
+      worker.postMessage({ type: 'verify', id: i, audio, offset: from / ASR_RATE, unit: u, words }, [audio.buffer]);
+    };
+    worker.onmessage = e => {
+      const m = e.data;
+      if (m.type === 'loaded') next();
+      else if (m.type === 'verified') {
+        results[m.id] = { tokens: m.tokens, fixes: m.fixes, suggest: m.suggest || [], tried: m.tried };
+        Promise.resolve(onResult?.(m.id, results[m.id])).catch(err => log('確かめた結果を保存できませんでした', errorText(err))).then(() => { i++; next(); });
+      } else if (m.type === 'error') {
+        // このまとまりだけ確かめられなかった: 元の文字起こしのまま続ける
+        if (m.id != null && m.id === i) {
+          log(`字幕AIの確かめ: まとまり ${i + 1} で失敗したため、元の文字起こしを使います`, m.message);
+          results[i] = { tokens: units[i].tokens, fixes: [], tried: 0, failed: true };
+          i++;
+          next();
+          return;
+        }
+        finish(reject, new Error(m.message));
+      }
+    };
+    worker.onerror = e => finish(reject, new Error(e.message || '字幕AIの準備に失敗しました'));
+    setProgress(0, '字幕AIを準備中…');
+    worker.postMessage({ type: 'load', model: ASR_MODEL });
+  });
+}
+
 // 「自動編集を開始」: 新しい作業として最初から解析する（同じ動画の前の作業は消す。元の動画のコピーは使い回す）
 $('btnAnalyze').addEventListener('click', async () => {
   const src = state.src;
@@ -709,7 +754,7 @@ async function runAnalysis(job) {
         const engine = job.asrEngine || 'whisper';
         // ReazonSpeech: 区切り方の違う3通りで読み、どれかが落とした言葉をほかの結果で補う（asrWindows・mergeAsrPasses）
         const windows = A.asr?.windows || (engine === 'reazon' ? asrWindows(state.speech.regions, state.rmsDb) : transcriptionWindows(state.speech.regions, ENGINES[engine].window));
-        A.asr = { windows, results: A.asr?.results || {}, started: A.asr?.started || {}, done: false };
+        A.asr = { windows, results: A.asr?.results || {}, started: A.asr?.started || {}, verify: A.asr?.verify, done: false };
         const savedN = Object.keys(A.asr.results).length;
         if (savedN) log(`保存済みの文字起こしの区間を再利用: ${savedN}/${windows.length}`);
         const perWindow = await transcribe(pcm, windows, bp.asrTerms, {
@@ -725,8 +770,31 @@ async function runAnalysis(job) {
         // ReazonSpeech: 1文字ごとの時刻と声の切れ目で文に分け、用語の書き方を直す
         // Whisper: 文ごとの時刻を、無音の切れ目に合わせて割り当て直す
         // どちらも字幕の表示時刻は実際の声の出始め・終わりに合わせる
-        const sentences = engine === 'reazon' && raw.some(c => c.tokens)
-          ? tokensToChunks(raw, fine).map(c => fixTerms(c, [...bp.items, ...bp.asrTerms], bp.phrases))
+        // ReazonSpeech: 聞き取った文字を、同じ音声で確かめて直す（聞き間違い・文の終わりの聞き落とし・3通りを合わせたときの乱れ）。
+        // 入力したタイトル・説明・用語の言葉は、音声に合っているときだけ使う（verify.js）
+        let checked = raw, audioFixes = [];
+        if (engine === 'reazon' && raw.some(c => c.tokens?.length)) {
+          try {
+            const units = verifyUnits(raw.flatMap(c => c.tokens || []), fine, raw.passes);
+            const b = bp.brief;
+            const words = [...briefWords([b.title, b.content, b.message, b.flow, b.mustKeep], [...bp.items, ...bp.asrTerms]), ...domainWords(BEAUTY_TERMS)];
+            A.asr.verify = A.asr.verify || {};
+            const results = await verifyTranscript(pcm, units, words, {
+              saved: A.asr.verify,
+              onResult: async (i, r) => { A.asr.verify[i] = r; await persistJob(job); },
+            });
+            checked = verifiedRaw(results);
+            state.asrVerify = { units, fixes: results.flatMap(r => r.fixes || []), suggest: checked.suggest || [] }; // 動作確認用（tests/e2e/run.mjs が保存する）
+            audioFixes = checked.fixes || [];
+            checked.passes = raw.passes;
+            log('字幕AIの聞き取りを音声で確かめました', { units: units.length, tried: results.reduce((n, r) => n + (r.tried || 0), 0), fixes: audioFixes.map(f => `${f.from || '（なし）'}→${f.to}（${f.kind}・${f.score}${f.check ? '・要確認' : ''}）`) });
+          } catch (err) {
+            log('字幕AIの聞き取りを音声で確かめられませんでした（確かめる前の文字起こしを使います）', errorText(err));
+            A.warnings.push('字幕AIの聞き取りを音声で確かめられなかったため、聞き間違いが残っている可能性があります（' + errorText(err) + '）。');
+          }
+        }
+        const sentences = engine === 'reazon' && checked.some(c => c.tokens)
+          ? attachAudioFixes(tokensToChunks(checked, fine).map(c => fixTerms(c, [...bp.items, ...bp.asrTerms], bp.phrases, { audioChecked: true })), audioFixes, checked.suggest || [])
           : alignSentences(raw, state.speech.regions);
         state.chunks = attachDoubts(refineSubtitleTiming(sentences, fine), raw.passes, [...bp.items, ...bp.asrTerms]);
         A.asr = { windows, done: true, chunks: state.chunks };
@@ -824,7 +892,10 @@ function attachDoubts(chunks, passes, terms) {
     // 「…を」「…は」で終わる文は、すぐ後に続きを話しているなら、声の間で文を分けただけ
     const particle = /[をがは]$/.test((c.text || '').replace(/[、。\s]+$/, ''));
     if (cutEnding(c.text) && !(particle && next && next.start - c.end < 1.5)) ds.push('文の終わりが途中で切れている可能性（「〜しない」「〜します」など）');
-    return ds.length ? { ...c, doubts: [...new Set(ds)] } : c;
+    // 入力した言葉・美容の用語に近いが、音声ではっきりとは確かめられなかった言葉（直さずに知らせる）
+    for (const g of c.suggest || []) ds.push(`「${g.from}」は「${g.to}」の聞き間違いの可能性（音声でははっきりしません）`);
+    // 音声で確かめたときの「要確認」（attachAudioFixes）も残す
+    return ds.length ? { ...c, doubts: [...new Set([...(c.doubts || []), ...ds])] } : c;
   });
 }
 
