@@ -1181,6 +1181,8 @@ function styleSummary(timeline, useSubs, useZoom, overlay) {
     const counts = new Map();
     for (const w of timeline.flatMap(c => c.subOmitted || [])) counts.set(w, (counts.get(w) || 0) + 1);
     if (counts.size) parts.push(`字幕で省いた言葉（音声は残す）: ${[...counts].map(([w, n]) => n > 1 ? `${w}×${n}` : w).join('・')}`);
+    const incomplete = timeline.flatMap(c => c.subtitles.filter(p => p.doubt).map(p => `${formatTime(p.start)}「${p.lines.join('')}」`));
+    if (incomplete.length) parts.push(`文の終わりが聞き取れていない可能性のある字幕: ${incomplete.join('、')}`);
   } else {
     parts.push('字幕: なし');
   }

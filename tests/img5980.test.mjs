@@ -23,9 +23,12 @@ test('IMG_5980: 説明の文は削らない', () => {
   for (const s of cmp.spoken.filter(s => !s.retake)) assert.ok(s.cover >= 0.7, `「${s.text}」 ${(s.cover * 100).toFixed(0)}%`);
 });
 
-test('IMG_5980: 字幕は1行・8割以上が10文字以内・不要な言葉を出さない・否定と用語を残す', () => {
-  for (const p of cmp.pages) assert.ok(p.lines.length === 1 && p.text.length <= 14, p.text);
-  assert.ok(stats.within10 >= 0.8, `10文字以内 ${(stats.within10 * 100).toFixed(0)}%`);
+test('IMG_5980: 字幕は1行・平均10文字前後（12文字を超えるのは1割まで・最大15文字）・不要な言葉を出さない・否定と用語を残す', () => {
+  for (const p of cmp.pages) assert.ok(p.lines.length === 1 && p.text.length <= 15, p.text);
+  assert.ok(stats.avgChars <= 10.5, `平均 ${stats.avgChars.toFixed(1)}文字`);
+  assert.ok(stats.over12 <= Math.ceil(cmp.pages.length * 0.1), `12文字を超える字幕 ${stats.over12}枚`);
+  // 不自然な日本語にしない（話し言葉の「〜するです」は「〜する」に）・表記をそろえる
+  for (const p of cmp.pages) assert.ok(!/[うくすつぬむるぐぶ]です$/.test(p.text) && !p.text.includes('下さい'), p.text);
   assert.equal(stats.unneeded, 0, cmp.pages.map(p => p.text).join(' / '));
   const all = cmp.pages.map(p => p.text).join('');
   for (const w of ['結べなくなります', '軽くしないです', '生え際', 'セルフで']) assert.ok(all.includes(w), w);

@@ -100,14 +100,22 @@ test('字幕の改行: 入力した用語・美容用語の途中で改行しな
   setBreakTerms([]);
 });
 
-test('字幕はいつも画面の下・ズームは控えめ（1.03〜1.08倍）で寄る・引くを交互に', () => {
-  const clip = (s, e, motion, box) => ({ pieces: [{ start: s, end: e }], text: '説明します', motion, cx: 0.5, box });
-  const tl = buildTimeline([clip(0, 5, 0.1, null), clip(6, 11, 0.1, null), clip(30, 36, 0.1, null), clip(60, 66, 0.1, null)], { srcW: 2160, srcH: 3840, zoom: true });
-  assert.ok(tl.every(c => c.subPos === 'bottom'));
+test('字幕はいつも画面の下・ズームは手元の範囲がわかる場面だけ、控えめ（1.03〜1.06倍）に、手元を切らずに', () => {
+  const clip = (s, e, motion, box, boxSamples) => ({ pieces: [{ start: s, end: e }], text: '説明します', motion, cx: 0.5, box, boxWide: box, boxSamples });
+  // 手元の範囲がわからない場面ではズームしない（端の手やハサミを切らないため）
+  const none = buildTimeline([clip(0, 5, 0.1, null, 0), clip(6, 11, 0.1, null, 0), clip(30, 36, 0.1, null, 0), clip(60, 66, 0.1, null, 0)], { srcW: 2160, srcH: 3840, zoom: true });
+  assert.ok(none.every(c => c.subPos === 'bottom'));
+  assert.ok(!none.some(c => c.zoom));
+  // 手元が中央にあって、動きを3回以上測れた場面では、控えめにズームする
+  const center = [0.3, 0.7, 0.3, 0.7];
+  const tl = buildTimeline([clip(0, 5, 0.1, center, 4), clip(6, 11, 0.1, center, 4), clip(30, 36, 0.1, center, 4), clip(60, 66, 0.1, center, 4)], { srcW: 2160, srcH: 3840, zoom: true });
   const z = tl.filter(c => c.zoom);
-  assert.ok(z.length >= 1, '手元が動かない動画でも、長い説明の場面で控えめにズームする');
-  assert.ok(z.every(c => c.zoom.z >= 1.03 && c.zoom.z <= 1.08));
+  assert.ok(z.length >= 1);
+  assert.ok(z.every(c => c.zoom.z >= 1.03 && c.zoom.z <= 1.06));
   if (z.length > 1) assert.notEqual(z[0].zoom.dir, z[1].zoom.dir);
+  // 手元が画面の端まで動いている・測った回数が少ない場面ではズームしない
+  const edge = buildTimeline([clip(0, 5, 0.1, [0.02, 0.98, 0.3, 0.7], 4), clip(30, 36, 0.1, center, 1)], { srcW: 2160, srcH: 3840, zoom: true });
+  assert.ok(!edge.some(c => c.zoom));
 });
 
 // ReazonSpeech の結果（1文字ごとの時刻）を、声の切れ目で文に分ける
@@ -180,13 +188,13 @@ test('画質: 1080pの素材では、拡大になる（ぼやける）ズーム�
   assert.ok(buildTimeline(clips, { srcW: 2160, srcH: 3840, zoom: true }).some(c => c.zoom));
 });
 
-test('字幕の区切り: 1行だけ・原則10文字以内で、言葉の途中（「まと／まり」「頭に／入れて」）・否定の前（「軽く／しない」）では分けない', () => {
+test('字幕の区切り: 1行だけ・基本10文字前後（自然なら15文字まで）で、言葉の途中（「まと／まり」「頭に／入れて」）・否定の前（「軽く／しない」）では分けない', () => {
   const pages = t => subtitlePages(t, t.length * 0.15).map(p => { assert.equal(p.lines.length, 1, '2行にしない'); return p.lines[0]; });
   const a = pages('アホ毛のようなピンピンした髪の毛がたくさんできてしまってまとまりつかないようになってしまいます');
-  for (const x of a) assert.ok(x.length <= 14, x);
+  for (const x of a) assert.ok(x.length <= 15, x);
   assert.ok(a.some(x => x.startsWith('まとまり')) && !a.some(x => x.endsWith('まと')));
-  // 10文字を超える所は、自然な切れ目（「〜やって／みてください」）で分ける
-  assert.deepEqual(pages('それを頭に入れてセルフカットやってみてください'), ['それを頭に入れて', 'セルフカットやって', 'みてください']);
+  // 分けると不自然になる所（「〜やって／みてください」）は、15文字までなら1つの字幕にする
+  assert.deepEqual(pages('それを頭に入れてセルフカットやってみてください'), ['それを頭に入れて', 'セルフカットやってみてください']);
   assert.equal(pages('セルフカットで伸びて重くなったボブを軽くしていく際にこの場所は絶対にすかないでください').at(-1), 'すかないでください');
   // 「して／しまう」「て／ください」は分けない
   for (const x of pages('こうなってしまうと髪の毛が伸びないと修正カットができないです')) assert.ok(!x.startsWith('しま'), x);
@@ -230,8 +238,8 @@ test('意味が変わるおそれのある聞き落とし: 2通りの聞き取�
 test('字幕の区切り（実際の撮影音声の文）: 「でき」「アホ毛のような」を分けず、1つの字幕に2つの文を入れない', () => {
   const pages = t => subtitlePages(t, t.length * 0.15).map(p => p.lines.join('／'));
   const a = pages('この場所を軽くしてしまうとアホ毛のようなピンピンした髪の毛がたくさんできてしまってまとまりつかないようになってしまいます');
-  assert.deepEqual(a.slice(0, 2), ['この場所を', '軽くしてしまうと']);
-  for (const x of a) assert.ok(!/^(毛|き|の|ような)/.test(x) && x.length <= 14, x);
+  assert.equal(a[0], 'この場所を軽くしてしまうと');
+  for (const x of a) assert.ok(!/^(毛|き|の|ような)/.test(x) && x.length <= 15, x);
   // 「…軽くしない」で文が終わり「それを…」から次の文: 2つの文を1つの字幕にしない
   const b = pages('となればトップ表面の根元付近は軽くしないそれを頭に入れてセルフカットやってみてください');
   assert.ok(b.some(x => x.endsWith('軽くしない')) && b.some(x => x.startsWith('それを')), b.join(' | '));

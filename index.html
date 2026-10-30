@@ -234,7 +234,7 @@
     <p class="lead">カット解説動画から、字幕付きのYouTube動画を自動で作ります。動画の内容や完成時間を入力すると、それに合わせて場面を選びます。処理はすべてこのiPhoneの中で行い、動画はどこにも送信しません。</p>
   </header>
 
-  <div class="banner"><b>テスト版です（v0.9.5）。</b> ①文字起こしAIが見落とす言いかけを、音の繰り返しから見つけて取り除きます（確かでないものは確認対象として表示）②字幕は原則10文字以内の1行で、意味のまとまりごとにテンポよく切り替えます（単語の途中では区切りません。否定・用語・数字は省きません）③4Kなどの解像度に余裕がある動画では、控えめなズーム（1.03〜1.06倍・1分に2回まで）を入れます。<b>これらは iPhone 実機ではまだ確認できていません。</b>うまく動かない場合は、下の「診断情報」をコピーして送ってください。</div>
+  <div class="banner"><b>テスト版です（v0.9.6）。</b> ①文字起こしAIが見落とす言いかけを、音の繰り返しから見つけて取り除きます（確かでないものは確認対象として表示）②字幕は1行・10文字前後（自然なら15文字まで）で、意味のまとまりごとにテンポよく切り替えます。「軽くするです」のような不自然な言い方は字幕では直し、文の終わりが聞き取れていない字幕は確認対象として表示します（単語の途中では区切りません。否定・用語・数字は省きません）③4Kなどの解像度に余裕がある動画で、手元の位置が確かな場面だけ、控えめなズーム（1.03〜1.06倍・1分に2回まで）を入れます。<b>これらは iPhone 実機ではまだ確認できていません。</b>うまく動かない場合は、下の「診断情報」をコピーして送ってください。</div>
 
   <div class="recover" id="recover" role="alert" hidden>
     <b>前回の処理が途中で止まりました</b>
@@ -394,7 +394,7 @@
         </select></label>
         <button type="button" class="link-btn" id="openingReset">動画タイトルから作り直す</button>
       </div>
-      <label class="option"><input type="checkbox" id="optSubs" checked><span>字幕を入れる <small class="note" id="optSubsNote" style="margin:0"></small><br><small class="note" style="margin:0">白のゴシック体・1行（原則10文字以内・5〜10文字が目安）・薄い影。意味のまとまり・息継ぎごとに、話すテンポで画面の下に表示します。つなぎ言葉や「〜ね」「という」は字幕にだけ書かず、音声はそのまま残します（否定の言葉・用語・数字は省きません）</small></span></label>
+      <label class="option"><input type="checkbox" id="optSubs" checked><span>字幕を入れる <small class="note" id="optSubsNote" style="margin:0"></small><br><small class="note" style="margin:0">白のゴシック体・1行（10文字前後・自然なら15文字まで）・薄い影。意味のまとまり・息継ぎごとに、話すテンポで画面の下に表示します。つなぎ言葉や「〜ね」「という」は字幕にだけ書かず、音声はそのまま残します（否定の言葉・用語・数字は省きません）</small></span></label>
       <label class="option"><input type="checkbox" id="optZoom" checked><span>自然なズーム<br><small class="note" style="margin:0">長めの場面で、ゆっくり1.03〜1.06倍に寄る・引く（1分に2回まで・20秒以上あけて、ハサミや手元が切れない場合のみ。1080pの元動画では、拡大で髪の細かさが落ちるためズームしません）</small></span></label>
       <p class="note" style="margin-top:0">最後の約0.9秒で映像がなめらかに黒くなり（音声も同時に小さくなります）、最後の0.2秒は黒い画面のまま終わります。</p>
     </div>
@@ -439,7 +439,7 @@
     </ul>
   </section>
 
-  <footer>Amity AI動画編集 ・ テスト版 v0.9.5</footer>
+  <footer>Amity AI動画編集 ・ テスト版 v0.9.6</footer>
 </main>
 <script type="module" src="js/app.js"></script>
 </body>

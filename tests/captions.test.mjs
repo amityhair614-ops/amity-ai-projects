@@ -30,3 +30,11 @@ test('接続の言葉だけのページ（「なので」「そうなると」�
   assert.equal(displayText('そうなると').text, '');
   assert.equal(displayText('でも').text, 'でも');
 });
+
+test('話し言葉の「〜するです」は「〜する」に（「〜ないです」「〜いです」はそのまま）・「下さい」は「ください」に', () => {
+  assert.equal(displayText('生え際辺りを軽くするです').text, '生え際辺りを軽くする');
+  assert.equal(displayText('あまり軽くしないです').text, 'あまり軽くしないです');
+  assert.equal(displayText('落ちてしまいやすいです').text, '落ちてしまいやすいです');
+  assert.equal(displayText('結べなくなります').text, '結べなくなります');
+  assert.equal(displayText('中心にやってみて下さい').text, '中心にやってみてください');
+});

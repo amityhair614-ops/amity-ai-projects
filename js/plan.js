@@ -566,7 +566,11 @@ function motionOver(motion, levels, start, end) {
   const box = boxes.length
     ? [percentile(boxes.map(b => b[0]), 0.2), percentile(boxes.map(b => b[1]), 0.8), percentile(boxes.map(b => b[2]), 0.2), percentile(boxes.map(b => b[3]), 0.8)]
     : null;
-  return { level: n ? sum / n : 0, cx: cxs.length ? percentile(cxs, 0.5) : 0.5, cy: cys.length ? percentile(cys, 0.5) : 0.5, box };
+  // ズームで手・ハサミ・髪を切らないかを確かめるための、動いた範囲のほぼ全部（端に出た手も含める）
+  const boxWide = boxes.length
+    ? [percentile(boxes.map(b => b[0]), 0.05), percentile(boxes.map(b => b[1]), 0.95), percentile(boxes.map(b => b[2]), 0.05), percentile(boxes.map(b => b[3]), 0.95)]
+    : null;
+  return { level: n ? sum / n : 0, cx: cxs.length ? percentile(cxs, 0.5) : 0.5, cy: cys.length ? percentile(cys, 0.5) : 0.5, box, boxWide, boxSamples: boxes.length };
 }
 
 // 文 [start, end]（Whisper の時刻なので少しずれている）に当たる声の区間を、言葉の途中で切らずに取り出す。
@@ -909,6 +913,8 @@ export function buildUnits({ duration, rmsDb, speech, chunks, motion, pace, rest
     u.cx = m.cx;
     u.cy = m.cy;
     u.box = m.box;
+    u.boxWide = m.boxWide;
+    u.boxSamples = m.boxSamples;
     u.motion = m.level;
     u.keywords = keywordHits(u.text);
     const reasons = [];
@@ -1138,6 +1144,8 @@ function grammarScore(text, i, inside, prev, next) {
   if (!PARTICLES.includes(prev) && SENTENCE_STARTS.some(w => text.startsWith(w, i) && (charType(prev) !== 'kata' || w.length >= 3))) return 4;
   const before = text.slice(0, i);
   // 「〜ないと／」「〜しまうと／」「〜すると／」: 条件の「と」のあとは、「〜なら」「〜れば」と同じく意味のまとまりの終わり
+  // （「入れると／なると」のように「となると」「となれば」の途中は除く）
+  if (/^な[るれっ]/.test(text.slice(i)) && prev === 'と') return -3;
   if (prev === 'と' && 'いうるたすく'.includes(text[i - 2] || '') && b !== 'hira' || /(?:ないと|うと|ると)$/.test(before) && !PARTICLE_PAIRS.includes('と' + next)) return 3.5;
   // 「〜ように／なって」「〜ので／」「〜ます／」: 意味のまとまりの終わり
   if (GOOD_ENDINGS.some(e => before.endsWith(e)) && !PARTICLES.includes(next) && !(a === 'kanji' && b === 'kanji')) return 3.5;
@@ -1227,7 +1235,8 @@ function linePages(text, maxChars, pauseAt) {
   const inside = insideTerms(text);
   // ページの長さの悪さ（目安の文字数から離れるほど悪い）と、区切りの悪さ（よい区切り＝breakScore 4 以上なら 0）の合計を
   // 一番小さくする。よい区切りでもページを増やすほど点が下がるので、必要以上に細かく分けない
-  const lenCost = n => (n < 3 ? 6 : 0) + 0.06 * (n - SUB_TARGET_CHARS) ** 2 + 3 * Math.max(0, n - SUB_SOFT_MAX) + 1;
+  // 3文字以下のページ（「それは」「しかも」だけ）は、次の言葉とまとめた方が読みやすい
+  const lenCost = n => (n < 3 ? 6 : n < 4 ? 3 : 0) + 0.05 * (n - SUB_TARGET_CHARS) ** 2 + 1.0 * Math.max(0, n - SUB_SOFT_MAX) + 1;
   // 文の境目（字幕AIは句点を出さないので、語尾と次の文の始まりの言葉から判断する）をまたぐページは作らない
   const ends = [];
   for (let k = 1; k < L; k++) if (!/[、。,\s]/.test(text[k]) && sentenceBoundary(text, k)) ends.push(k); // 読点の前ではなく後を境目とする
@@ -1296,12 +1305,12 @@ function pageTexts(text, maxChars, maxLines, pauseAt) {
   return out;
 }
 
-// 字幕は1行だけ（2行にしない）。原則10文字以内・目安5〜10文字で、意味のまとまり・息継ぎ・話すテンポで切り替える。
-// 10文字を超えるのは、言葉の途中でしか分けられないときだけ（最大14文字）
-export const SUB_MAX_CHARS = 14;
+// 字幕は1行だけ（2行にしない）。基本は10文字前後で、意味のまとまり・息継ぎ・話すテンポで切り替える。
+// 分けると不自然になる（「段を入れる必要が／あります」）ときは、12〜15文字も使う（最大15文字）
+export const SUB_MAX_CHARS = 15;
 export const SUB_LINES = 1;
-const SUB_TARGET_CHARS = 7;
-const SUB_SOFT_MAX = 10; // これより長いページは、よい区切りがあれば必ず分ける
+const SUB_TARGET_CHARS = 9;
+const SUB_SOFT_MAX = 11; // これより長いページは、よい区切りがあれば分ける
 const SUB_LONG_SEC = 3; // これより長く出ているページは、よい区切りがあれば分ける
 // pauseAt(i): text の i 文字目の前の声の間（秒）。わかるときは、声の間を意味の切れ目として区切りに使う
 // pauseAt を文字の位置 off からの関数にする（話す時間 span もずらす）
@@ -1377,6 +1386,7 @@ export const ZOOM_MIN = 1.03;
 export const ZOOM_MAX = 1.06;
 const ZOOM_SPACING = 20; // ズームとズームの間は最低この秒数あける（頻繁に動かさない）
 const ZOOM_PER_SEC = 1 / 30; // 完成動画30秒あたり1回まで（1分なら2回まで）
+const ZOOM_MIN_SAMPLES = 3; // 手元の範囲を確かめるのに使う、場面の中の動きの測定の数
 // 編集スタイルごとのズーム。テンポ重視は間隔を少し短く（倍率は同じ 1.03〜1.06 倍）
 export const ZOOM_STYLES = {
   simple: { spacing: ZOOM_SPACING, max: ZOOM_MAX },
@@ -1431,7 +1441,7 @@ export function buildTimeline(clips, opts = {}) {
       ? timedPages(clip, text)
       : toDisplay(subtitlePages(text, outDuration).map(p => ({ ...p, start: p.start + outStart, end: p.end + outStart })));
     const crop = cropRect(srcW, srcH, c.cx ?? 0.5, c.box);
-    return { ...clip, subtitles: subs, subOmitted: subs.omitted || [], crop, inCrop: boxInCrop(c.box, crop, srcW, srcH) };
+    return { ...clip, subtitles: subs, subOmitted: subs.omitted || [], crop, inCrop: boxInCrop(c.box, crop, srcW, srcH), inCropWide: boxInCrop(c.boxWide || c.box, crop, srcW, srcH) };
   });
 
   // 字幕の位置: いつも下（お手本と同じ）。文字を小さめにして、髪や手元を隠す面積を減らしている
@@ -1473,11 +1483,9 @@ export function buildTimeline(clips, opts = {}) {
       top: clamp(cy - zh / 2, crop.top, crop.top + crop.height - zh),
       width: zw, height: zh,
     };
-    // 手元（＋少しの余白）が寄った後の枠に収まるか確かめる
-    const bx0 = crop.left + b[0] * crop.width, bx1 = crop.left + b[1] * crop.width;
-    const by0 = crop.top + b[2] * crop.height, by1 = crop.top + b[3] * crop.height;
-    const mx = zw * 0.04, my = zh * 0.04;
-    if (bx0 - mx < rect.left || bx1 + mx > rect.left + zw || by0 - my < rect.top || by1 + my > rect.top + zh) continue;
+    // 手元（動いた範囲のほぼ全部＋余白）が寄った後の枠に収まるか確かめる（手・ハサミ・髪を切らない）。
+    // 動きを測った時点が場面の中に3つ未満のときは、手元の範囲が確かでないのでズームしない
+    if (c.boxSamples != null && c.boxSamples < ZOOM_MIN_SAMPLES || !fitsZoom(c.inCropWide || b, crop, rect)) continue;
     // ゆっくり寄る（in）と、寄った所からゆっくり引く（out）を交互に使う
     c.zoom = { z, rect, dir: zoomCount++ % 2 ? 'out' : 'in' };
     lastEnd = c.outStart + c.outDuration;
@@ -1494,18 +1502,23 @@ export function buildTimeline(clips, opts = {}) {
       const zw = crop.width / z, zh = crop.height / z;
       if (zw < OUT_W - 1) { lowRes = true; continue; } // 拡大になる（ぼやける）素材ではズームしない
       const rect = { left: crop.left + (crop.width - zw) / 2, top: crop.top + (crop.height - zh) / 2, width: zw, height: zh };
-      const b = c.inCrop;
-      if (b) {
-        const bx0 = crop.left + b[0] * crop.width, bx1 = crop.left + b[1] * crop.width;
-        const by0 = crop.top + b[2] * crop.height, by1 = crop.top + b[3] * crop.height;
-        if (bx0 < rect.left || bx1 > rect.left + zw || by0 < rect.top || by1 > rect.top + zh) continue;
-      }
+      // 手元の範囲がわからない・確かでない場面では寄らない（端の手やハサミを切らないため）
+      const b = c.inCropWide || c.inCrop;
+      if (!b || (c.boxSamples != null && c.boxSamples < ZOOM_MIN_SAMPLES) || !fitsZoom(b, crop, rect)) continue;
       c.zoom = { z, rect, dir: zoomCount++ % 2 ? 'out' : 'in', gentle: true };
       lastEnd = c.outStart + c.outDuration;
     }
   }
   if (zoom && !zoomCount && lowRes) tl.zoomSkipped = 'resolution';
   return tl;
+}
+
+// 動いた範囲 b（切り抜き枠 crop の中の割合）が、寄った後の枠 rect に余白（8%）をつけて収まるか
+function fitsZoom(b, crop, rect) {
+  const bx0 = crop.left + b[0] * crop.width, bx1 = crop.left + b[1] * crop.width;
+  const by0 = crop.top + b[2] * crop.height, by1 = crop.top + b[3] * crop.height;
+  const mx = rect.width * 0.08, my = rect.height * 0.08;
+  return !(bx0 - mx < rect.left || bx1 + mx > rect.left + rect.width || by0 - my < rect.top || by1 + my > rect.top + rect.height);
 }
 
 // 出力の時刻 t での切り抜き枠（ズームはゆっくり始まりゆっくり止まる）
@@ -1819,18 +1832,34 @@ function timedPages(clip, text) {
     // 短すぎて読めないページは、次のページの直前まで延ばす（文字は省かない）
     if (out[i].end - out[i].start < 0.5) out[i].end = Math.min(limit, out[i].start + 0.5);
   }
-  const shown = toDisplay(out);
+  const shown = markIncomplete(toDisplay(out));
   // 字幕で省いた言葉（文の中の「ね」「という」と、ページの頭の「なので」など）。確認・診断情報に出す
   shown.omitted = [...inline, ...shown.flatMap(p => p.omitted || [])];
   return shown;
+}
+
+// 文の途中で終わっている字幕（「結べなく」「やっていき」）。文字起こしAIが文の終わり（「なります」「ましょう」）を
+// 聞き落とした所なので、字幕の文字を足すことはせず、確認が必要な字幕として印をつける（page.doubt）
+const INCOMPLETE_END_RE = /(?:なく|ていき|でいき|まし|ませ)$/;
+function markIncomplete(pages) {
+  pages.forEach((p, i) => {
+    const t = p.lines.join('');
+    const next = pages[i + 1];
+    const nextHead = next ? (next.spoken || next.lines.join('')) : '';
+    if (INCOMPLETE_END_RE.test(t) && (!next || SENTENCE_STARTS.some(w => nextHead.startsWith(w)) || (next.omitted && next.omitted.length))) {
+      p.doubt = '文の終わりが聞き取れていない可能性があります（音声を確認して、必要なら字幕を直してください）';
+    }
+  });
+  return pages;
 }
 
 // 表示用の字幕にする: 各ページの文字から、字幕に書かなくても意味が伝わる言葉を省く（captions.js）。
 // 表示の時刻は、話した文字の時刻で決めた後なので変わらない。省いた言葉は page.omitted に残す（確認・計測用）
 function toDisplay(pages) {
   return pages.map(p => {
-    const d = displayText(p.lines.join(''));
-    return d.omitted.length ? { ...p, lines: [d.text], omitted: d.omitted, spoken: p.lines.join('') } : p;
+    const spoken = p.lines.join('');
+    const d = displayText(spoken);
+    return d.text !== spoken ? { ...p, lines: [d.text], omitted: d.omitted, spoken } : p;
   }).filter(p => p.lines.join('').trim());
 }
 
