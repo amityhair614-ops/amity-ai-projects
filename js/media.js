@@ -11,10 +11,10 @@ import {
   canEncodeAudio, canEncodeVideo,
 } from 'mediabunny';
 import { registerAacEncoder } from '@mediabunny/aac-encoder';
-import { FRAME_SEC, FPS, OUT_W, OUT_H, SUB_ZONES, cropAt, subtitleAlpha } from './plan.js';
+import { FRAME_SEC, FPS, OUT_W, OUT_H, SUB_ZONES, cropAt, subtitleAlpha, openingAlpha, endFadeAlpha } from './plan.js';
 import { log } from './diag.js';
 import { Resampler } from './resample.js';
-import { AudioStitcher, applyGain } from './audiomix.js';
+import { AudioStitcher, applyGain, applyEndFade } from './audiomix.js';
 
 export const ASR_RATE = 16000;
 
@@ -62,9 +62,17 @@ export async function openVideo(file) {
     duration: +duration.toFixed(2),
     video: `${CODEC_NAMES[codec] || codec} ${await video.getCodedWidth()}×${await video.getCodedHeight()} 回転${rotation}° 表示${width}×${height}${hdr ? ' HDR' : ''}`,
     decoder: decoderConfig.codec,
+    // 色の情報（HDR の HLG / PQ か、SDR の BT.709 か）。iPhone の HDR 動画は、ブラウザで SDR に変換するときに
+    // 暗く・薄くなる可能性があるため、診断情報で確かめられるようにする
+    color: colorText(decoderConfig.colorSpace),
     audio: audio ? `${CODEC_NAMES[audio.codec] || audio.codec} ${audio.sampleRate}Hz ${audio.numberOfChannels}ch` : 'なし',
   };
-  return { input, video, audio, duration, width, height, rotation, decoderConfig, info };
+  return { input, video, audio, duration, width, height, rotation, decoderConfig, info, hdr };
+}
+
+function colorText(cs) {
+  if (!cs) return '不明';
+  return [cs.primaries, cs.transfer, cs.matrix, cs.fullRange == null ? null : cs.fullRange ? 'full' : 'limited'].map(x => x ?? '?').join(' / ');
 }
 
 export function closeVideo(src) {
@@ -124,6 +132,13 @@ function codedRect(crop, rotation, cw, ch) {
   return { x: L, y: T, w: W, h: H };
 }
 
+// 縮小・拡大の補間を高品質にする（ブラウザの初期設定は「低」で、4Kから縮小すると髪の細い線がつぶれる）
+function hq(ctx) {
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
+  return ctx;
+}
+
 class FramePainter {
   constructor(rotation, outW, outH) {
     this.rotation = rotation;
@@ -132,7 +147,7 @@ class FramePainter {
     if (rotation) {
       const side = rotation === 180;
       this.tmp = new OffscreenCanvas(side ? outW : outH, side ? outH : outW);
-      this.tctx = this.tmp.getContext('2d');
+      this.tctx = hq(this.tmp.getContext('2d'));
     }
   }
 
@@ -368,11 +383,60 @@ function toAudioBuffer(data, sr, from, to) {
 
 // ---------- 書き出し ----------
 
-// 字幕: 白の読みやすいゴシック体・最大2行・薄い黒の影。文字は動かさず、不透明度だけで出し入れする
+// 字幕: 白の読みやすいゴシック体・1行・薄い黒の影。文字は動かさず、不透明度だけで出し入れする。
+// 大きさは手動編集のお手本（文字の高さが画面の幅の約3.2%＝1080の幅で約34px）に合わせ、髪や手元を隠す面積を減らしている
 const FONT_FAMILY = '"Hiragino Sans", "Hiragino Kaku Gothic ProN", "Noto Sans JP", "IPAGothic", sans-serif';
-const FONT_SIZE = 58;
-const LINE_HEIGHT = 1.42;
+const FONT_SIZE = 42;
+const LINE_HEIGHT = 1.4;
 const MAX_TEXT_W = OUT_W * 0.86;
+
+// 冒頭のテキスト: 白の太いゴシック体・大きめ・黒の縁取り（手動編集のお手本と同じ。背景の帯はつけない）
+const TITLE_SIZE = 108;
+const TITLE_LINE_HEIGHT = 1.22;
+const TITLE_MAX_W = OUT_W * 0.86;
+const TITLE_OUTLINE = 0.13; // 縁取りの太さ（文字の大きさに対する割合）
+
+function drawOpening(ctx, op, t) {
+  const alpha = openingAlpha(op, t);
+  if (alpha <= 0) return;
+  ctx.save();
+  let size = TITLE_SIZE;
+  ctx.font = `900 ${size}px ${FONT_FAMILY}`;
+  const widest = Math.max(...op.lines.map(l => ctx.measureText(l).width)) + size * TITLE_OUTLINE;
+  if (widest > TITLE_MAX_W) {
+    size = Math.floor(size * TITLE_MAX_W / widest);
+    ctx.font = `900 ${size}px ${FONT_FAMILY}`;
+  }
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.globalAlpha = alpha;
+  ctx.fillStyle = '#ffffff';
+  const lh = size * TITLE_LINE_HEIGHT;
+  const firstY = OUT_H * op.y - ((op.lines.length - 1) * lh) / 2;
+  // 黒の縁取り（角を丸くする）の上に白い文字。縁取りに薄い影をつけて、明るい背景でも浮かせる
+  ctx.lineJoin = 'round';
+  ctx.miterLimit = 2;
+  ctx.lineWidth = size * TITLE_OUTLINE;
+  ctx.strokeStyle = 'rgba(0, 0, 0, 0.9)';
+  ctx.shadowColor = 'rgba(0, 0, 0, 0.35)';
+  ctx.shadowBlur = 10;
+  ctx.shadowOffsetY = 3;
+  op.lines.forEach((line, i) => ctx.strokeText(line, OUT_W / 2, firstY + i * lh));
+  ctx.shadowColor = 'transparent';
+  op.lines.forEach((line, i) => ctx.fillText(line, OUT_W / 2, firstY + i * lh));
+  ctx.restore();
+}
+
+// 最後のフェードアウト（映像をなめらかに黒くする）
+function drawEndFade(ctx, t, total) {
+  const a = endFadeAlpha(t, total);
+  if (a <= 0) return;
+  ctx.save();
+  ctx.globalAlpha = a;
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, OUT_W, OUT_H);
+  ctx.restore();
+}
 
 function drawSubtitle(ctx, page, t) {
   if (!page) return;
@@ -381,18 +445,18 @@ function drawSubtitle(ctx, page, t) {
   ctx.save();
   // 1行が長すぎるときだけ、そのページの文字を少し小さくする
   let size = FONT_SIZE;
-  ctx.font = `600 ${size}px ${FONT_FAMILY}`;
+  ctx.font = `700 ${size}px ${FONT_FAMILY}`;
   const widest = Math.max(...page.lines.map(l => ctx.measureText(l).width));
   if (widest > MAX_TEXT_W) {
     size = Math.floor(size * MAX_TEXT_W / widest);
-    ctx.font = `600 ${size}px ${FONT_FAMILY}`;
+    ctx.font = `700 ${size}px ${FONT_FAMILY}`;
   }
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   ctx.globalAlpha = alpha;
   ctx.fillStyle = '#ffffff';
-  ctx.shadowColor = 'rgba(0, 0, 0, 0.42)';
-  ctx.shadowBlur = 10;
+  ctx.shadowColor = 'rgba(0, 0, 0, 0.5)';
+  ctx.shadowBlur = 8;
   ctx.shadowOffsetY = 2;
   const lh = size * LINE_HEIGHT;
   const centerY = OUT_H * (SUB_ZONES[page.pos] ?? SUB_ZONES.bottom);
@@ -411,78 +475,164 @@ function drawSubtitle(ctx, page, t) {
 //    → 音声を区間ごとに作ると、つなぎ目ごとに AAC の先頭の無音（エンコーダーの遅延）が入って「プツッ」となるため
 // どちらも書き出し先はファイル（StreamTarget）で、動画全体をメモリに持たない（10分の動画でも使うメモリは一定）
 
+let encoderLogged = false;
 async function checkVideoEncoder() {
   if (!(await canEncodeVideo('avc', { width: OUT_W, height: OUT_H }))) {
     throw new Error('この端末では H.264 の書き出しに対応していません。');
   }
+  // 画質の確認用（診断情報）: この端末の H.264 エンコーダーがハードウェアか。画質はエンコーダーで大きく変わる
+  if (encoderLogged) return;
+  encoderLogged = true;
+  try {
+    const base = { codec: 'avc1.640028', width: OUT_W, height: OUT_H, bitrate: VIDEO_BITRATE, framerate: FPS };
+    const hw = await VideoEncoder.isConfigSupported({ ...base, hardwareAcceleration: 'prefer-hardware' }).then(r => r.supported, () => null);
+    const sw = await VideoEncoder.isConfigSupported({ ...base, hardwareAcceleration: 'prefer-software' }).then(r => r.supported, () => null);
+    log('映像のエンコーダー', { hardware: hw, software: sw, bitrate: VIDEO_BITRATE });
+  } catch {}
 }
 
-// ピース piece のうち、出力のコマ f0〜f1 を描く。コマごとに emit(出力の時刻) を呼ぶ（その時点の画像は base にある）
-async function drawFrames(src, packets, painter, bctx, clip, piece, f0, f1, emit) {
+// 書き出しを一時停止するときの合図（画面を離れたときなど）。この例外は失敗ではない
+export class RenderPaused extends Error {
+  constructor() { super('一時停止しました'); this.name = 'RenderPaused'; }
+}
+
+// 書き出しに使う canvas と描画の準備。区間ごとに作り直すと、iPhone では使い終わった canvas の
+// メモリ（GPU）がすぐに解放されずに積み重なるため、書き出し全体で1つを使い回す
+export function createRenderContext(src) {
+  const canvas = new OffscreenCanvas(OUT_W, OUT_H);
+  const base = new OffscreenCanvas(OUT_W, OUT_H); // 字幕を載せる前のコマ
+  return {
+    canvas, ctx: hq(canvas.getContext('2d')), base, bctx: hq(base.getContext('2d')),
+    painter: new FramePainter(src.rotation, OUT_W, OUT_H),
+  };
+}
+
+// デコーダーの失敗を、原因を調べられるよう詳しく記録した例外にする
+function decodeError(err, info) {
+  if (err?.detail?.stage) { err.detail = { ...info, ...err.detail }; return err; } // 内側で段階を記録済み（エンコードなど）
+  const e = new Error(`${err?.name || 'Error'}: ${err?.message || err}`);
+  e.name = err?.name || 'Error';
+  e.cause = err;
+  e.detail = { stage: err?.stage || 'decode', ...info, stack: String(err?.stack || '').split('\n').slice(0, 4).join(' | ') };
+  return e;
+}
+
+// ピース piece のうち、出力のコマ f0〜f1 を描く。コマごとに emit(出力の時刻) を呼ぶ（その時点の画像は base にある）。
+// opts.lowLatency: false にすると、デコーダーの低遅延モードを使わない（やり直しのとき）
+// opts.earlierKey: true にすると、1つ前のキーフレームからデコードする（やり直しのとき）
+async function drawFrames(src, packets, rc, clip, piece, f0, f1, emit, opts = {}) {
   const from = piece.srcStart + f0 / FPS;
   const n = f1 - f0;
   const end = from + n / FPS;
-  let k = 0;
+  let k = 0, decoded = 0, sent = 0, skipped = 0, lastTs = null;
   const out = async () => { await emit(piece.outStart + (f0 + k) / FPS); k++; };
   // 新しいコマが来たら、それより前の時刻の出力コマを直前の画像で埋めてから描き替える
   const onFrame = async frame => {
+    decoded++;
     const ts = frame.timestamp / 1e6;
     while (k < n && from + k / FPS < ts - 1e-3) await out();
     // ズーム中は、このコマの出力時刻に合わせた枠で切り抜く
-    if (k < n) painter.draw(bctx, frame, cropAt(clip, piece.outStart + f0 / FPS + Math.max(0, ts - from)));
+    if (k < n) {
+      try { rc.painter.draw(rc.bctx, frame, cropAt(clip, piece.outStart + f0 / FPS + Math.max(0, ts - from))); }
+      catch (err) { throw Object.assign(err, { stage: 'draw' }); }
+    }
   };
-  const dec = new FrameDecoder(src.decoderConfig);
+  const config = { ...src.decoderConfig, optimizeForLatency: opts.lowLatency !== false };
+  let key = (await packets.getKeyPacket(from, { verifyKeyPackets: true })) ?? (await packets.getFirstPacket());
+  if (opts.earlierKey && key && key.timestamp > 0) {
+    key = (await packets.getKeyPacket(Math.max(0, key.timestamp - 0.001), { verifyKeyPackets: true })) ?? key;
+  }
+  const info = () => ({
+    srcFrom: +from.toFixed(3), frames: `${f0}-${f1}`, outFrame: k, key: key && +key.timestamp.toFixed(3),
+    lastPacket: lastTs, sent, skipped, decoded, codec: config.codec, coded: `${config.codedWidth}x${config.codedHeight}`,
+    rotation: src.rotation, decoderState: dec?.decoder?.state, queue: dec?.decoder?.decodeQueueSize, lowLatency: config.optimizeForLatency,
+  });
+  let dec = null;
   try {
-    let p = (await packets.getKeyPacket(from, { verifyKeyPackets: true })) ?? (await packets.getFirstPacket());
+    dec = new FrameDecoder(config);
+    let p = key;
     // B フレームの並べ替えを考えて少し先まで送る
     while (p && p.timestamp < end + 0.5 && k < n) {
-      dec.decoder.decode(p.toEncodedVideoChunk());
-      await dec.drain(onFrame, 2);
-      p = await packets.getNextPacket(p);
+      // キーフレームより前に表示されるコマ（HEVC の「前のまとまりを参照するコマ」など）は、
+      // キーフレームから始めると正しくデコードできないので送らない（表示時刻が from より前なので出力には使わない）
+      if (p !== key && p.timestamp < key.timestamp) { skipped++; }
+      else {
+        lastTs = +p.timestamp.toFixed(3);
+        dec.decoder.decode(p.toEncodedVideoChunk());
+        sent++;
+        await dec.drain(onFrame, 2);
+      }
+      try { p = await packets.getNextPacket(p); }
+      catch (err) { throw Object.assign(err, { stage: 'read' }); }
     }
     await dec.flush(onFrame);
+  } catch (err) {
+    if (err instanceof RenderPaused) throw err;
+    throw decodeError(err, info());
   } finally {
-    dec.close();
+    dec?.close();
   }
   while (k < n) await out();
 }
 
-// 区間 seg（resume.planSegments の結果の1つ）の映像だけを、stream（ファイル）に MP4 として書き出す
-export async function renderSegment(src, timeline, seg, stream, { onProgress } = {}) {
+// 区間 seg（resume.planSegments の結果の1つ）の映像だけを、stream（ファイル）に MP4 として書き出す。
+// rc: createRenderContext の結果（区間をまたいで使い回す）。shouldPause() が true になったら、きりのよい所で RenderPaused を投げる
+// overlay: { opening: 冒頭のテキスト（openingPlan の結果）, total: 完成動画の長さ（最後のフェード用）}
+export async function renderSegment(src, timeline, seg, stream, { onProgress, rc, shouldPause, decode, overlay } = {}) {
   await checkVideoEncoder();
+  rc = rc || createRenderContext(src);
   const output = new Output({ format: new Mp4OutputFormat({ fastStart: false }), target: new StreamTarget(stream) });
-  const canvas = new OffscreenCanvas(OUT_W, OUT_H);
-  const ctx = canvas.getContext('2d');
-  const base = new OffscreenCanvas(OUT_W, OUT_H); // 字幕を載せる前のコマ
-  const bctx = base.getContext('2d');
-  bctx.fillStyle = '#000';
-  bctx.fillRect(0, 0, OUT_W, OUT_H);
-  // 髪の質感がつぶれないよう、ビットレートは高め（約 75MB/分）。色の加工はしない
-  const videoSource = new CanvasSource(canvas, { codec: 'avc', bitrate: VIDEO_BITRATE, keyFrameInterval: 2 });
+  rc.bctx.fillStyle = '#000';
+  rc.bctx.fillRect(0, 0, OUT_W, OUT_H);
+  // 髪の質感がつぶれないよう、ビットレートは高め（約 150MB/分）。色の加工はしない
+  const videoSource = new CanvasSource(rc.canvas, { codec: 'avc', bitrate: VIDEO_BITRATE, keyFrameInterval: 2 });
   output.addVideoTrack(videoSource, { frameRate: FPS });
   await output.start();
   const packets = new EncodedPacketSink(src.video);
-  const painter = new FramePainter(src.rotation, OUT_W, OUT_H);
   let done = 0;
+  let current = null;
   try {
     for (const s of seg.slices) {
       const clip = timeline[s.c];
-      await drawFrames(src, packets, painter, bctx, clip, clip.pieces[s.p], s.f0, s.f1, async t => {
-        ctx.drawImage(base, 0, 0);
-        drawSubtitle(ctx, clip.subtitles.find(p => t >= p.start && t < p.end), t);
-        await videoSource.add(t - seg.outStart, 1 / FPS);
+      current = s;
+      await drawFrames(src, packets, rc, clip, clip.pieces[s.p], s.f0, s.f1, async t => {
+        if (shouldPause?.()) throw new RenderPaused();
+        rc.ctx.drawImage(rc.base, 0, 0);
+        drawSubtitle(rc.ctx, clip.subtitles.find(p => t >= p.start && t < p.end), t);
+        if (overlay?.opening) drawOpening(rc.ctx, overlay.opening, t);
+        if (overlay?.total) drawEndFade(rc.ctx, t, overlay.total);
+        try {
+          await videoSource.add(t - seg.outStart, 1 / FPS);
+        } catch (err) {
+          throw Object.assign(new Error(`${err?.name || 'Error'}: ${err?.message || err}`), { name: err?.name || 'Error', cause: err, detail: { stage: 'encode', outTime: +t.toFixed(3), stack: String(err?.stack || '').split('\n').slice(0, 4).join(' | ') } });
+        }
         done++;
         onProgress?.(done / seg.frames);
-      });
+      }, decode);
     }
     await output.finalize();
   } catch (err) {
     await output.cancel().catch(() => {});
+    if (err && !(err instanceof RenderPaused)) {
+      err.detail = { segment: seg.index, slice: current && { clip: current.c, piece: current.p }, framesDone: done, ...(err.detail || {}) };
+    }
     throw err;
   }
 }
 
-export const VIDEO_BITRATE = 10_000_000;
+let bundledAac = false;
+function useBundledAac() {
+  if (bundledAac) return;
+  registerAacEncoder();
+  bundledAac = true;
+  log('音声は内蔵のAACエンコーダーで作成');
+}
+
+// 映像のビットレート（約150MB/分）。髪の細かい線は圧縮で真っ先に失われるため高めにしている。
+// ただしパソコンの Chromium（ソフトウェアのエンコーダー）では、同じコマで比べると 10Mbps でも 20Mbps でも
+// 細かさは圧縮前の約80%で、ビットレートでは変わらなかった（tests/e2e/quality-bench）。
+// iPhone はハードウェアのエンコーダーを使うため、効果は iPhone 実機で確かめる必要がある
+export const VIDEO_BITRATE = 20_000_000;
 export const AUDIO_BITRATE = 160_000;
 
 function sameConfig(a, b) {
@@ -495,12 +645,12 @@ function sameConfig(a, b) {
 
 // 保存した区間の映像をつなぎ、音声を通して作って、stream（ファイル）に完成したMP4を書き出す。
 // getSegment(i): i 番目の区間のファイル（File）
-export async function assembleOutput(src, timeline, segments, getSegment, stream, { gainDb = 0, onProgress } = {}) {
+export async function assembleOutput(src, timeline, segments, getSegment, stream, { gainDb = 0, onProgress, endFade = 0, endHold = 0 } = {}) {
   const withAudio = !!src.audio;
-  if (withAudio && !(await canEncodeAudio('aac'))) {
-    log('AACの書き出しに端末が対応していないため、内蔵のAACエンコーダーを使用');
-    registerAacEncoder();
-  }
+  // 音声は、ブラウザの AAC エンコーダーではなく、内蔵の AAC エンコーダー（FFmpeg の WASM 版）で作る。
+  // WebKit（Safari と同じエンジン）のエンコーダーは、1回に渡した音声から作られる AAC のフレームすべてに
+  // 同じ時刻を付けて返すことがあり（Linux の WebKit で確認）、MP4 の音声の時刻が壊れるため
+  if (withAudio) useBundledAac();
   const output = new Output({ format: new Mp4OutputFormat({ fastStart: false }), target: new StreamTarget(stream) });
   const videoSource = new EncodedVideoPacketSource('avc');
   output.addVideoTrack(videoSource, { frameRate: FPS });
@@ -513,6 +663,7 @@ export async function assembleOutput(src, timeline, segments, getSegment, stream
   const gain = Math.pow(10, gainDb / 20);
   const stitcher = new AudioStitcher();
   const lastSeg = segments[segments.length - 1];
+  const outTotal = timeline.reduce((sum, c) => sum + c.outDuration, 0);
   let firstConfig = null;
   try {
     for (const seg of segments) {
@@ -526,6 +677,8 @@ export async function assembleOutput(src, timeline, segments, getSegment, stream
           const len = Math.round(dur * raw.sr);
           const last = seg === lastSeg && s === seg.slices[seg.slices.length - 1];
           const data = stitcher.add(raw.data, raw.sr, { len, contiguous: s.f0 > 0 || piece.contiguous, last });
+          // 最後のフェードアウト（映像が黒くなるのと同じ時間で、音声も小さくする）
+          if (endFade) applyEndFade(data, raw.sr, piece.outStart + s.f0 / FPS, outTotal, endFade, endHold);
           await audioSource.add(toAudioBuffer(data, raw.sr, 0, len));
         }
       }

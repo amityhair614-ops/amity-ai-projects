@@ -50,7 +50,7 @@ test('10分の動画も区間に分けられる（1区間は数秒・約75区間
 
 test('必要な保存容量と、空き容量の確認', () => {
   const r = renderBytes(60);
-  assert.ok(r.output > 70 * MB && r.output < 85 * MB, '1分 約75MB');
+  assert.ok(r.output > 145 * MB && r.output < 165 * MB, '1分 約150MB（20Mbps）');
   assert.ok(r.total > 2 * r.output, '区間と完成ファイルの両方');
   assert.equal(spaceCheck({ usage: 100 * MB, quota: 200 * MB }, 150 * MB).ok, false);
   assert.equal(spaceCheck({ usage: 100 * MB, quota: 1000 * MB }, 150 * MB).ok, true);

@@ -11,6 +11,9 @@
 //     --target=秒          完成動画の長さ
 //     --no-asr             字幕OFF
 //     --reference=FILE     途中で止めずに書き出した MP4。映像のコマが一致するかを比べる
+//     --kill-at=error      書き出しが失敗して表示が出るまで待ち（--fail-decoder と使う）、そのあと閉じて開き直し、再開する
+//     --hide-during-render 書き出し中に5秒間、画面を離れたことにする（一時停止して、戻ったら続きを書き出すか）
+//     --fail-decoder=N[:M] N回目にデコードしたところで、デコーダーが EncodingError: Decoder failure を出す（M回くり返す。既定1回）
 //     --select-all         構成の確認画面で、使える場面をすべて選ぶ（長い動画を書き出す量・時間・メモリを確かめる。
 //                          ロング動画の画面は未実装なので、縦 1080×1920 のまま長く書き出す）
 //
@@ -32,6 +35,8 @@ const noAsr = process.argv.includes('--no-asr');
 const dropSource = process.argv.includes('--drop-source');
 const reference = arg('reference');
 const selectAll = process.argv.includes('--select-all');
+const hideDuringRender = process.argv.includes('--hide-during-render');
+const failDecoder = arg('fail-decoder');
 const base = sample.replace(/\.[^.]+$/, '');
 const tFile = fs.existsSync(path.join(dir, `${base}-transcript.json`)) ? `${base}-transcript.json` : 'sample-transcript.json';
 const transcript = JSON.parse(fs.readFileSync(path.join(dir, tFile), 'utf8'));
@@ -94,6 +99,32 @@ async function launch() {
   });
   await ctx.route('**/js/transcribe-worker.js', r => r.fulfill({ contentType: 'text/javascript', body: fakeWorker }));
   ctx.on('close', () => console.log('[context close]'));
+  if (failDecoder && phase === '1回目') {
+    // iPhone で出た「EncodingError: Decoder failure」を、指定した回数目のデコードで起こす（失敗の扱いを確かめるため）
+    // N:M … N回目のデコードで失敗（M回まで）/ tS:M … 元の動画の S 秒より後のコマで失敗（M回まで。同じ区間が毎回失敗する）
+    const [first, times] = failDecoder.split(':');
+    const at = first.startsWith('t') ? Number(first.slice(1)) : null;
+    const nth = at === null ? Number(first) : 0;
+    await ctx.addInitScript(([nth, at, times]) => {
+      const Orig = window.VideoDecoder;
+      let count = 0, failed = 0;
+      window.VideoDecoder = class extends Orig {
+        constructor(init) { super(init); this._err = init.error; count = 0; }
+        decode(chunk) {
+          count++;
+          if (this._first === undefined) this._first = chunk.timestamp / 1e6;
+          // 時刻の指定: そのキーフレームの少し前（3秒以内）からデコードを始めたデコーダーは、2回目のデコードで失敗する
+          const hit = at !== null ? this._first <= at && this._first >= at - 3 && count > 1 : count >= nth;
+          if (failed < times && hit && chunk.type !== 'key') {
+            failed++; count = 0; console.log('[amity] テスト用の失敗', this._first, chunk.timestamp / 1e6, failed);
+            setTimeout(() => this._err(new DOMException('Decoder failure', 'EncodingError')), 0);
+            return;
+          }
+          return super.decode(chunk);
+        }
+      };
+    }, [nth, at, Number(times || 1)]);
+  }
   const page = ctx.pages()[0] || await ctx.newPage();
   page.on('pageerror', e => console.log('[pageerror] ' + e.message));
   page.on('crash', () => console.log('[crash] ページがクラッシュしました'));
@@ -148,6 +179,7 @@ const passed = j => !!j && (
   (kStage === 'motion' && j.analysis?.motion?.done) ||
   (kStage === 'asr' && j.analysis?.asr?.done) ||
   ((kStage === 'render' || kStage === 'assemble') && j.stage === 'done'));
+// （--kill-at=error のときは、失敗の表示を待つ）
 const killCond = (n, extra = 0) => j => {
   if (!j) return false;
   if (kStage === 'render') return j.render && j.render.done.filter(Boolean).length >= n + extra;
@@ -165,6 +197,8 @@ try {
   await page.setInputFiles('#file', path.join(dir, sample));
   await page.waitForSelector('#stepAnalyze:not([hidden])', { timeout: 60000 });
   if (noAsr) await page.uncheck('#optAsr'); else await page.check('#optAsr');
+  if (await page.$('#optEngine')) await page.selectOption('#optEngine', 'whisper'); // 偽の文字起こしは Whisper の形で返す
+  if (process.env.TITLE) await page.fill('#bTitle', process.env.TITLE);
   if (target) {
     if (['30', '45', '60'].includes(target)) await page.click(`input[name=dur][value="${target}"] + span`);
     else { await page.click('input[name=dur][value=custom] + span'); await page.fill('#durCustom', target); await page.dispatchEvent('#durCustom', 'change'); }
@@ -173,7 +207,7 @@ try {
   await page.click('#btnAnalyze');
   let n = Number(kN || 2);
   let j;
-  if (kStage === 'render' || kStage === 'assemble') {
+  if (['render', 'assemble', 'none', 'error'].includes(kStage)) {
     await page.waitForSelector('#stepReview:not([hidden]), #analyzeError:not([hidden])', { timeout: 1800000 });
     report.push(`解析: ${((Date.now() - t0) / 1000).toFixed(1)}秒`);
     if (selectAll) {
@@ -194,10 +228,24 @@ try {
       });
       const cov = (a, b) => pieces.reduce((t, [s, e]) => t + Math.max(0, Math.min(b, e) - Math.max(a, s)), 0);
       const partial = transcript.filter(t => !t.retake).filter(t => {
-        const st = t.phrases.map(p => cov(p.start, p.end) > 0.02);
+        const st = t.phrases.filter(p => !p.del).map(p => cov(p.start, p.end) > 0.02);
         return st.some(Boolean) && !st.every(Boolean);
       });
       const missingAll = transcript.filter(t => !t.retake && t.phrases.every(p => cov(p.start, p.end) <= 0.02));
+      if (transcript.some(t => t.phrases?.some(p => 'del' in p))) {
+        // 正解のラベル（取り除くべき句・残すべき句）と比べる
+        const ph = transcript.flatMap(t => t.phrases.map(p => ({ ...p, kind: t.kind, sent: t.spoken || t.text })));
+        const isIn = p => cov(p.start, p.end) > (p.end - p.start) * 0.5;
+        const cats = {};
+        for (const p of ph) {
+          const c = p.del ? p.cat : 'keep';
+          (cats[c] ||= { n: 0, removed: 0, items: [] }).n++;
+          if (!isIn(p)) { cats[c].removed++; cats[c].items.push(p.text); }
+        }
+        for (const [c, v] of Object.entries(cats)) report.push(`  ${c}: ${v.removed}/${v.n} 句を取り除いた${c === 'keep' || c === 'similar' ? '（残すべき句）' : ''} ${v.items.join(' / ')}`);
+        const units = await page.evaluate(() => window.amityDebug.units.map(u => ({ start: u.start, text: u.text, excluded: u.excluded || null, candidate: u.candidate || null, trimmed: u.trimmed?.reason || null })));
+        for (const u of units.filter(u => u.excluded || u.candidate || u.trimmed)) report.push(`  [${u.excluded ? '除外: ' + u.excluded : u.trimmed ? '一部を取り除いた: ' + u.trimmed : '候補: ' + u.candidate}] ${u.start.toFixed(1)} ${u.text}`);
+      }
       report.push(`途中で切れた文: ${partial.length}件 ${partial.map(t => t.start.toFixed(1) + ' ' + t.text).join(' / ')}`);
       report.push(`まったく入らなかった文（言い直し等を除く）: ${missingAll.length}件 ${missingAll.slice(0, 5).map(t => t.start.toFixed(1) + ' ' + t.text).join(' / ')}`);
       if (process.env.DUMP_AT) {
@@ -222,7 +270,34 @@ try {
     page.__renderStart = tr;
   }
   const noKill = kStage === 'none';
-  if (!noKill) {
+  if (hideDuringRender) {
+    await waitFor(page, j => j?.render && j.render.done.filter(Boolean).length >= 1, '1区間');
+    await page.evaluate(() => {
+      Object.defineProperty(document, 'hidden', { configurable: true, get: () => true });
+      document.dispatchEvent(new Event('visibilitychange'));
+    });
+    await page.waitForTimeout(5000);
+    const during = summary(await job(page));
+    const text = await page.$eval('#renderText', el => el.textContent);
+    await page.evaluate(() => {
+      Object.defineProperty(document, 'hidden', { configurable: true, get: () => false });
+      document.dispatchEvent(new Event('visibilitychange'));
+    });
+    report.push(`画面を離れた5秒間: ${JSON.stringify(during)}・表示「${text}」`);
+  }
+  if (kStage === 'error') {
+    // 書き出しの失敗が表示されたあとの状態（保存した区間・「途中の編集」の表示）を確かめてから閉じる
+    await page.waitForSelector('#renderError:not([hidden])', { timeout: 1800000 });
+    await page.waitForTimeout(1500);
+    const errText = await page.$eval('#renderError', el => el.textContent);
+    const card = await page.$eval('#resumeCard', el => (el.hidden ? '（表示なし）' : el.innerText.split('\n').slice(0, 6).join(' / ')));
+    const jj = await job(page);
+    report.push(`失敗の表示: ${errText}`);
+    report.push(`失敗した後の「途中の編集」: ${card}`);
+    report.push(`失敗した後の保存: ${JSON.stringify(summary(jj))}・失敗の記録 ${jj.render.failures.length}件`);
+    for (const f of jj.render.failures) report.push('  ' + JSON.stringify(f).slice(0, 600));
+    killBrowser();
+  } else if (!noKill) {
     j = await waitFor(page, killCond(n), '強制終了の条件');
     if (kStage === 'assemble') await page.waitForTimeout(1500); // 仕上げを少し進めてから止める
     const before = summary(await job(page));
@@ -286,7 +361,7 @@ try {
     }
     const err = await page.$eval('#renderError', el => (el.hidden ? '' : el.textContent));
     if (err) throw new Error('書き出しエラー: ' + err);
-    const logs = await page.evaluate(() => JSON.parse(localStorage.getItem('amity.log.v1')).map(e => e.msg).filter(m => /再利用|再開|書き出し直|保存済み/.test(m)));
+    const logs = await page.evaluate(() => JSON.parse(localStorage.getItem('amity.log.v1')).map(e => e.msg).filter(m => /再利用|再開|書き出し直|保存済み|失敗|一時停止/.test(m)));
     report.push(`${noKill ? '' : k + '回目: 再開から完成まで ' + ((Date.now() - t1) / 1000).toFixed(1) + '秒 / '}${await page.$eval('#renderText', el => el.textContent)}`);
     report.push('記録: ' + [...new Set(logs)].join(' / '));
     const after = await job(page);

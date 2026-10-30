@@ -1,0 +1,119 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>WebKit での通しテスト</title>
+<!--
+  WebKit（Safari と同じエンジン）で、アプリを iframe に開いて操作する通しテスト。tests/webkit/run.py から使う。
+  ?phase=start   … 動画を選んで解析し、書き出しを始める。kill=N 区間を保存したら KILL_READY を報告（外からブラウザを強制終了してもらう）
+  ?phase=resume  … 開き直したときの「途中の編集」を報告し、「続きから再開」を押して完成まで進め、MP4 を送る
+  結果は /__report に POST する（tests/webkit/server.py が記録する）
+-->
+<style>body { margin: 0 } iframe { width: 390px; height: 844px; border: 0 }</style>
+<iframe id="app" src="/"></iframe>
+<script type="module">
+const q = new URLSearchParams(location.search);
+const phase = q.get('phase');
+const report = (type, data) => fetch('/__report', { method: 'POST', body: JSON.stringify({ type, phase, ...data }) });
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const frame = document.getElementById('app');
+const W = () => frame.contentWindow;
+const $ = id => W().document.getElementById(id);
+const shown = id => $(id) && !$(id).hidden;
+
+let lastBeat = 0;
+async function until(fn, label, timeout = 3600e3) {
+  const t0 = Date.now();
+  for (;;) {
+    // 15秒ごとに、画面の進み具合とアプリの記録を報告する（止まった所を調べるため）
+    if (Date.now() - lastBeat > 15000) {
+      lastBeat = Date.now();
+      try { report('progress', { label, render: $('renderText')?.textContent, progress: $('progressText')?.textContent, logs: logs().slice(-4) }); } catch {}
+    }
+    let v;
+    try { v = await fn(); } catch {}
+    if (v) return v;
+    for (const id of ['analyzeError', 'renderError', 'fileError']) if (shown(id)) throw new Error(`${label}: ${$(id).textContent}`);
+    if (Date.now() - t0 > timeout) throw new Error(`${label}: 時間切れ`);
+    await sleep(200);
+  }
+}
+
+function job() {
+  return new Promise(res => {
+    const r = W().indexedDB.open('amity-jobs', 1);
+    r.onsuccess = () => {
+      const t = r.result.transaction('jobs', 'readonly').objectStore('jobs').getAll();
+      t.onsuccess = () => { r.result.close(); res(t.result[0] || null); };
+      t.onerror = () => res(null);
+    };
+    r.onerror = () => res(null);
+  });
+}
+const doneCount = j => (j?.render?.done || []).filter(Boolean).length;
+const logs = () => { try { return JSON.parse(W().localStorage.getItem('amity.log.v1') || '[]').map(e => e.msg + (e.data !== undefined ? ' ' + JSON.stringify(e.data) : '')); } catch { return []; } };
+
+async function upload(file, name) {
+  const CH = 4 * 1024 * 1024;
+  for (let off = 0; off < file.size; off += CH) {
+    await fetch(`/__upload/${name}?off=${off}`, { method: 'POST', body: file.slice(off, off + CH) });
+  }
+}
+
+try {
+  await new Promise(r => frame.addEventListener('load', r, { once: true }));
+  W().addEventListener('error', e => report('pageerror', { error: String(e.error?.stack || e.message) }));
+  W().addEventListener('unhandledrejection', e => report('pageerror', { error: String(e.reason?.stack || e.reason) }));
+  await until(() => $('file'), 'ページの読み込み');
+  if (phase === 'start') {
+    const sample = q.get('sample');
+    // ファイルはアプリの iframe の側で作る（別のウィンドウで作った Blob は、アプリの中で Blob と見なされない）
+    const blob = await (await W().fetch('/__files/' + sample)).blob();
+    const file = new (W().File)([blob], sample, { type: sample.endsWith('.mov') ? 'video/quicktime' : 'video/mp4' });
+    const dt = new (W().DataTransfer)();
+    dt.items.add(file);
+    $('file').files = dt.files;
+    $('file').dispatchEvent(new Event('change', { bubbles: true }));
+    await until(() => shown('stepAnalyze') && !$('btnAnalyze').disabled, '動画を開く', 120e3);
+    $('optAsr').checked = false; // 文字起こしのモデルはネットワークから取れないため、字幕なしで試す
+    $('bTitle').value = q.get('title') || 'ハサミ・すきバサミ以外にもある'; // 冒頭のテキストも描く
+    const target = q.get('target');
+    if (target) {
+      W().document.querySelector('input[name=dur][value=custom]').click();
+      $('durCustom').value = target;
+      $('durCustom').dispatchEvent(new Event('change', { bubbles: true }));
+    }
+    await sleep(500);
+    const t0 = Date.now();
+    $('btnAnalyze').click();
+    await until(() => shown('stepReview'), '解析');
+    await report('analyzed', { sec: (Date.now() - t0) / 1000, total: $('total').textContent, video: W().amityDebug.src.info });
+    $('btnRender').click();
+    const kill = Number(q.get('kill') || 0);
+    if (kill > 0) {
+      const j = await until(async () => { const j = await job(); return doneCount(j) >= kill && j; }, '書き出し');
+      await report('KILL_READY', { saved: `${doneCount(j)}/${j.render.segments.length}`, sec: (Date.now() - t0) / 1000 });
+      await sleep(3600e3);
+    }
+    await until(() => shown('stepResult'), '書き出し');
+  } else if (phase === 'resume') {
+    await until(() => shown('resumeCard') && W().document.querySelector('#jobList .job-btns button'), '「途中の編集」の表示', 20e3);
+    const card = $('jobList').innerText;
+    await report('card', { card, recover: shown('recover') ? $('recoverText').textContent : '', storage: $('storageText').textContent });
+    const t1 = Date.now();
+    W().document.querySelector('#jobList .job-btns button').click();
+    if (q.get('reselect')) {
+      await until(() => shown('resumeNeedFile'), '選び直しの案内', 20e3);
+      await report('reselect', { text: $('resumeNeedFile').textContent });
+    }
+    await until(() => shown('stepResult'), '再開して完成');
+    await report('resumed', { sec: (Date.now() - t1) / 1000, text: $('renderText').textContent });
+  }
+  if (shown('stepResult')) {
+    const j = await job();
+    await upload(W().amityDebug.blob, `out-webkit-${phase}.mp4`);
+    await report('DONE', { size: W().amityDebug.blob.size, sessions: j?.render?.sessions, render: `${doneCount(j)}/${j?.render?.segments?.length}`, failures: j?.render?.failures || [], logs: logs().filter(l => /区間|再利用|再開|失敗|一時停止|保存/.test(l)).slice(-30) });
+  }
+} catch (err) {
+  const j = await job().catch(() => null);
+  await report('ERROR', { error: String(err && err.message || err), job: j && { stage: j.stage, render: j.render && `${doneCount(j)}/${j.render.segments.length}`, failures: j.render?.failures }, logs: logs().slice(-40) });
+}
+</script>

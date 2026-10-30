@@ -1,7 +1,8 @@
 // 編集前に入力する「動画の情報」（タイトル・内容・伝えたいこと・流れ・必ず残したい場面・希望時間・編集スタイル）。
 // どれも任意。入力された言葉は、場面の点数・必ず残す場面・選び方・文字起こしの用語に使う。
 // 入力から字幕の文字や場面を作ることはしない（話していない言葉を足さない・元の映像の順番を変えない）
-import { KEYWORDS, BEAUTY_TERMS, normalizeText, similarity } from './plan.js';
+import { KEYWORDS, BEAUTY_TERMS, normalizeText, similarity, targetTolerance, outputLength, formatTime } from './plan.js';
+import { kanaPhrases } from './asrtext.js';
 
 export const FORMATS = {
   short: { label: 'ショート', aspect: '縦 9:16', size: '1080×1920', presets: [30, 45, 60], defaultSec: 60, min: 10, max: 180 },
@@ -14,16 +15,18 @@ export const STYLES = {
 };
 
 export const EMPTY_BRIEF = {
-  title: '', content: '', message: '', flow: '', mustKeep: '',
+  title: '', content: '', message: '', flow: '', mustKeep: '', items: '', script: '',
   format: 'short', targetSec: 60, style: 'simple',
 };
+// 文章で入力する項目（items: 使用アイテム・専門用語 / script: 話す内容の原稿）
+export const TEXT_KEYS = ['title', 'content', 'message', 'flow', 'mustKeep', 'items', 'script'];
 
 // 入力の値をそろえる（保存データが古い・壊れている場合も安全な値にする）
 export function normalizeBrief(b) {
   const o = { ...EMPTY_BRIEF };
   if (!b || typeof b !== 'object') return o;
-  for (const k of ['title', 'content', 'message', 'flow', 'mustKeep']) {
-    if (typeof b[k] === 'string') o[k] = b[k].slice(0, 2000);
+  for (const k of TEXT_KEYS) {
+    if (typeof b[k] === 'string') o[k] = b[k].slice(0, k === 'script' ? 20000 : 2000);
   }
   if (FORMATS[b.format]) o.format = b.format;
   if (STYLES[b.style]) o.style = b.style;
@@ -34,7 +37,12 @@ export function normalizeBrief(b) {
 }
 
 export function hasText(b) {
-  return ['title', 'content', 'message', 'flow', 'mustKeep'].some(k => (b[k] || '').trim());
+  return TEXT_KEYS.some(k => (b[k] || '').trim());
+}
+
+// 使用アイテム・専門用語の入力（「、」や改行で区切る）を、1つずつの言葉にする
+export function itemTerms(text) {
+  return [...new Set((text || '').normalize('NFKC').split(/[\n、,，・\/／;；]+|\s{2,}/).map(s => s.trim()).filter(s => s.length >= 2 && s.length <= 20))].slice(0, 40);
 }
 
 // 入力文の「説明そのもの」を表す言葉は、話の中身ではないので用語にしない
@@ -97,6 +105,7 @@ export function briefPlan(brief) {
   const messageTerms = extractTerms(b.message);
   const mustItems = splitItems(b.mustKeep);
   const steps = flowSteps(b.flow);
+  const items = itemTerms(b.items);
   return {
     brief: b,
     themeTerms: themeTerms.filter(w => !messageTerms.includes(w)),
@@ -104,8 +113,13 @@ export function briefPlan(brief) {
     mustItems,
     buckets: steps >= 2 ? Math.min(8, Math.max(3, steps)) : 5,
     // 文字起こしで書き始めたら続きを選びやすくする用語（辞書にない、この動画の言葉）
-    asrTerms: [...new Set([...messageTerms, ...themeTerms, ...mustItems.flatMap(extractTerms)])]
+    asrTerms: [...new Set([...items, ...messageTerms, ...themeTerms, ...mustItems.flatMap(extractTerms)])]
       .filter(w => /[゠-ヿ一-鿿]/.test(w) && w.length <= 10 && !DICT.includes(w)).slice(0, 30),
+    // 入力された使用アイテム・用語（文字起こしの書き間違いを直す・字幕を用語の途中で改行しない）
+    items,
+    // タイトル・説明のひらがなの言葉（「すかないで」）。文字起こしの聞き間違い（「つかないで」）を直す手がかり
+    phrases: kanaPhrases(b.title, b.content, b.message, b.flow, b.mustKeep),
+    script: b.script.trim(),
   };
 }
 
@@ -139,7 +153,35 @@ export function applyBrief(units, bp) {
       if (next && !next.reasons.includes('説明の続きの作業')) { next.score += 1.2; next.reasons.push('説明の続きの作業'); }
     }
   }
+  // 伝えたいことをくり返した発言（最後のまとめ）は、同じ説明のくり返しとして外さない（言い直しの合図・言いかけは外したまま）
+  if (bp.brief?.message?.trim()) {
+    for (const u of units) {
+      if (u.kind !== 'speech' || !u.text || !/^同じ説明のくり返し/.test(u.excluded || '')) continue;
+      if (matchStrength(bp.brief.message, u.text) < MUST_MIN) continue;
+      u.excluded = undefined;
+      u.reasons.push('伝えたいことのくり返し（まとめ）のため残しました');
+    }
+  }
   return { must };
+}
+
+// 構成の判断の一覧（確認画面に出す）: 伝えたいことに合う発言をどう扱ったか・話の内容から外した所・取り除いた所。
+// selected: 選んだ場面の id の集合
+export function briefDecisions(units, bp, selected) {
+  const out = [];
+  const q = t => `「${t.length > 18 ? t.slice(0, 18) + '…' : t}」`;
+  const msg = bp?.brief?.message?.trim();
+  if (msg) {
+    const hits = units.filter(u => u.kind === 'speech' && u.text && matchStrength(msg, u.text) >= 0.5);
+    out.push(hits.length
+      ? `伝えたいこと「${msg.slice(0, 30)}」に合う発言: ${hits.map(u => `${formatTime(u.start)}${q(u.text)}${selected.has(u.id) ? '' : '（使っていません）'}`).join('、')}`
+      : `伝えたいこと「${msg.slice(0, 30)}」に合う発言は見つかりませんでした（入力の文章を字幕や説明に足すことはしていません）。`);
+  }
+  const dropped = units.filter(u => u.kind === 'speech' && u.text && u.excluded && u.excluded !== 'つなぎ言葉のみ');
+  if (dropped.length) out.push(`言い直し・くり返しとして外した発言: ${dropped.map(u => `${formatTime(u.start)}${q(u.text)}（${u.excluded}）`).join('、')}`);
+  const trimmed = units.filter(u => u.trimmed && selected.has(u.id));
+  if (trimmed.length) out.push(`発言の一部を取り除いた所: ${trimmed.map(u => `${formatTime(u.start)} ${u.trimmed.reason}`).join('、')}`);
+  return out;
 }
 
 // テンポ重視: 長い場面より、短くまとまった場面を選びやすくする
@@ -148,26 +190,31 @@ export function applyStyle(units, style) {
   for (const u of units) if (u.duration > 4) u.score -= 0.15 * (u.duration - 4);
 }
 
-// 目標時間（秒）から、選ぶときの目安と上限を決める
+// 目標時間（秒）から、選ぶときの範囲を決める（60秒なら 55〜65秒）
 export function targetRange(sec) {
-  return { target: sec - Math.min(2, sec * 0.04), max: sec };
+  const tol = targetTolerance(sec);
+  return { target: sec, lo: sec - tol, max: sec + tol };
 }
 
-// 選んだ結果が目標時間に収まったか。収まらない場合は理由をつける
+// 選んだ結果が目標時間の範囲に収まったか。収まらない場合は理由をつける
 export function fitReport({ targetSec, selected, units, sourceDuration }) {
-  const planned = selected.reduce((s, u) => s + u.duration, 0);
+  const { lo, max } = targetRange(targetSec);
+  const planned = outputLength(selected);
   const mustSec = selected.filter(u => u.mustKeep).reduce((s, u) => s + u.duration, 0);
+  const keySec = selected.filter(u => u.mustKeep || u.intro || u.ending).reduce((s, u) => s + u.duration, 0);
   const usable = units.filter(u => !u.excluded && u.duration >= 0.5).reduce((s, u) => s + u.duration, 0);
-  const r = { targetSec, planned, mustSec, usable, ok: true, reason: '' };
-  const tol = Math.max(3, targetSec * 0.1);
-  if (planned > targetSec + 0.5) {
+  const r = { targetSec, lo, max, planned, mustSec, usable, ok: true, reason: '' };
+  if (planned > max + 0.5) {
     r.ok = false;
-    r.reason = `必ず残す場面だけで約${Math.round(mustSec)}秒あるため、目標の${fmt(targetSec)}に収まりません。重要な説明は削らずに残しています。`;
-  } else if (planned < targetSec - tol) {
+    r.reason = mustSec > max
+      ? `必ず残す場面だけで約${Math.round(mustSec)}秒あるため、目標の${fmt(targetSec)}に収まりません。重要な説明は削らずに残しています。`
+      : `話の流れを切らずに残せる文が多いため、目標の${fmt(targetSec)}より長くなりました（冒頭・最後・必ず残す場面 約${Math.round(keySec)}秒を含む）。` +
+        '文の途中では切らず、内容と自然な流れを優先しています。短くしたいときは、確認画面でチェックを外してください。';
+  } else if (planned < lo - 0.5) {
     r.ok = false;
-    r.reason = sourceDuration < targetSec
+    r.reason = sourceDuration < lo
       ? `元の動画が${fmt(sourceDuration)}のため、目標の${fmt(targetSec)}より短くなります。`
-      : usable < targetSec
+      : usable < lo
         ? `話している部分と手元の作業場面が合計約${fmt(usable)}しか見つからなかったため、目標の${fmt(targetSec)}より短くなります。無音や不要な場面で水増しはしていません。`
         : `場面の区切り（発言や作業のまとまり）を途中で切らないようにしたため、目標の${fmt(targetSec)}より少し短くなります。「ほかの候補」から場面を足せます。`;
   }

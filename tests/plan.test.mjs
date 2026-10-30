@@ -28,7 +28,8 @@ test('全部無音なら話し区間なし', () => {
 
 test('文字起こし用の区切りは28秒以内', () => {
   const w = transcriptionWindows([{ start: 0, end: 10 }, { start: 12, end: 25 }, { start: 26, end: 40 }]);
-  assert.deepEqual(w, [{ start: 0, end: 25 }, { start: 26, end: 40 }]);
+  assert.deepEqual(w.map(({ start, end, speech }) => ({ start, end, speech })), [{ start: 0, end: 25, speech: 23 }, { start: 26, end: 40, speech: 14 }]);
+  assert.equal(w[0].parts.length, 2);
 });
 
 test('言い直しを検出する（似た発言・合図の言葉）', () => {
@@ -80,14 +81,14 @@ function fakeVideo() {
   return { duration, rmsDb, speech: detectSpeech(rmsDb), chunks, motion };
 }
 
-test('約60秒以内に収まり、時系列順・冒頭と最後を含む', () => {
+test('約60秒（55〜65秒）に収まり、時系列順・冒頭と最後を含む', () => {
   const v = fakeVideo();
   const units = buildUnits(v);
   assert.ok(!units.some(u => u.text.includes('ご視聴')), '無音部分の誤認識は除外');
   assert.ok(units.some(u => u.kind === 'action' && u.start > 195 && u.end < 235), '動きの多い場面が候補になる');
   const sel = selectUnits(units, v.duration);
   const total = sel.reduce((s, u) => s + u.duration, 0);
-  assert.ok(total <= 60 && total >= 45, 'total=' + total);
+  assert.ok(total <= 65 && total >= 55, 'total=' + total);
   for (let i = 1; i < sel.length; i++) assert.ok(sel[i].start >= sel[i - 1].start);
   assert.ok(sel.some(u => u.intro));
   assert.ok(sel.some(u => u.ending));
@@ -99,12 +100,12 @@ test('文字起こしなしでも構成できる', () => {
   const units = buildUnits({ ...v, chunks: null });
   const sel = selectUnits(units, v.duration);
   const total = sel.reduce((s, u) => s + u.duration, 0);
-  assert.ok(total > 40 && total <= 60);
+  assert.ok(total >= 55 && total <= 65, 'total=' + total);
 });
 
 test('字幕の折り返しとページ分け', () => {
   const lines = wrapLines('まずはバックからブロッキングをしていきます、ここが大事です', 13);
-  assert.ok(lines.every(l => l.length <= 13));
+  assert.ok(lines.every(l => l.length <= 13 || (l.length === 14 && /[、。]$/.test(l))), '1行の文字数（読点の1文字だけは超えてよい）');
   assert.ok(!lines.some(l => /^[、。]/.test(l)));
   const pages = subtitlePages('まずはバックからブロッキングをしていきます、ここが大事なポイントになります', 6);
   assert.ok(pages.length >= 2);
@@ -202,7 +203,7 @@ test('文の区切りは、話す速さが違っても無音の切れ目に合�
   assert.ok(Math.abs(out[2].start - 54.9) < 0.01);
 });
 
-test('演出: 手元が下で動く動画では字幕を上に、ズームは間隔をあけて手元が切れない範囲で', async () => {
+test('演出: 字幕はいつも下（お手本と同じ）、ズームは間隔をあけて手元が切れない範囲で', async () => {
   const { buildTimeline, cropAt, subtitleAlpha, ZOOM_MIN, ZOOM_MAX } = await import('../js/plan.js');
   const clip = (s, e, text, motion, box) => ({ pieces: [{ start: s, end: e }], text, motion, cx: 0.5, box });
   const low = [0.35, 0.65, 0.62, 0.8];   // 手元が画面の下の方（縦動画）
@@ -214,20 +215,19 @@ test('演出: 手元が下で動く動画では字幕を上に、ズームは間
     clip(30, 34, '毛先を切りそろえます', 0.7, low),
     clip(40, 43, '', 0.9, [0.05, 0.95, 0.1, 0.9]), // 画面いっぱいに動く → ズームしない
   ];
-  const tl = buildTimeline(clips, { srcW: 1080, srcH: 1920, zoom: true, subtitles: true });
-  assert.equal(tl[1].subPos, 'top');
-  assert.equal(tl[4].subPos, 'top');
+  const tl = buildTimeline(clips, { srcW: 2160, srcH: 3840, zoom: true, subtitles: true });
+  assert.ok(tl.every(c => c.subPos === 'bottom'), '場面ごとに上下が入れ替わらない');
   const zoomed = tl.filter(c => c.zoom);
   assert.ok(zoomed.length >= 1);
   for (let i = 1; i < tl.length; i++) assert.ok(!(tl[i].zoom && tl[i - 1].zoom), '続けてズームしない');
   for (const c of zoomed) {
     assert.ok(c.zoom.z >= ZOOM_MIN && c.zoom.z <= ZOOM_MAX, String(c.zoom.z));
     const r = c.zoom.rect, b = c.box;
-    assert.ok(r.left <= b[0] * 1080 && r.left + r.width >= b[1] * 1080, '手元が横に切れない');
-    assert.ok(r.top <= b[2] * 1920 && r.top + r.height >= b[3] * 1920, '手元が縦に切れない');
+    assert.ok(r.left <= b[0] * 2160 && r.left + r.width >= b[1] * 2160, '手元が横に切れない');
+    assert.ok(r.top <= b[2] * 3840 && r.top + r.height >= b[3] * 3840, '手元が縦に切れない');
     assert.ok(Math.abs(r.width / r.height - 1080 / 1920) < 1e-6, '9:16 のまま');
   }
-  for (let i = 1; i < zoomed.length; i++) assert.ok(zoomed[i].outStart - (zoomed[i - 1].outStart + zoomed[i - 1].outDuration) >= 10);
+  for (let i = 1; i < zoomed.length; i++) assert.ok(zoomed[i].outStart - (zoomed[i - 1].outStart + zoomed[i - 1].outDuration) >= 15);
   assert.equal(tl[5].zoom, null);
   // ズームはゆっくり始まりゆっくり止まる（始まりは等倍）
   const z = zoomed[0];
@@ -250,7 +250,7 @@ test('横長の動画: 切り抜き枠は手元が入るようにずらす', () 
 });
 
 test('字幕の改行: 言葉の途中で切らず、1文字だけ残さない', async () => {
-  const { subtitlePages } = await import('../js/plan.js');
+  const { subtitlePages, SUB_MAX_CHARS } = await import('../js/plan.js');
   const cases = [
     'まずは、耳後ろでブロッキングを取っていきます。',
     'バックは、指一本分のスライスで、パネルを0度に引き出します。',
@@ -263,7 +263,7 @@ test('字幕の改行: 言葉の途中で切らず、1文字だけ残さない',
     const pages = subtitlePages(text, 6);
     for (const p of pages) {
       assert.ok(p.lines.length <= 2);
-      for (const l of p.lines) assert.ok(l.length >= 2 && l.length <= 14, `${l}（${text}）`);
+      for (const l of p.lines) assert.ok(l.length >= 2 && l.length <= SUB_MAX_CHARS, `${l}（${text}）`);
     }
     const all = pages.flatMap(p => p.lines);
     for (let i = 1; i < all.length; i++) {
@@ -361,7 +361,7 @@ test('字幕の手直し: 0.1秒ずつ動かし、保存・読み込み・全体
   const tl = buildTimeline(again.map(u => ({ ...u, ...shifted(u, saved.offset) })), { subtitles: true });
   const p = tl[0].subtitles[0];
   assert.ok(Math.abs(p.start - (10.7 - 10 - 0.1)) < 1e-6, JSON.stringify(p));
-  assert.equal(p.lines.join(''), 'パネルを0度で引き出します');
+  assert.equal(tl[0].subtitles.map(x => x.lines.join('')).join(''), 'パネルを0度で引き出します');
   // 動かせるのは場面の前後1秒まで・長さは0.3秒以上
   for (let i = 0; i < 50; i++) nudge(again[0], 'start', -0.1);
   assert.equal(again[0].subStart, 9);
@@ -371,4 +371,33 @@ test('字幕の手直し: 0.1秒ずつ動かし、保存・読み込み・全体
   resetEdits(again);
   assert.equal(again[0].text, 'パネルを0度に引き出します');
   assert.equal(again[0].subStart, 10.2);
+});
+
+test('字幕AIの3通りの読み方: 区切りの違う窓で読み、落とした言葉をほかの結果で補う', async () => {
+  const { asrWindows, mergeAsrPasses, fillDeletions, passDoubts } = await import('../js/plan.js');
+  // 0.3秒より短い間では区切らない。A は30秒ごと、B は15秒ずらす、C は0.5秒以上の間で分けたまとまり
+  const regions = [{ start: 0, end: 10 }, { start: 10.1, end: 25 }, { start: 26, end: 70 }];
+  const w = asrWindows(regions, null, 30);
+  const A = w.filter(x => x.pass === 'A'), B = w.filter(x => x.pass === 'B'), C = w.filter(x => x.pass === 'C');
+  assert.ok(A.length >= 3 && B.length >= 3 && C.length >= 3);
+  assert.equal(A[0].start, 0);
+  assert.ok(Math.abs(B[0].end - 15) < 1e-6, 'B は15秒ずれる');
+  assert.ok(C.every(x => x.end - x.start <= 30), JSON.stringify(C));
+  assert.ok(!C.some(x => Math.abs(x.start - 10.1) < 1e-6), '0.1秒の間では分けない');
+  // 落とした言葉を補う
+  const tok = (s, t0) => [...s].map((c, i) => ({ s: c, t: t0 + i * 0.1, p: 1 }));
+  const base = [...tok('それはどこなのか', 0), ...tok('この場所を', 3)];
+  const other = [...tok('それはどこなのかトップの根元付近です', 0), ...tok('この場所を', 3)];
+  assert.equal(fillDeletions(base, other).map(k => k.s).join(''), 'それはどこなのかトップの根元付近ですこの場所を');
+  // 1文字だけの違い（言い方の違い・聞き間違い）は補わない（もとの結果のまま）
+  assert.equal(fillDeletions(tok('かるくしない', 0), tok('かるくしなない', 0)).map(k => k.s).join(''), 'かるくしない');
+  // 合わせた結果
+  const ws = [{ start: 0, end: 10, pass: 'A' }, { start: 0, end: 10, pass: 'B' }, { start: 0, end: 10, pass: 'C' }];
+  const r = mergeAsrPasses(ws, { 0: [{ tokens: tok('根元付近は軽く', 1) }], 1: [{ tokens: tok('根元付近は軽くしない', 1) }], 2: [{ tokens: tok('根元付近は軽く', 1) }] });
+  assert.equal(r[0].text, '根元付近は軽くしない');
+  for (let i = 1; i < r[0].tokens.length; i++) assert.ok(r[0].tokens[i].t > r[0].tokens[i - 1].t, '時刻は文字の順');
+  // 読み方によって否定の言葉の有無が違う文は、要確認にする
+  const passes = { A: tok('うまくカバーできます', 0), B: tok('うまくカバーできません', 0), C: tok('うまくカバーできます', 0) };
+  assert.ok(passDoubts({ start: 0, end: 1.2, text: 'うまくカバーできます' }, passes).some(d => d.includes('否定')));
+  assert.deepEqual(passDoubts({ start: 0, end: 1.2, text: 'うまくカバーできません' }, { A: tok('うまくカバーできません', 0) }), []);
 });

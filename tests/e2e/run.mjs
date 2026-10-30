@@ -11,6 +11,7 @@
 //     --target=秒     完成動画の長さ（30/45/60 はボタン、それ以外は自由入力）
 //     --style=tempo   編集スタイル
 //     --brief         タイトル・内容・伝えたいこと・流れ・必ず残したい場面を入力する
+//     --title=… / --content=… / --items=…  動画タイトル・動画の説明（内容）・使用アイテムを入力する
 //     --replan=秒     構成の確認画面で長さを変えて「構成し直す」を押す
 //
 // 事前に `python3 -m http.server 8123` をリポジトリ直下で起動しておく。
@@ -30,6 +31,13 @@ const failAsr = process.argv.includes('--fail-asr');
 const webaudio = process.argv.includes('--webaudio');
 const reloadAt = (process.argv.find(a => a.startsWith('--reload-at=')) || '').split('=')[1];
 const realAsr = (process.argv.find(a => a.startsWith('--real-asr=')) || '').split('=')[1];
+// --reazon=URL: 本物の ReazonSpeech で文字起こしする。URL はモデルのファイル（encoder-…onnx 等）を CORS つきで配信する場所
+// （例: python3 tests/webkit/cors-server.py DIR 8124 → http://127.0.0.1:8124/）。ONNX Runtime は ORT_DIST（1.22.0 の dist）から配信する
+const reazon = (process.argv.find(a => a.startsWith('--reazon=')) || '').slice('--reazon='.length);
+const titleArg = (process.argv.find(a => a.startsWith('--title=')) || '').slice('--title='.length);
+const itemsArg = (process.argv.find(a => a.startsWith('--items=')) || '').slice('--items='.length);
+const contentArg = (process.argv.find(a => a.startsWith('--content=')) || '').slice('--content='.length);
+const scriptArg = (process.argv.find(a => a.startsWith('--script=')) || '').slice('--script='.length);
 const zoom = process.argv.includes('--zoom') ? true : process.argv.includes('--no-zoom') ? false : null;
 const noSubs = process.argv.includes('--no-subs');
 const arg = name => (process.argv.find(a => a.startsWith(`--${name}=`)) || '').split('=')[1];
@@ -40,7 +48,7 @@ const replan = arg('replan');
 const base = path.basename(sample).replace(/\.(mp4|mov)$/, '');
 const tFile = fs.existsSync(path.join(dir, `${base}-transcript.json`)) ? `${base}-transcript.json` : 'sample-transcript.json';
 const transcript = JSON.parse(fs.readFileSync(path.join(dir, tFile), 'utf8'));
-const tag = base + (noAsr ? '-noasr' : '') + (failAsr ? '-failasr' : '') + (webaudio ? '-webaudio' : '') + (realAsr ? '-realasr' : '')
+const tag = base + (noAsr ? '-noasr' : '') + (failAsr ? '-failasr' : '') + (webaudio ? '-webaudio' : '') + (realAsr ? '-realasr' : '') + (reazon ? '-reazon' : '') + (scriptArg ? '-script' : '') + (process.env.TAG || '')
   + (zoom === true ? '-zoom' : zoom === false ? '-nozoom' : '') + (noSubs ? '-nosubs' : '')
   + (target ? '-t' + target : '') + (style ? '-' + style : '') + (withBrief ? '-brief' : '') + (replan ? '-replan' + replan : '');
 
@@ -102,6 +110,8 @@ self.onmessage = e => {
 const asrRequests = [];
 const browser = await chromium.launch({ executablePath: process.env.CHROME_PATH, args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
 page = await browser.newPage({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2 });
+// 書き出し前の確認（字幕の要確認が残っているとき）は、内容を記録してから「はい」を選ぶ
+page.on('dialog', async d => { console.log('[確認ダイアログ] ' + d.message().replace(/\n/g, ' / ')); await d.accept(); });
 const logs = [];
 page.on('console', m => logs.push(`[${m.type()}] ${m.text()}`));
 page.on('pageerror', e => logs.push('[pageerror] ' + e.message));
@@ -126,8 +136,20 @@ if (realAsr) {
     asrRequests.push(new URL(request.url()).pathname);
     serve(route, m ? path.join(realAsr, m[1]) : '/nonexistent');
   });
+} else if (reazon) {
+  const ortDist = process.env.ORT_DIST;
+  await page.context().route(/^https:\/\/cdn\.jsdelivr\.net\/npm\/onnxruntime-web@1\.22\.0\/dist\/.*$/, (route, request) => {
+    const f = path.basename(new URL(request.url()).pathname);
+    route.fulfill({ path: path.join(ortDist, f), contentType: f.endsWith('.wasm') ? 'application/wasm' : 'text/javascript', headers: { 'access-control-allow-origin': '*' } });
+  });
+  // 大きなモデルは Playwright 経由で返すとページが落ちるため、手元のサーバーに転送する
+  await page.context().route(/^https:\/\/huggingface\.co\/.*$/, (route, request) => {
+    asrRequests.push(new URL(request.url()).pathname);
+    route.fulfill({ status: 302, headers: { location: reazon + path.basename(new URL(request.url()).pathname), 'access-control-allow-origin': '*' } });
+  });
 } else {
   await page.route('**/js/transcribe-worker.js', r => r.fulfill({ contentType: 'text/javascript', body: fakeWorker }));
+  await page.route('**/js/reazon-worker.js', r => r.fulfill({ contentType: 'text/javascript', body: fakeWorker }));
 }
 
 // iPhone の画面幅で字幕を手直しする（文字の修正・0.1秒の調整・全体のずらし・保存）
@@ -263,6 +285,12 @@ try {
   await page.waitForSelector('#stepBrief:not([hidden])');
   await setTarget(target);
   if (style) await page.click(`input[name=style][value=${style}] + span`);
+  // 偽の文字起こし（Whisper の形の結果）は Whisper の区切り方で返す
+  if (await page.$('#optEngine')) await page.selectOption('#optEngine', reazon ? 'reazon' : 'whisper');
+  if (titleArg) await page.fill('#bTitle', titleArg);
+  if (itemsArg) await page.fill('#bItems', itemsArg);
+  if (contentArg) await page.fill('#bContent', contentArg);
+  if (scriptArg) await page.fill('#bScript', fs.readFileSync(scriptArg, 'utf8'));
   if (withBrief) {
     await page.fill('#bTitle', 'ボブのカット解説');
     await page.fill('#bContent', 'ブロッキングから仕上がりまで、ボブの切り方を解説します');
@@ -284,19 +312,19 @@ try {
   console.log('段階: ' + steps);
   console.log(`解析: ${((Date.now() - t0) / 1000).toFixed(1)}秒`);
 
-  if (realAsr) {
+  if (realAsr || reazon) {
     console.log('モデルの読み込み: ' + asrRequests.filter(p => /onnx|json/.test(p)).map(p => p.split('/').pop()).join(', '));
     const chunks = await page.evaluate(() => window.amityDebug.chunks || []);
-    console.log('--- 文字起こし（本物のWhisper） ---');
+    console.log('--- 文字起こし（本物のモデル） ---');
     for (const c of chunks) console.log(`  ${c.start.toFixed(1)}-${c.end.toFixed(1)} ${c.text}${c.raw && c.raw !== c.text ? '  ← 元: ' + c.raw : ''}`);
     const truthText = transcript.filter(c => !c.retake).map(c => c.text).join('');
     const got = chunks.map(c => c.text).join('');
     console.log('文字の一致率（正解との比較・目安）: ' + charAgreement(truthText, got));
-    if (transcript[0].phrases) {
+    if (transcript[0]?.phrases) {
       // 話した内容（言い直し前の発言も含む）と、文字起こし全体の一致率
       const said = transcript.map(c => c.retake ? c.phrases.map(p => p.text).join('') : c.text).join('');
       console.log('話した内容との一致率（言い直しも含む）: ' + charAgreement(said, got));
-      const fixes = await page.evaluate(() => JSON.parse(localStorage.getItem('amity.log.v1')).filter(e => e.msg.startsWith('文字起こし ')).flatMap(e => e.data.fixes || []));
+      const fixes = await page.evaluate(() => JSON.parse(localStorage.getItem('amity.log.v1')).filter(e => e.msg.startsWith('文字起こし ') && e.data).flatMap(e => e.data.fixes || []));
       console.log('用語の修正: ' + (fixes.join(' / ') || 'なし'));
       // 字幕の時刻: 正解の各文に、文字が最も似ている字幕を対応づけて、開始・終了の差を測る
       const errs = [];
@@ -315,7 +343,7 @@ try {
       console.log(`字幕の時刻の差（元の動画上）: 開始 中央値 ${med(S).toFixed(2)}s 最大 ${S.at(-1).toFixed(2)}s / 終了 中央値 ${med(Ee).toFixed(2)}s 最大 ${Ee.at(-1).toFixed(2)}s（${errs.length}文）`);
       for (const e of errs) if (Math.abs(e.ds) > 0.3 || Math.abs(e.de) > 0.3) console.log(`  ずれ ${e.ds.toFixed(2)} / ${e.de.toFixed(2)}  ${e.text}`);
     }
-    console.log('時刻トークン: ' + (await page.evaluate(() => JSON.parse(localStorage.getItem('amity.log.v1')).filter(e => e.msg.startsWith('文字起こし ')).map(e => JSON.stringify(e.data.times)).join(' / '))));
+    console.log('時刻トークン: ' + (await page.evaluate(() => JSON.parse(localStorage.getItem('amity.log.v1')).filter(e => e.msg.startsWith('文字起こし ') && e.data).map(e => JSON.stringify(e.data.times)).join(' / '))));
   }
   const plan = await page.evaluate(() => {
     const s = window.amityDebug;
@@ -324,14 +352,27 @@ try {
       summary: document.getElementById('summary').textContent,
       total: document.getElementById('total').textContent,
       regions: s.speech.regions.map(r => [+r.start.toFixed(2), +r.end.toFixed(2)]),
+      chunks: (s.chunks || []).map(c => ({ start: +c.start.toFixed(2), end: +c.end.toFixed(2), text: c.text, times: (c.times || []).map(t => +t.toFixed(2)), doubts: c.doubts || [] })),
       units: s.units.map(u => ({
         id: u.id, kind: u.kind, start: +u.start.toFixed(2), end: +u.end.toFixed(2), dur: +u.duration.toFixed(2),
         text: u.text, excluded: u.excluded || null, score: +u.score.toFixed(2), cx: +u.cx.toFixed(2),
         selected: s.selected.has(u.id), reasons: u.reasons, mustKeep: u.mustKeep || null,
+        candidate: u.candidate || null, doubts: u.doubts || [], trimOption: !!u.trimOption,
       })),
     };
   });
   fs.writeFileSync(path.join(dir, `plan-${tag}.json`), JSON.stringify(plan, null, 1));
+  // --dump-analysis=FILE: 解析の結果（音量・声の区間・文字起こし・動き）を保存する。構成の回帰テスト（tests/fixtures）に使う
+  const dumpPath = arg('dump-analysis');
+  if (dumpPath) {
+    const a = await page.evaluate(() => {
+      const s = window.amityDebug;
+      return { duration: s.src.duration, rmsDb: Array.from(s.rmsDb, v => +v.toFixed(1)), speech: s.speech, chunks: s.chunks, motion: s.motion, restarts: s.restarts || [], ...(s.asrVerify ? { verify: s.asrVerify } : {}) };
+    });
+    fs.writeFileSync(dumpPath, JSON.stringify(a));
+    console.log('解析の結果を保存: ' + dumpPath);
+    if (process.argv.includes('--plan-only')) { await browser.close(); process.exit(0); }
+  }
   console.log(plan.summary);
   console.log(plan.total);
   console.log('完成時間: ' + (await page.$eval('#fit', el => (el.hidden ? '(表示なし)' : el.textContent))));
@@ -344,7 +385,7 @@ try {
     console.log(`構成し直し（${replan}秒）: ${await page.$eval('#total', el => el.textContent)} / ${await page.$eval('#fit', el => el.textContent)}`);
   }
   for (const u of plan.units) {
-    console.log(`${u.selected ? '■' : '□'} ${u.kind.padEnd(6)} ${u.start.toFixed(1).padStart(6)}-${u.end.toFixed(1).padStart(6)} score=${u.score} ${u.mustKeep ? '[必ず残す] ' : ''}${u.excluded ? '[除外:' + u.excluded + '] ' : ''}${u.text}`);
+    console.log(`${u.selected ? '■' : '□'} ${u.kind.padEnd(6)} ${u.start.toFixed(1).padStart(6)}-${u.end.toFixed(1).padStart(6)} score=${u.score} ${u.mustKeep ? '[必ず残す] ' : ''}${u.excluded ? '[除外:' + u.excluded + '] ' : ''}${u.text}${u.doubts?.length ? '  [要確認: ' + u.doubts.join('・') + ']' : ''}${u.candidate ? '  [候補: ' + u.candidate + ']' : ''}`);
   }
   await page.screenshot({ path: path.join(dir, `review-${tag}.png`), fullPage: true });
 
@@ -356,7 +397,7 @@ try {
   mem.stage = '書き出し';
   await page.click('#btnRender');
   if (reloadAt === 'render') await reloadDuring('render');
-  await page.waitForSelector('#stepResult:not([hidden]), #renderError:not([hidden])', { timeout: 600000 });
+  await page.waitForSelector('#stepResult:not([hidden]), #renderError:not([hidden])', { timeout: +(process.env.RENDER_TIMEOUT || 600000) });
   const renderErr = await page.$eval('#renderError', el => (el.hidden ? null : el.textContent));
   if (renderErr) throw new Error('書き出しエラー: ' + renderErr);
   console.log(`書き出し: ${((Date.now() - t1) / 1000).toFixed(1)}秒`);
@@ -374,7 +415,7 @@ try {
     const probe = execSync(`ffprobe -v error -show_entries stream=codec_name,width,height:format=duration -of compact "${outFile}"`, { encoding: 'utf8' });
     console.log('ffprobe: ' + probe.trim().replace(/\n/g, ' | '));
   } catch {}
-  if (realAsr && transcript[0].phrases) await evaluateOutputTiming();
+  if ((realAsr || reazon) && transcript[0]?.phrases) await evaluateOutputTiming();
   if (editExpect) {
     const subs = await page.evaluate(() => window.amityDebug.timeline.flatMap(c => c.subtitles.map(p => p.lines.join(''))).join(''));
     const first = await page.evaluate(() => window.amityDebug.timeline.find(c => c.subtitles.length).subtitles.map(p => `${p.start.toFixed(2)}-${p.end.toFixed(2)} ${p.lines.join('／')}`).join(' | '));
@@ -382,7 +423,7 @@ try {
     console.log(`MP4の字幕に手直しが反映: ${subs.replace(/[、。]/g, '').includes(editExpect.text) ? 'はい' : 'いいえ'}`);
   }
   console.log('演出: ' + (await page.$eval('#outStyle', el => el.textContent)));
-  const tl = await page.evaluate(() => window.amityDebug.timeline.map(c => ({ outStart: +c.outStart.toFixed(2), dur: +c.outDuration.toFixed(2), pos: c.subPos, zoom: c.zoom && { z: c.zoom.z, rect: c.zoom.rect }, crop: c.crop, inCrop: c.inCrop, text: c.text, pieces: c.pieces.map(p => ({ srcStart: p.srcStart, frames: p.frames, outStart: p.outStart })), subs: c.subtitles.map(p => p.lines.join('／')) })));
+  const tl = await page.evaluate(() => window.amityDebug.timeline.map(c => ({ outStart: +c.outStart.toFixed(2), dur: +c.outDuration.toFixed(2), pos: c.subPos, zoom: c.zoom && { z: c.zoom.z, rect: c.zoom.rect }, crop: c.crop, inCrop: c.inCrop, text: c.text, pieces: c.pieces.map(p => ({ srcStart: p.srcStart, frames: p.frames, outStart: p.outStart })), subs: c.subtitles.map(p => p.lines.join('／')), pages: c.subtitles.map(p => ({ s: +p.start.toFixed(2), e: +p.end.toFixed(2), t: p.lines.join('') })) })));
   fs.writeFileSync(path.join(dir, `timeline-${tag}.json`), JSON.stringify(tl, null, 1));
 } catch (err) {
   if (err.message !== 'RELOAD_CHECK_DONE') throw err;

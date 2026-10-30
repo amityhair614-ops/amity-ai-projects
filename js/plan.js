@@ -1,4 +1,7 @@
 // 編集プランを作る純粋関数（ブラウザAPIを使わないので Node でテストできる）
+import { analyzeContent } from './content.js';
+
+import { displayText, cleanForDisplay, formatNumbers } from './captions.js';
 
 export const FRAME_SEC = 0.05; // 音量を測る単位（50ms）
 export const OUT_W = 1080;
@@ -15,9 +18,6 @@ export const KEYWORDS = [
 ];
 const DEGREE_RE = /[0-9０-９]+\s*度/;
 
-// 言い直しの合図になる言葉（「もう一回」はカット説明でも普通に使うので含めない）
-// Whisper はひらがなや聞き間違いで書くことがある（例: いい直します、いいなをします）
-const RETAKE_RE = /言い直|いい直|言いなお|いいなお|いいなをし|撮り直|とり直|間違えました|間違えた|ごめんなさい|失礼しました/;
 
 // 文字起こしに先に与える「話題と用語」。Whisper はこれに引っぱられて専門用語を正しく書きやすくなる
 export const ASR_PROMPT = '美容師のカット解説です。ブロッキング、スライス、パネル、0度、45度、90度、ガイド、毛先、前下がり、ボブ、レイヤー、グラデーション、セニング、量感、軽さ、重さ、丸み、シルエット、襟足、もみあげ、前髪、ドライ、ブロー。';
@@ -49,6 +49,9 @@ export const BEAUTY_TERMS = [
   { term: 'すきバサミ', reading: 'スキバサミ', variants: ['スキーバサミ', 'すきばさみ', 'スキバサミ', '隙鋏', '好きバサミ'] },
   { term: 'チョップカット', variants: ['チョップカッと', 'チャップカット', 'チョップカッド', 'ちょっとカット'] },
   { term: '丸み', reading: 'マルミ', variants: ['マルミ', 'まるみ'] },
+  { term: '根元', reading: 'ネモト', variants: ['ねもと', '根本'] },
+  { term: '生え際', reading: 'ハエギワ', variants: ['はえぎわ', '生え技'] },
+  { term: 'つむじ', reading: 'ツムジ', variants: ['ツムジ', '旋毛'] },
   { term: '軽さ', reading: 'カルサ', variants: ['カルサ'] },
   { term: '0度', variants: ['ゼロド', 'ゼロ度', '零度'] },
   { term: '45度', variants: ['45ド', '四十五度'] },
@@ -56,6 +59,7 @@ export const BEAUTY_TERMS = [
 ];
 
 const isKata = c => !!c && /[\u30a0-\u30ff]/.test(c);
+const isKanjiChar = c => !!c && /[\u4e00-\u9fff々]/.test(c);
 const toKata = t => t.replace(/[\u3041-\u3096]/g, c => String.fromCharCode(c.charCodeAt(0) + 0x60));
 
 function editDistance(a, b) {
@@ -228,10 +232,37 @@ export function detectSpeech(rmsDb, opts = {}) {
 // 話のテンポごとの「間」の残し方（秒）。
 // lead: 話し始めの前に残す時間 / tail: 話し終わりの後に残す時間（消えていく語尾・息）
 // keepGap: 文の中でこれより短い間はそのまま残す / maxGap: 文の中の長い間は、ここまで縮める
+// natural は手動編集のお手本（無音の間の中央値 約0.2秒・90%が0.33秒以下・最長0.44秒）に合わせている。
+// 語尾は detectSpeech で消えていく小さな音まで含めてから tail を足すので、間を詰めても語尾は切れない
+// 文の中の息継ぎの間は、細かい声の区間（fineSpeech）のすき間で測る（splitAtPauses）。
+// natural は、手動編集3本（tests/fixtures/img5830・bob・img5953）の音声の間の長さ（話の途中の間の中央 0.15秒・
+// 90% 0.30秒前後）に近く、3本とも完成の長さが手動編集の ±1秒以内になる値（1本だけに合わせると、ほかの動画で
+// 詰めすぎ・残しすぎになる。手動編集は動画によって間の詰め方が少し違う）
 export const PACES = {
-  natural: { lead: 0.18, tail: 0.32, keepGap: 0.5, minGap: 0.42, maxGap: 0.6 },
-  tempo: { lead: 0.12, tail: 0.24, keepGap: 0.38, minGap: 0.32, maxGap: 0.45 },
+  natural: { lead: 0.1, tail: 0.18, keepGap: 0.24, minGap: 0.18, maxGap: 0.28 },
+  tempo: { lead: 0.08, tail: 0.15, keepGap: 0.22, minGap: 0.16, maxGap: 0.24 },
 };
+
+// 声の区間 segs を、その中の息継ぎの間（細かい声の区間 fine のすき間が minGap 以上）で分ける。
+// 区間の外側の端は、小さな音まで含めた声の区間（detectSpeech の voice）だと前後に最大0.3〜0.45秒広いので、
+// 細かい声の区間の端から EDGE_LEAD・EDGE_TAIL まで（お手本の手動編集は、声の 0.1秒前から 0.1〜0.17秒後まで残していた）
+const EDGE_LEAD = 0.05, EDGE_TAIL = 0.07;
+export function splitAtPauses(segs, fine, minGap) {
+  const out = [];
+  for (const s0 of segs) {
+    const f = (fine || []).filter(r => r.end > s0.start && r.start < s0.end);
+    const s = f.length ? { ...s0, start: Math.max(s0.start, f[0].start - EDGE_LEAD), end: Math.min(s0.end, f[f.length - 1].end + EDGE_TAIL) } : s0;
+    let cur = { ...s };
+    for (let k = 0; k + 1 < f.length; k++) {
+      const a = f[k].end, b = f[k + 1].start;
+      if (b - a < minGap || a <= cur.start || b >= s.end) continue;
+      out.push({ ...cur, end: a });
+      cur = { ...s, start: b };
+    }
+    out.push(cur);
+  }
+  return out;
+}
 
 // [a, b] の中で一番音の小さい時刻（3コマの平均）。文と文がつながって聞こえる所の区切りに使う
 export function quietestPoint(rmsDb, a, b) {
@@ -267,7 +298,7 @@ export function shapePieces(segs, before, after, pace = PACES.natural) {
 }
 
 // 話し始めの言葉が、前の文に続くことを表すもの（前の文がないと意味が通じない）
-const CONTINUES_PREV_RE = /^(?:なので|ですので|だから|それで|そして|そうすると|すると|そのため|なぜなら|というのも|つまり|ただ、|ただし|でも、|けど|あと、|それから|で、)/;
+const CONTINUES_PREV_RE = /^(?:なので|ですので|だから|それで|そして|そうすると|すると|そのため|なぜなら|というのも|つまり|ただ、|ただし|でも|けど|あと、|それから|で、|そうならない|そうしないと)/;
 // 文が終わっていない（次の文に続く）語尾
 const CONTINUES_NEXT_RE = /(?:[、,]|て|で|ので|から|けど|けれど|けれども|が|と|し)$/;
 
@@ -292,18 +323,154 @@ export function linkSentences(units) {
 }
 
 // 文字起こしに送る音声の区切り（無音部分は送らない）
+// speech: 区間の中で話している時間（文字起こしの結果が短すぎないかを確かめるのに使う）
 export function transcriptionWindows(regions, maxLen = 28) {
   const windows = [];
   let cur = null;
   for (const r of regions) {
-    if (cur && r.end - cur.start <= maxLen) cur.end = r.end;
+    if (cur && r.end - cur.start <= maxLen) { cur.end = r.end; cur.speech += r.end - r.start; cur.parts.push({ start: r.start, end: r.end }); }
     else {
       if (cur) windows.push(cur);
-      cur = { start: r.start, end: r.end };
+      cur = { start: r.start, end: r.end, speech: r.end - r.start, parts: [{ start: r.start, end: r.end }] };
     }
   }
   if (cur) windows.push(cur);
   return windows;
+}
+
+// ReazonSpeech の読み方（3通り）と、結果の合わせ方。
+// 字幕AIの誤りのほとんどは「言葉を落とす」こと。どこで落とすかは、読む音声の区切り方で大きく変わる
+// （同じ音声でも、区切り方しだいで文字の誤り率 3%〜35%）。とくに、文の途中で区切った窓や、長い無音をはさむ窓で落としやすい。
+// そこで、区切り方の違う3通りで読み、どれかが落とした言葉を、ほかの読み方の結果で補う（文字の並びを照らし合わせて差し込む）。
+//   A: 30秒ごとの窓（区切りは近くの一番静かな所）
+//   B: A と15秒ずらした窓（A の区切りの所が、B では窓の真ん中になる）
+//   C: はっきりした間（0.5秒以上）で分けた話のまとまりごと（無音の後の話を落とさないように）
+// 手動編集の実際の音声2本・疑似素材2本で、まとまりごとに読む方法（誤り率 15〜18%）より少ない（3〜11%）
+export const ASR_WINDOW = 30;
+export function asrWindows(regions, rmsDb, L = ASR_WINDOW) {
+  if (!regions.length) return [];
+  // 0.3秒より短い間（言葉の中の「ッ」や息つぎ）では区切らない
+  const merged = [];
+  for (const r of regions) {
+    const last = merged[merged.length - 1];
+    if (last && r.start - last.end < 0.3) last.end = r.end;
+    else merged.push({ start: r.start, end: r.end });
+  }
+  const T0 = merged[0].start, T1 = merged[merged.length - 1].end;
+  const quietAt = (t, r) => {
+    if (!rmsDb) return t;
+    const i0 = Math.max(Math.ceil(T0 / FRAME_SEC), Math.round((t - r) / FRAME_SEC)), i1 = Math.min(Math.floor(T1 / FRAME_SEC), Math.round((t + r) / FRAME_SEC));
+    let k = Math.round(t / FRAME_SEC);
+    for (let i = i0; i <= i1; i++) if (rmsDb[i] < (rmsDb[k] ?? Infinity)) k = i;
+    return k * FRAME_SEC;
+  };
+  const speechIn = (a, b) => merged.reduce((s, r) => s + Math.max(0, Math.min(b, r.end) - Math.max(a, r.start)), 0);
+  const grid = (off, pass) => {
+    const cuts = [T0];
+    for (let t = T0 + (off || L); t < T1 - 3; t = cuts[cuts.length - 1] + L) cuts.push(quietAt(t, 1.5));
+    cuts.push(T1);
+    const out = [];
+    for (let i = 0; i + 1 < cuts.length; i++) {
+      const a = cuts[i], b = cuts[i + 1];
+      if (b - a < 0.3) continue;
+      // 窓の頭は区切りの所から読む（前の窓の言葉を読まない）。終わりは少し先まで読む
+      out.push({ start: a, end: b, padStart: 0.05, padEnd: 0.3, lo: a - 0.06, hi: b, speech: speechIn(a, b), pass });
+    }
+    return out;
+  };
+  // C: 0.5秒以上の間で分けた話のまとまり。30秒を超えるまとまりは、一番長い間（なければ一番静かな所）で分ける
+  const groups = [];
+  for (const r of merged) {
+    const g = groups[groups.length - 1];
+    if (g && r.start - g[g.length - 1].end < 0.5) g.push(r);
+    else groups.push([r]);
+  }
+  const cutLongest = rs => {
+    const a = rs[0].start, b = rs[rs.length - 1].end;
+    if (b - a <= L) return [rs];
+    if (rs.length === 1) {
+      const t = quietAt((a + b) / 2, (b - a) / 4);
+      return [...cutLongest([{ start: a, end: t }]), ...cutLongest([{ start: t, end: b }])];
+    }
+    let k = 1;
+    for (let i = 2; i < rs.length; i++) if (rs[i].start - rs[i - 1].end > rs[k].start - rs[k - 1].end) k = i;
+    return [...cutLongest(rs.slice(0, k)), ...cutLongest(rs.slice(k))];
+  };
+  const C = groups.flatMap(cutLongest).map(rs => {
+    const a = rs[0].start, b = rs[rs.length - 1].end;
+    return { start: a, end: b, padStart: 0.3, padEnd: 0.3, lo: a - 0.35, hi: b + 0.3, speech: speechIn(a, b), pass: 'C', parts: rs.map(r => ({ ...r })) };
+  });
+  return [...grid(0, 'A'), ...grid(L / 2, 'B'), ...C];
+}
+
+// 文字の並び a・b を照らし合わせる（編集距離）。返り値は [種類, a の番号, b の番号] の並び
+function alignChars(a, b) {
+  const n = a.length, m = b.length, D = Array.from({ length: n + 1 }, (_, i) => new Int32Array(m + 1).fill(0).map((_, j) => (i ? (j ? 0 : i) : j)));
+  for (let i = 1; i <= n; i++) for (let j = 1; j <= m; j++) D[i][j] = Math.min(D[i - 1][j] + 1, D[i][j - 1] + 1, D[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+  const ops = [];
+  let i = n, j = m;
+  while (i > 0 || j > 0) {
+    if (i > 0 && j > 0 && D[i][j] === D[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1)) ops.push(['m', --i, --j]);
+    else if (j > 0 && D[i][j] === D[i][j - 1] + 1) ops.push(['ins', null, --j]);
+    else ops.push(['del', --i, null]);
+  }
+  return ops.reverse();
+}
+
+// base（文字の列）に、other にだけある文字の並び（minRun 文字以上）を差し込む。違う文字の所は base のまま
+export function fillDeletions(base, other, minRun = 2) {
+  const ops = alignChars(base.map(k => k.s), other.map(k => k.s));
+  const out = [];
+  let run = [];
+  const flush = () => { if (run.length >= minRun) out.push(...run); run = []; };
+  for (const [op, i, j] of ops) {
+    if (op === 'ins') { run.push(other[j]); continue; }
+    flush();
+    out.push(base[i]);
+  }
+  flush();
+  return out;
+}
+
+// 否定の言葉（意味が逆になるため、聞き落とすと大きな誤りになる）
+const NEGATION_RE = /ない|なかっ|ません|ず[にのともで、。]|ず$|ダメ|だめ/;
+export const hasNegation = text => NEGATION_RE.test(text || '');
+
+// 3通りの結果（results[窓の番号] = chunks）を合わせて、1つの結果（文字ごとの時刻つき）にする。
+// まとまり（C の窓）ごとに、A を基にして B・C で落とした言葉を補う。返り値の passes は、読み方ごとの文字（確認用）
+export function mergeAsrPasses(windows, results) {
+  if (!windows.some(w => w.pass)) return windows.flatMap((_, k) => results[k] || []);
+  const tokensOf = pass => windows.flatMap((w, k) => w.pass === pass ? (results[k] || []).flatMap(c => c.tokens || []) : []).sort((x, y) => x.t - y.t);
+  const P = { A: tokensOf('A'), B: tokensOf('B'), C: tokensOf('C') };
+  const segs = windows.filter(w => w.pass === 'C');
+  const out = [];
+  segs.forEach((g, j) => {
+    const lo = j ? (segs[j - 1].end + g.start) / 2 : -Infinity, hi = j + 1 < segs.length ? (g.end + segs[j + 1].start) / 2 : Infinity;
+    const pick = p => P[p].filter(k => k.t >= lo && k.t < hi);
+    const filled = fillDeletions(fillDeletions(pick('A'), pick('B')), pick('C'));
+    if (!filled.length) return;
+    // 差し込んだ文字は別の読み方の時刻なので、前後と順番が逆になることがある。文字の順に時刻をそろえる
+    const tokens = [];
+    for (const k of filled) tokens.push({ ...k, t: tokens.length ? Math.max(k.t, tokens[tokens.length - 1].t + 0.02) : k.t });
+    const text = tokens.map(k => k.s).join('');
+    out.push({ start: g.start, end: g.end, text, raw: text, timed: true, tokens });
+  });
+  out.passes = P;
+  return out;
+}
+
+// 字幕の文 c について、読み方ごとの聞き取りを比べ、否定の言葉・入力された用語の有無が違えば理由を返す
+export function passDoubts(c, passes, terms = []) {
+  if (!passes) return [];
+  const texts = Object.values(passes).map(P => P.filter(k => k.t >= c.start - 0.3 && k.t < c.end + 0.3).map(k => k.s).join('')).filter(Boolean);
+  const out = [];
+  if (texts.some(t => hasNegation(t) !== hasNegation(c.text))) out.push('否定の言葉（ない・ません）を聞き落としている可能性');
+  for (const t of terms) if (t.length >= 2 && !(c.text || '').includes(t) && texts.some(x => x.includes(t))) out.push(`「${t}」を聞き落としている可能性`);
+  // 数（回数・長さ）の聞き取りが読み方によって違う
+  const nums = t => formatNumbers(t).numbers.map(n => n.label + n.counter).join('・');
+  const mine = nums(c.text || ''), other = texts.map(nums).find(x => x && x !== mine);
+  if (other) out.push(`数の聞き取りが読み方によって違います（${mine || 'なし'} / ${other}）`);
+  return out;
 }
 
 export function normalizeText(text) {
@@ -339,34 +506,9 @@ export function keywordHits(text) {
   return hits;
 }
 
-// 言い直しの検出。後の発言を残し、前の発言を除外する
+// 言い直しの検出。後の発言を残し、前の発言を除外する（自動で外すものだけ。詳しくは content.js）
 export function detectRetakes(chunks) {
-  const flags = chunks.map(() => null);
-  const norm = chunks.map(c => normalizeText(c.text));
-  for (let i = 0; i < chunks.length; i++) {
-    if (RETAKE_RE.test(chunks[i].text)) {
-      flags[i] = '言い直しの合図';
-      // 合図だけの短い発言なら、その直前の発言が言い直し前のもの。
-      // 合図の前に内容がある（「…スライスで、すみません、言い直します」）なら、この発言自体が言い直し前
-      const before = normalizeText(chunks[i].text.split(RETAKE_RE)[0].replace(/すみません|すいません|ごめんなさい/g, ''));
-      if (before.length < 6 && i > 0 && chunks[i].start - chunks[i - 1].end < 10 && !flags[i - 1]) flags[i - 1] = '言い直し前の発言';
-    }
-  }
-  for (let i = 0; i < chunks.length; i++) {
-    if (flags[i]) continue;
-    const a = norm[i];
-    if (a.length < 4) continue;
-    for (let j = i + 1; j < Math.min(chunks.length, i + 4); j++) {
-      if (chunks[j].start - chunks[i].end > 12) break;
-      const b = norm[j];
-      const prefix = a.slice(0, Math.min(6, a.length));
-      if (similarity(a, b) >= 0.55 || (prefix.length >= 5 && b.startsWith(prefix) && a.length <= b.length + 3)) {
-        flags[i] = '言い直し（あとの発言を採用）';
-        break;
-      }
-    }
-  }
-  return flags;
+  return analyzeContent(chunks).map(r => r?.drop || null);
 }
 
 function overlap(a0, a1, b0, b1) {
@@ -432,7 +574,11 @@ function motionOver(motion, levels, start, end) {
   const box = boxes.length
     ? [percentile(boxes.map(b => b[0]), 0.2), percentile(boxes.map(b => b[1]), 0.8), percentile(boxes.map(b => b[2]), 0.2), percentile(boxes.map(b => b[3]), 0.8)]
     : null;
-  return { level: n ? sum / n : 0, cx: cxs.length ? percentile(cxs, 0.5) : 0.5, cy: cys.length ? percentile(cys, 0.5) : 0.5, box };
+  // ズームで手・ハサミ・髪を切らないかを確かめるための、動いた範囲のほぼ全部（端に出た手も含める）
+  const boxWide = boxes.length
+    ? [percentile(boxes.map(b => b[0]), 0.05), percentile(boxes.map(b => b[1]), 0.95), percentile(boxes.map(b => b[2]), 0.05), percentile(boxes.map(b => b[3]), 0.95)]
+    : null;
+  return { level: n ? sum / n : 0, cx: cxs.length ? percentile(cxs, 0.5) : 0.5, cy: cys.length ? percentile(cys, 0.5) : 0.5, box, boxWide, boxSamples: boxes.length };
 }
 
 // 文 [start, end]（Whisper の時刻なので少しずれている）に当たる声の区間を、言葉の途中で切らずに取り出す。
@@ -447,9 +593,214 @@ function sentenceVoice(voice, rmsDb, start, end) {
   return segs.filter(s => s.end - s.start > 0.05);
 }
 
+// 文の中の文字の位置 at に当たる声の切れ目を、声の区間から探す。
+// 文字の位置を読みの長さで時刻に直し、その近く（±0.6秒）の声の切れ目（0.08秒以上）を探す。見つからなければ null
+function findGap(u, sp, at) {
+  const text = u.text || '';
+  const total = sp.reduce((a, r) => a + r.end - r.start, 0);
+  const f = moraCount(text.slice(0, at)) / (moraCount(text) || 1);
+  let rest = f * total, t = sp[sp.length - 1].end;
+  for (const r of sp) { if (rest <= r.end - r.start) { t = r.start + rest; break; } rest -= r.end - r.start; }
+  // 1文字ごとの時刻がわかる（ReazonSpeech）ときは、その時刻を使う（文字の時刻は声より少し早めに出るので少し足す）
+  if (u.times && u.times.length === text.length && u.times[at] != null) t = u.times[at] + 0.15;
+  let best = null, bestCost = Infinity;
+  for (let k = 0; k + 1 < sp.length; k++) {
+    const gap = sp[k + 1].start - sp[k].end;
+    const mid = (sp[k].end + sp[k + 1].start) / 2;
+    if (gap < 0.08 || Math.abs(mid - t) > 0.6) continue;
+    const cost = Math.abs(mid - t) / (1 + 2 * gap);
+    if (cost < bestCost) { bestCost = cost; best = { gapStart: sp[k].end, voiceStart: sp[k + 1].start }; }
+  }
+  return best;
+}
+
+// 文の一部を取り除く位置を探す。trim.cut は残す部分の始まり、trim.from（あれば）は取り除く部分の始まりの文字位置。
+// 冒頭を取り除く（from なし）か、文の途中を取り除く（from あり）。どちらも声の切れ目が見つかったときだけ
+export function findTrim(u, spans, trim) {
+  const text = u.text || '';
+  const sp = spans.filter(r => r.end > u.voiceStart - 0.05 && r.start < u.voiceEnd + 0.05)
+    .map(r => ({ start: Math.max(r.start, u.voiceStart), end: Math.min(r.end, u.voiceEnd) })).filter(r => r.end > r.start);
+  if (sp.length < 2) return null;
+  if (trim.tail != null) {
+    // 文の終わりを取り除く: 残す部分の語尾の後の声の切れ目。1文字ごとの時刻がわかるときは、残す最後の文字の
+    // すぐ後の切れ目（言いかけの言葉の中の切れ目「トッ／プの」を選ばない）
+    let a = null;
+    const lastT = u.times && u.times.length === text.length ? u.times[trim.tail - 1] + CHAR_LAG : null;
+    if (lastT != null) {
+      for (let k = 0; k + 1 < sp.length && !a; k++) {
+        if (sp[k].end >= lastT - 0.05 && sp[k + 1].start - sp[k].end >= 0.08) a = { gapStart: sp[k].end, voiceStart: sp[k + 1].start };
+      }
+    }
+    a ||= findGap(u, sp, trim.tail);
+    return a ? { tail: true, keepEnd: a.gapStart, dropStart: a.voiceStart, text: text.slice(0, trim.tail).replace(/[、,\s]+$/, ''), reason: trim.reason } : null;
+  }
+  const b = findGap(u, sp, trim.cut);
+  if (!b) return null;
+  const kept = (trim.from ? text.slice(0, trim.from) : '') + text.slice(trim.cut);
+  if (!trim.from) return { gapStart: b.gapStart, voiceStart: b.voiceStart, text: kept.trim(), reason: trim.reason };
+  const a = findGap(u, sp, trim.from);
+  if (!a || a.voiceStart >= b.voiceStart) return null;
+  return { mid: true, keepEnd: a.gapStart, gapStart: b.gapStart, voiceStart: b.voiceStart, text: kept.trim(), reason: trim.reason };
+}
+
+// 文の一部を取り除く（元に戻せるよう、もとの状態を u.trimmed.original に残す）
+export function trimUnit(u, cut, pace = PACES.natural) {
+  const original = { pieces: u.pieces.map(p => ({ ...p })), start: u.start, end: u.end, text: u.text, subStart: u.subStart, subEnd: u.subEnd, fine: u.fine, voiceStart: u.voiceStart, voiceEnd: u.voiceEnd, times: u.times };
+  const from = Math.max(cut.gapStart + 0.02, cut.voiceStart - pace.lead);
+  let pieces;
+  if (cut.tail) {
+    // 終わりを取り除く: 残す部分の語尾の後に余白（tail）を残して切る
+    const to = Math.min(cut.keepEnd + pace.tail, (cut.dropStart ?? Infinity) - 0.02);
+    pieces = u.pieces.filter(p => p.start < to - 0.05).map(p => ({ ...p, end: Math.min(p.end, to) }));
+    if (pieces.length) pieces[pieces.length - 1].end = Math.max(pieces[pieces.length - 1].end, to);
+    if (pieces.length) {
+      u.voiceEnd = cut.keepEnd;
+      if (u.subEnd != null) u.subEnd = Math.min(u.subEnd, cut.keepEnd);
+      if (u.fine) u.fine = u.fine.filter(r => r.start < cut.keepEnd).map(r => ({ start: r.start, end: Math.min(r.end, cut.keepEnd) }));
+      u.end = pieces[pieces.length - 1].end;
+      // 残す文字の時刻はそのまま使える（字幕のページの切り替えに使う）
+      if (u.times && u.times.length === (u.text || '').length && u.text.startsWith(cut.text)) u.times = u.times.slice(0, cut.text.length);
+    }
+  } else if (cut.mid) {
+    // 途中を取り除く: 前の部分は語尾の後に短い間を残して切り、後ろの部分は話し始めの少し前から
+    const to = Math.min(cut.keepEnd + pace.lead, from);
+    pieces = [];
+    for (const p of u.pieces) {
+      if (p.end <= to || p.start >= from) { pieces.push({ ...p }); continue; }
+      if (p.start < to) pieces.push({ start: p.start, end: to });
+      if (p.end > from) pieces.push({ start: from, end: p.end });
+    }
+    pieces = pieces.filter(p => p.end - p.start > 0.05);
+    if (u.fine) u.fine = u.fine.filter(r => r.end <= cut.keepEnd + 0.01 || r.start >= cut.voiceStart - 0.01);
+  } else {
+    pieces = u.pieces.filter(p => p.end > from + 0.05).map(p => ({ ...p, start: Math.max(p.start, from) }));
+    if (pieces.length) {
+      u.voiceStart = cut.voiceStart;
+      if (u.subStart != null) u.subStart = Math.max(u.subStart, cut.voiceStart);
+      if (u.fine) u.fine = u.fine.filter(r => r.end > cut.voiceStart).map(r => ({ start: Math.max(r.start, cut.voiceStart), end: r.end }));
+    }
+  }
+  if (!pieces.length) return false;
+  u.pieces = pieces;
+  u.start = pieces[0].start;
+  u.text = cut.text;
+  u.duration = piecesDuration(u.pieces);
+  u.trimmed = { reason: cut.reason, cut, original };
+  delete u.trimOption;
+  return true;
+}
+
+// 取り除いた部分を元に戻す（もう一度取り除けるよう、位置は u.trimOption に残す）
+export function untrimUnit(u) {
+  if (!u.trimmed) return;
+  const o = u.trimmed.original;
+  Object.assign(u, { pieces: o.pieces, start: o.start, text: o.text, subStart: o.subStart, fine: o.fine, voiceStart: o.voiceStart });
+  if (o.end != null) Object.assign(u, { end: o.end, subEnd: o.subEnd, voiceEnd: o.voiceEnd, times: o.times });
+  u.duration = piecesDuration(u.pieces);
+  u.trimOption = u.trimmed.cut;
+  delete u.trimmed;
+}
+
+// 文の最後の文字の後に、間をおいて文字起こしされていない声が続いている（言いかけてやめた・言い直しの頭などを
+// 字幕AIが聞き落とした）。内容のある言葉かもしれないので自動では取り除かず、取り除ける候補として知らせる
+function untranscribedTail(u, segs, rmsDb, nextT = Infinity) {
+  const text = u.text || '';
+  if (!u.times || u.times.length !== text.length || !segs.length) return;
+  const lastT = u.times[u.times.length - 1] + CHAR_LAG;
+  // 次の文の最初の文字より後の声は、次の文の声（間をおかずに話し始めた）
+  segs = segs.filter(s => s.start < nextT - 0.05).map(s => ({ start: s.start, end: Math.min(s.end, nextT - 0.05) }));
+  if (!segs.length) return;
+  let k = -1;
+  segs.forEach((s, j) => { if (s.start <= lastT + 0.1) k = j; });
+  if (k < 0) return;
+  // 最後の文字の後も、間をおかずに 0.5秒以上声が続いている（「…続けないと、うまくいきま」）:
+  // 最後の文字のすぐ後の一番静かな所で切れる候補にする（言葉の切れ目が確かでないので、自動では切らない）
+  if ((k + 1 >= segs.length || segs[k + 1].start - segs[k].end < 0.15) && rmsDb && segs[k].end - lastT >= 0.6) {
+    const i0 = Math.round((lastT + 0.05) / FRAME_SEC), i1 = Math.round(Math.min(lastT + 0.4, segs[k].end - 0.3) / FRAME_SEC);
+    let q = i0;
+    for (let i = i0; i <= i1; i++) if (rmsDb[i] < rmsDb[q]) q = i;
+    if (i1 < i0) return;
+    const cutT = q * FRAME_SEC + FRAME_SEC / 2;
+    const rest = piecesDuration(segs.slice(k).map((s, j) => j ? s : { start: cutT, end: s.end }));
+    u.trimOption = { tail: true, keepEnd: cutT, dropStart: cutT + 0.02, text, reason: '文の後の、文字起こしされていない声' };
+    u.candidate = `文の後に、文字起こしされていない声が約${rest.toFixed(1)}秒続いています（言いかけ・言い直しの可能性があります。不要なら取り除いてください。声が続いているため、切れ目は確かではありません）`;
+    return;
+  }
+  if (k + 1 >= segs.length || segs[k + 1].start - segs[k].end < 0.15) return;
+  const rest = piecesDuration(segs.slice(k + 1));
+  if (rest < 0.4) return;
+  u.trimOption = { tail: true, keepEnd: segs[k].end, dropStart: segs[k + 1].start, text, reason: '文の後の、文字起こしされていない声' };
+  u.candidate = `文の後に、文字起こしされていない声が約${rest.toFixed(1)}秒あります（言いかけ・言い直しの可能性があります。不要なら取り除いてください）`;
+}
+
+// 文の途中で、文字と文字の間に文字にならない声がある（「…続けないと、うまくいきま（言いかけ）、うまくカバーできません」）。
+// 字幕AIが言いかけを文字にしなかった所。声の切れ目があれば、取り除ける候補にする（自動では取り除かない）
+function untranscribedMid(u, sp) {
+  const text = u.text || '', times = u.times;
+  if (!times || times.length !== text.length || sp.length < 2) return;
+  for (let i = 0; i + 1 < times.length; i++) {
+    const a = times[i] + CHAR_LAG, b = times[i + 1] + CHAR_LAG;
+    if (b - a < 0.8 || /[、。]/.test(text[i + 1])) continue;
+    // a の後で声が途切れる所（a を含む声の区間の終わり）と、b を話し始める声の区間
+    const ka = sp.findIndex(r => r.end >= a - 0.05);
+    const kb = sp.findIndex(r => r.end >= b - 0.05);
+    if (ka < 0 || kb <= ka) continue;
+    const mid = sp.slice(ka + 1, kb).map(r => ({ start: r.start, end: Math.min(r.end, b) }));
+    const extra = (sp[ka].end - a > 0.3 ? sp[ka].end - a - 0.3 : 0) + piecesDuration(mid);
+    if (extra < 0.4 || sp[kb].start - sp[kb - 1].end < 0.08) continue;
+    const keepEnd = mid.length || sp[ka].end - a <= 0.3 ? sp[ka].end : a + 0.3;
+    u.trimOption = { mid: true, keepEnd, gapStart: sp[kb - 1].end, voiceStart: sp[kb].start, text, reason: '文の途中の、文字起こしされていない声' };
+    u.candidate = `「${text.slice(Math.max(0, i - 5), i + 1)}」と「${text.slice(i + 1, i + 6)}」の間に、文字起こしされていない声が約${extra.toFixed(1)}秒あります（言いかけ・言い直しの可能性があります。不要なら取り除いてください）`;
+    return;
+  }
+}
+
 // 候補となる場面（ユニット）を作り、点数をつける。
 // pace: 'natural'（初期設定）/ 'tempo'（間を少し短く）。間の残し方は PACES を参照
-export function buildUnits({ duration, rmsDb, speech, chunks, motion, pace }) {
+// 音の繰り返しで見つけた言いかけ（acoustic.js の findRestarts）を、文の頭・途中から取り除く。
+// 言いかけの文字数は、話している時間の割合（読みの長さ）で見積もり、前後1文字の中で文字の時刻の間が一番大きい所にする
+function applyRestart(u, r, P) {
+  const text = u.text || '';
+  if (!text || r.next >= u.voiceEnd - 0.2) return false;
+  const fine = (u.fine && u.fine.length ? u.fine : [{ start: u.voiceStart, end: u.voiceEnd }]).filter(f => f.end > u.voiceStart && f.start < u.voiceEnd);
+  const total = fine.reduce((a, f) => a + f.end - f.start, 0) || 1;
+  const before = fine.reduce((a, f) => a + Math.max(0, Math.min(f.end, r.next) - Math.max(f.start, u.voiceStart)), 0);
+  const want = moraCount(text) * before / total;
+  let k = 1, best = Infinity;
+  for (let i = 1; i < text.length; i++) { const d = Math.abs(moraCount(text.slice(0, i)) - want); if (d < best) { best = d; k = i; } }
+  // 1文字ごとの時刻があれば、取り除いた後の音声（話し直した所 r.next から）に入る最初の文字から字幕にする
+  // （話の長さの割合で決めると、字幕AIが言いかけの文字を出さなかったとき「ギリギリ」のような話し直した言葉まで消してしまう）
+  // 字幕AIの1文字ごとの時刻は 0.3秒ほど前後することがあるので、カタカナ・漢字の言葉の途中になったら、その言葉の頭まで戻す
+  // （消しすぎるより、話し直した言葉を残す方を選ぶ）
+  const timed = u.times && u.times.length === text.length;
+  const byTime = timed ? u.times.findIndex(t => t >= r.next - 0.05) : -1;
+  const sameRun = (a, b) => (isKanjiChar(a) && isKanjiChar(b)) || (isKata(a) && isKata(b));
+  if (byTime >= 1) {
+    k = byTime;
+    while (k > 1 && sameRun(text[k - 1], text[k])) k--;
+  } else if (timed) {
+    let bestGap = -1;
+    for (const i of [k - 1, k, k + 1]) {
+      if (i < 1 || i >= text.length) continue;
+      const g = u.times[i] - u.times[i - 1];
+      if (g > bestGap) { bestGap = g; k = i; }
+    }
+  }
+  if (normalizeText(text.slice(k)).length < 4) return false;
+  const reason = `言いかけ「${text.slice(0, k)}」（音の繰り返し）`;
+  const cut = { gapStart: r.end, voiceStart: r.next, text: text.slice(k).trim(), reason };
+  if (r.level !== 'auto') {
+    u.trimOption = cut;
+    u.candidate = `${reason}の可能性があります。取り除く場合は「取り除く」を押してください（確かでないため、そのまま残しています）`;
+    return false;
+  }
+  const times = u.times && u.times.length === text.length ? u.times.slice(k) : null;
+  if (!trimUnit(u, cut, P)) return false;
+  if (times) u.times = times;
+  return true;
+}
+
+export function buildUnits({ duration, rmsDb, speech, chunks, motion, pace, restarts = [] }) {
   const regions = speech.regions;
   // 声の区間（余白なし）。古い形式のデータ（voice がない）では余白つきの区間を使う
   const voice = speech.voice || regions;
@@ -458,19 +809,25 @@ export function buildUnits({ duration, rmsDb, speech, chunks, motion, pace }) {
   const units = [];
   // 前後の声に食い込まない範囲で、話し始めの前・話し終わりの後の余白をつける
   // 声の途中（文と文の境目の静かな所）で分けた側には余白をつけない
-  const shape = segs => {
+  // 余白をつける範囲は、息継ぎの間で分ける前の声の区間の端で決める（文と文の境目の静かな所で分けた側も、
+  // 分けた所までは余白にしてよい。分けた後の端で決めると、文の終わりの間がほとんどなくなる）
+  const shape = (segs, fine = null) => {
     const s0 = segs[0].start, s1 = segs[segs.length - 1].end;
     const inside = t => voice.some(v => v.start < t - 1e-6 && v.end > t + 1e-6);
     const prevEnd = voice.filter(v => v.end <= s0 + 1e-6).pop()?.end ?? 0;
     const nextStart = voice.find(v => v.start >= s1 - 1e-6)?.start ?? duration;
     const before = inside(s0) ? s0 : Math.min(s0, Math.max(0, prevEnd + 0.05, s0 - 1));
     const after = inside(s1) ? s1 : Math.min(duration, nextStart - 0.05);
-    return shapePieces(segs, before, Math.max(s1, after), P);
+    const parts = fine ? splitAtPauses(segs, fine, P.keepGap) : segs;
+    return shapePieces(parts, Math.min(before, parts[0].start), Math.max(s1, after, parts[parts.length - 1].end), P);
   };
 
+  // 息継ぎの間を測る細かい声の区間
+  const fineAll = speech.threshold != null ? fineSpeech(rmsDb, speech.threshold) : [];
   const covered = [];
   if (chunks && chunks.length) {
-    const flags = detectRetakes(chunks);
+    const ca = analyzeContent(chunks);
+    const flags = ca.map(r => r?.drop || null);
     chunks.forEach((c, i) => {
       const segs = sentenceVoice(voice, rmsDb, c.start, c.end);
       const speechDur = piecesDuration(speechPieces(regions, c.start, c.end));
@@ -481,15 +838,35 @@ export function buildUnits({ duration, rmsDb, speech, chunks, motion, pace }) {
       covered.push({ start: c.start, end: c.end });
       if (segs.length) covered.push({ start: segs[0].start, end: segs[segs.length - 1].end });
       if (!segs.length) return;
-      const pieces = shape(segs);
+      const pieces = shape(segs, fineAll);
       const u = {
-        kind: 'speech', start: pieces[0].start, end: pieces[pieces.length - 1].end, pieces, text, subStart: c.subStart, subEnd: c.subEnd, fine: c.fine,
+        kind: 'speech', start: pieces[0].start, end: pieces[pieces.length - 1].end, pieces, text, subStart: c.subStart, subEnd: c.subEnd, fine: c.fine, times: c.times,
         voiceStart: segs[0].start, voiceEnd: segs[segs.length - 1].end,
       };
       if (flags[i]) u.excluded = flags[i];
       else if (!normalizeText(text)) u.excluded = 'つなぎ言葉のみ';
       // 言い直した後の発言（撮り直してまで伝えたかった説明）
       else if (flags[i - 1] || (flags[i - 2] && !normalizeText(chunks[i - 1].text))) u.redo = true;
+      if (!u.excluded && ca[i]?.candidate) u.candidate = ca[i].candidate;
+      // 文の一部（冒頭の訂正・言い直し前の部分・くり返し）を取り除く。声の切れ目が見つかったときだけ
+      if (!u.excluded && ca[i]?.trim) {
+        const cut = findTrim(u, c.fine && c.fine.length ? c.fine : segs, ca[i].trim);
+        if (cut && ca[i].trim.high) trimUnit(u, cut, P);
+        else if (cut) { u.trimOption = cut; u.candidate = `${ca[i].trim.reason}は取り除けます（確かでないため、そのまま残しています）`; }
+        else u.candidate = `${ca[i].trim.reason}が残っています（声の切れ目が見つからないため、文の途中では切っていません）`;
+      }
+      // 音の繰り返しで見つけた、文の頭の言いかけ（文字起こしAIが別の字にして見落とした言い直し）
+      const r = !u.excluded && !u.trimmed ? restarts.find(x => x.start >= u.voiceStart - 0.3 && x.start <= u.voiceStart + 0.3 && x.end <= u.voiceEnd) : null;
+      if (r) applyRestart(u, r, P);
+      if (!u.excluded && !u.trimmed && !u.trimOption) {
+        // 細かい声の区間（字幕の表示範囲まで）と、その後ろの声の区間
+        const fine = c.fine && c.fine.length ? c.fine : [];
+        const fEnd = fine.length ? fine[fine.length - 1].end : -Infinity;
+        const sp = [...fine, ...segs.filter(r => r.end > fEnd + 0.05).map(r => ({ start: Math.max(r.start, fEnd + 0.05), end: r.end }))];
+        const nextT = chunks[i + 1]?.times?.length ? chunks[i + 1].times[0] + CHAR_LAG - 0.1 : (chunks[i + 1]?.start ?? Infinity);
+        untranscribedTail(u, sp.length ? sp : segs, rmsDb, nextT);
+        if (!u.trimOption) untranscribedMid(u, sp.length ? sp : segs);
+      }
       units.push(u);
     });
   }
@@ -554,6 +931,8 @@ export function buildUnits({ duration, rmsDb, speech, chunks, motion, pace }) {
     u.cx = m.cx;
     u.cy = m.cy;
     u.box = m.box;
+    u.boxWide = m.boxWide;
+    u.boxSamples = m.boxSamples;
     u.motion = m.level;
     u.keywords = keywordHits(u.text);
     const reasons = [];
@@ -562,8 +941,21 @@ export function buildUnits({ duration, rmsDb, speech, chunks, motion, pace }) {
     if (u.keywords.length) { score += 1.2 * Math.min(3, u.keywords.length); reasons.push('用語: ' + u.keywords.slice(0, 3).join('・')); }
     if (firstSpeech.includes(u) && u.start < introLimit) { score += 1.5; u.intro = true; reasons.push('冒頭の導入'); }
     if (u.end > duration * 0.92) { score += 2; u.ending = true; reasons.push('仕上がり（最後）'); }
-    if (u.kind === 'speech' && !u.text) score += 0.3;
+    // 文字起こしのない声: 文字起こしをしていないときは少し残しやすく、
+    // 文字起こしをしたのに文字にならなかった声（言いよどみ・聞き取れない声）は外しやすくする
+    if (u.kind === 'speech' && !u.text) {
+      if (chunks && chunks.length) {
+        score -= 0.6;
+        // 2秒未満の短い声は、言いかけてやめた言葉・つなぎ言葉・物音であることが多いので、初めは使わない（候補に出す）。
+        // 長い声は、字幕AIが聞き落とした説明の可能性があるので残す
+        if (u.duration < 2) { u.optional = true; u.candidate = '文字にならなかった短い声です（言いかけ・言いよどみの可能性があるため、外しています。必要なら残してください）'; }
+        else u.candidate = u.candidate || '文字にならなかった声です（言いよどみの可能性があります。必要なら残してください）';
+      }
+      else score += 0.3;
+    }
     if (u.redo) { score += 1.2; reasons.push('言い直した説明'); }
+    if (u.candidate) score -= 0.3;
+    if (u.trimmed) reasons.push(u.trimmed.reason + 'を取り除きました');
     if (u.kind === 'action') {
       reasons.push('カット作業の場面');
       // ハサミの音が続いている（実際に切っている）無言の場面は、話していなくても残す価値が高い
@@ -577,57 +969,83 @@ export function buildUnits({ duration, rmsDb, speech, chunks, motion, pace }) {
   return units;
 }
 
-// 目標の長さになるように場面を選ぶ。
-// opts.buckets: 動画全体を何区間に分けて、それぞれから選ぶか（入力した流れの段階数）
-// 必ず残す場面（u.mustKeep）は、上限を超えても残す（重要な説明を時間のために削らない）
-export function selectUnits(units, duration, target = 58, max = 60, opts = {}) {
-  const cands = units.filter(u => !u.excluded && u.duration >= 0.5);
-  const chosen = new Set();
-  let total = 0;
-  // 前後の文とつながっている場面（linkNext）は、まとめて残すか、まとめて外す（話の前後関係を崩さない）
-  const byId = new Map(cands.map(u => [u.id, u]));
-  const prevOf = new Map();
-  for (const u of cands) if (u.linkNext && byId.has(u.linkNext)) prevOf.set(u.linkNext, u);
-  const group = u => {
-    const g = [u];
-    for (let p = prevOf.get(u.id); p && g.length < 4; p = prevOf.get(p.id)) g.unshift(p);
-    for (let n = byId.get(u.linkNext); n && g.length < 4; n = byId.get(n.linkNext)) g.push(n);
-    return g.filter(x => !chosen.has(x));
-  };
-  // 話していない作業場面は、目標の時間の actionShare（初期 40%）までにする（説明が削られすぎないように）
-  const actionCap = target * (opts.actionShare ?? 0.4);
-  let actionTotal = 0;
-  const take = (u, limit, capAction = true) => {
-    if (chosen.has(u)) return;
-    const g = group(u);
-    const d = g.reduce((s, x) => s + x.duration, 0);
-    const da = g.filter(x => x.kind === 'action').reduce((s, x) => s + x.duration, 0);
-    if (capAction && da && actionTotal + da > actionCap) return;
-    if (total + d <= limit) for (const x of g) { chosen.add(x); total += x.duration; if (x.kind === 'action') actionTotal += x.duration; }
-  };
-  const add = u => take(u, max);
+// 選んだ場面を書き出したときの長さ。続けて選んだ場面の余白が重なる分は1回だけ数える（buildTimeline と同じ数え方）
+export function outputLength(list) {
+  const ps = list.flatMap(u => u.pieces || [{ start: u.start, end: u.end }]).sort((x, y) => x.start - y.start);
+  let sum = 0, end = -Infinity;
+  for (const p of ps) { const s0 = Math.max(p.start, end); if (p.end > s0) sum += p.end - s0; end = Math.max(end, p.end); }
+  return sum;
+}
 
-  for (const u of cands) if (u.mustKeep && !chosen.has(u)) { chosen.add(u); total += u.duration; }
-  // 冒頭と最後
-  const intro = cands.filter(u => u.intro).sort((a, b) => b.score - a.score)[0];
-  const ending = cands.filter(u => u.ending).sort((a, b) => b.score - a.score)[0];
-  if (intro) add(intro);
-  if (ending) add(ending);
-  // 動画全体からまんべんなく
-  const K = opts.buckets || 5;
-  for (let k = 0; k < K; k++) {
-    const s = (duration * k) / K, e = (duration * (k + 1)) / K;
-    const best = cands.filter(u => u.start >= s && u.start < e).sort((a, b) => b.score - a.score)[0];
-    if (best) take(best, target);
+// 目標時間の許容幅（60秒なら ±5秒 → 55〜65秒）
+export function targetTolerance(sec) {
+  return Math.max(3, Math.round(sec / 12));
+}
+
+// 場面を選ぶ（話の内容を優先する）。手動編集のお手本と同じく、話している場面は言い直し・くり返し・
+// つなぎ言葉を除いてすべて元の順番で残し、目標時間（target、上限 max）を大きく超えるときだけ、
+// 点数の低い文を「文ごと」外す。前後の文とつながっている文（linkNext）はまとめて外す（文の途中から始めない）。
+// 冒頭・最後・必ず残す場面は外さない（重要な説明を時間のために削らない）。
+// 話している部分が目標より短いときだけ、手元の作業場面を足す（無音で水増しはしない）
+// opts.lo: 目標の下限（既定は target − 許容幅）/ opts.buckets: 動画全体を何区間に分けて見るか（外す場面が偏らないように）
+export function selectUnits(units, duration, target = 60, max = target + targetTolerance(target), opts = {}) {
+  const lo = opts.lo ?? target - Math.max(max - target, targetTolerance(target));
+  const cands = units.filter(u => !u.excluded && u.duration >= 0.5);
+  const byId = new Map(cands.map(u => [u.id, u]));
+  // 話している場面を、つながった文のまとまり（グループ）に分ける
+  const speech = cands.filter(u => u.kind === 'speech' && !(u.optional && !u.mustKeep));
+  const linked = new Set(speech.filter(u => u.linkNext && byId.has(u.linkNext)).map(u => u.linkNext));
+  const groups = [];
+  for (const u of speech) {
+    if (linked.has(u.id)) continue; // 前の文の続き（前の文のグループに入る）
+    const g = [u];
+    for (let n = byId.get(u.linkNext); n && g.length < 8; n = byId.get(n.linkNext)) g.push(n);
+    groups.push(g);
   }
-  // 残りは点数の高い順
-  for (const u of [...cands].sort((a, b) => b.score - a.score)) {
-    if (total >= target) break;
-    take(u, target);
+  const dur = g => g.reduce((s, x) => s + x.duration, 0);
+  const keep = new Set(groups);
+  const extra = cands.filter(u => u.kind !== 'speech' && u.mustKeep);
+  const totalOf = set => outputLength([...[...set].flat(), ...extra]);
+  let total = totalOf(keep);
+  const K = Math.max(1, opts.buckets || 5);
+  const bucket = g => Math.min(K - 1, Math.floor((g[0].start / Math.max(1, duration)) * K));
+  const isProtected = g => g.some(u => u.mustKeep || u.intro || u.ending);
+  // 長すぎるとき: 点数の低いグループから外す。区間に1つしか残っていないグループは外しにくくする（流れが飛ばないように）。
+  // 上限を少し（許容幅の半分まで）超えるだけなら、説明の文を外すより内容を優先して残す。
+  // 外した後に下限を下回るものは外さない
+  const slack = opts.slack ?? targetTolerance(target) / 2;
+  while (total > max + slack) {
+    const left = new Map();
+    for (const g of keep) left.set(bucket(g), (left.get(bucket(g)) || 0) + 1);
+    const value = g => Math.max(...g.map(u => u.score ?? 1)) + (left.get(bucket(g)) <= 1 ? 0.8 : 0);
+    const removable = [...keep].filter(g => !isProtected(g)).sort((x, y) => value(x) - value(y) || dur(y) - dur(x));
+    const options = removable.map(g => {
+      const rest = new Set(keep);
+      rest.delete(g);
+      return { g, after: totalOf(rest) };
+    }).filter(o => o.after >= lo);
+    if (!options.length) break;
+    // 外すと目安の範囲に収まるものがあれば、その中で失う内容（点数×長さ）が一番少ないもの。
+    // なければ一番点数の低いもの（長い説明を、少しの時間のために丸ごと外さない）
+    const fit = options.filter(o => o.after <= max + slack);
+    const loss = o => value(o.g) * dur(o.g);
+    const pick = fit.length ? fit.sort((x, y) => loss(x) - loss(y))[0] : options[0];
+    keep.delete(pick.g);
+    total = pick.after;
   }
-  // 目標よりかなり短いときは、上限までの範囲で場面を足す（短い目標ほど1場面の長さの影響が大きいため）
-  if (total < max - Math.max(3, max * 0.1)) {
-    for (const u of [...cands].sort((a, b) => b.score - a.score)) take(u, max, false);
+  const chosen = new Set([...keep].flat());
+  for (const u of cands) if (u.mustKeep) chosen.add(u);
+  // 短いとき: 手元の作業場面（話していない場面）を、点数の高い順に足す。作業場面は目標の actionShare（初期 40%）まで
+  if (total < lo) {
+    const cap = target * (opts.actionShare ?? 0.4);
+    let actionTotal = [...chosen].filter(u => u.kind === 'action').reduce((s, u) => s + u.duration, 0);
+    for (const u of cands.filter(x => x.kind === 'action' && !chosen.has(x)).sort((a, b) => b.score - a.score)) {
+      if (total >= lo) break;
+      if (total + u.duration > max || actionTotal + u.duration > cap) continue;
+      chosen.add(u);
+      total += u.duration;
+      actionTotal += u.duration;
+    }
   }
   return [...chosen].sort((a, b) => a.start - b.start);
 }
@@ -646,82 +1064,302 @@ function charType(c) {
   return 'other';
 }
 
-// text の i 文字目の前で区切るときの「自然さ」
-function breakScore(text, i) {
+// 改行・ページの区切りで分けない言葉（美容用語・入力された用語）。setBreakTerms で入力された用語を足す
+const BASE_TERMS = [...new Set([...KEYWORDS, ...BEAUTY_TERMS.map(t => t.term), 'すきバサミ', 'ハサミ', 'ヘアカッター', '髪の毛', '根元', 'セルフカット', '修正カット'])];
+let breakTerms = BASE_TERMS;
+export function setBreakTerms(extra = []) {
+  breakTerms = [...new Set([...BASE_TERMS, ...extra.filter(w => typeof w === 'string' && w.length >= 2)])];
+}
+
+// text の中で、用語の途中にあたる位置（その前で区切ってはいけない位置）。inside.ends は用語の終わりの位置（区切りやすい）
+function insideTerms(text) {
+  const inside = new Set();
+  inside.ends = new Set();
+  inside.starts = new Set();
+  for (const w of breakTerms) {
+    for (let i = text.indexOf(w); i >= 0; i = text.indexOf(w, i + 1)) {
+      for (let k = i + 1; k < i + w.length; k++) inside.add(k);
+      inside.ends.add(i + w.length);
+      if (w.length >= 3) inside.starts.add(i);
+    }
+  }
+  for (const k of inside) { inside.ends.delete(k); inside.starts.delete(k); }
+  return inside;
+}
+
+// i 文字目の前が文の境目か。はっきりした文の終わり（〜ます・〜です・〜ません）のあとに続きの言葉（が・けど・ね・し…）が
+// 来ない所、または言い切りの形（〜ない・〜した）のあとに次の文の始まりの言葉（それを・しかも…）が来る所
+const STRONG_END_RE = /(?:ます|ません|です|でした|ました|ください|ましょう|ですよね|んですね|よね)$/;
+const PLAIN_END_RE = /(?:ない|った|した|いる|ある|です|ます|ません)$/;
+function sentenceBoundary(text, i) {
+  const before = text.slice(0, i).replace(/[、。\s]+$/, ''), after = text.slice(i).replace(/^[、。\s]+/, '');
+  if (!before || after.length < 2) return false;
+  if (/[。！？!?]$/.test(text.slice(0, i))) return true;
+  if (PLAIN_END_RE.test(before) && SENTENCE_STARTS.some(w => after.startsWith(w))) return true;
+  // 名詞で言い切った後に、指示語で次の文を始めた（「重めなスタイル／それを覚えて」「感じやすい理由／それは」）
+  if (/[一-鿿々ァ-ヶー]$/.test(before) && /^(?:それは|それを|それが|それも|これは|これを)/.test(after)) return true;
+  return STRONG_END_RE.test(before) && (!/^[がけかよねのとしなわでもにはを]/.test(after) || SENTENCE_STARTS.some(w => after.startsWith(w)));
+}
+
+// 次の文の始まりによく使う言葉
+// （特定の動画の言葉ではなく、一般的な接続の言葉・指示の言葉。前の語尾と合わせて判断する）
+const SENTENCE_STARTS = ['なぜかというと', 'なぜなら', 'それは', 'それを', 'それで', 'それが', 'そして', 'しかも', 'また', 'さらに', 'でも', 'しかし', 'ただ', 'なので', 'だから', 'ですので', 'そのため', 'つまり', '例えば', 'まず', '次に', '最後に', 'あとは', 'もし', 'となれば', '下手すれば', 'この', 'その', 'こう', 'そう'];
+// 区切りやすい語尾（この後で区切ると、意味のまとまりで分かれる）
+const GOOD_ENDINGS = ['際', '後に', 'あとに', 'ように', 'ために', 'ので', 'から', 'けど', 'けれど', 'ても', 'たら', 'れば', 'なら', 'ながら', 'まで', 'より', 'など', 'とき', 'ときに', '際に', '時に', '場合は', '場合', 'なのか', 'ます', 'です', 'ました', 'でした', 'ません', 'ください'];
+// 助詞のあとにひらがなが続いても、ひとまとまりの言葉になる組み合わせ（「には」「でも」「です」「できる」など）
+const PARTICLE_PAIRS = ['には', 'にも', 'では', 'でも', 'です', 'でき', 'でし', 'とは', 'とも', 'とき', 'とこ', 'はず', 'がら', 'もう', 'もの', 'への', 'との', 'での', 'にく', 'にな'];
+// 「て・で」のあとに続く補助の言葉（「して／しまう」「て／ください」「で／いる」は分けない）
+const AUX_AFTER_TE = 'しいくおみあもくだるたき下'; // 「出て／きて」「やってみて／下さい」も分けない
+// この言葉で始まる所の前では区切らない（打ち消し・否定）
+const NEGATION_HEAD_RE = /^(?:ない|なく|なかっ|なけれ|ません|ず[、。にも]|ずに)/; // 「売って／る」「して／た」のような話し言葉の縮まった形も含む
+
+// text の i 文字目の前で区切るときの「自然さ」。inside: 用語の途中の位置。
+// pause: その位置の声の間（秒。わかるときだけ）。声の間は、意味の切れ目である可能性が高い
+function breakScore(text, i, inside, pause = 0) {
   const prev = text[i - 1], next = text[i];
-  if (!prev || !next || NO_LINE_START.includes(next)) return -Infinity;
-  if ('、。！？!? '.includes(prev)) return 4;
-  // 助詞の後（「…を」「…に」）。ただし「の」は名詞のつながりが多いので低め
-  if (PARTICLES.includes(prev) && charType(next) !== 'hira') return prev === 'の' ? 1.5 : 3;
-  // 漢字の後の助詞＋ひらがな（「形に／なりました」）。「が」は送り仮名（前下が|り）と紛らわしいので除く
-  if ('はをにでへ'.includes(prev) && charType(text[i - 2]) === 'kanji') return 2.5;
+  if (!prev || !next || NO_LINE_START.includes(next) || next === 'ん') return -Infinity;
+  // 数と数える言葉（「1回」「3cm」「1〜3度」）の途中では切らない
+  if ((charType(prev) === 'num' && (charType(next) === 'num' || /^(?:[〜~.%]|cm|mm|[回度本枚個人歳秒分日年割段つ]|時間|週間|[ヶか]月|カ月|[箇か]所|ヶ所|番目)/.test(text.slice(i))))
+    || '〜~'.includes(prev) || '〜~'.includes(next)) return -Infinity;
+  // 否定・打ち消しの言葉を前の言葉から離さない（「軽く／しないように」と分けると、前のページだけで意味が逆になる）
+  if (NEGATION_HEAD_RE.test(text.slice(i)) || (prev === 'く' && /^(?:し|な|さ)/.test(text.slice(i)) && !SENTENCE_STARTS.some(w => text.startsWith(w, i)))) return -Infinity;
+  // 「カット／して」「修正／する」: 名詞と「する」を切り離さない
+  if ((charType(prev) === 'kata' || charType(prev) === 'kanji') && /^(?:し[てたまな]|する|され|させ)/.test(text.slice(i))) return -5;
+  // 助詞から始まるページ（「スタイル／になって」）は作らない
+  if (PARTICLES.includes(next) && charType(prev) !== 'hira' && !'、。'.includes(prev)) return -5;
+  // 「と／いう」「ても／らう」「ても／いい」、調子をとる「ね」を前の言葉から切り離さない
+  if ((prev === 'と' && /^いう/.test(text.slice(i))) || (prev === 'も' && text[i - 2] === 'て' && 'らい'.includes(next)) || next === 'ね') return -Infinity;
+  // 「〜か／もしれない」「〜かも／しれない」を切り離さない
+  if ((prev === 'か' && /^もしれ/.test(text.slice(i))) || (/かも$/.test(text.slice(0, i)) && /^しれ/.test(text.slice(i)))) return -Infinity;
+  // 「〜ない／ように」「〜する／ような」と、「よう」を前の言葉から切り離さない
+  if (/^よう[にな]/.test(text.slice(i)) && charType(prev) === 'hira') return -Infinity;
+  // 文の終わりの言葉（「です／よね」「ます／よ」）を切り離さない
+  if (/(?:です|ます|ません|でした|ました|だ)$/.test(text.slice(0, i)) && /^(?:よね|よ|ね|か|し[、,]?|が|けど|から)/.test(text.slice(i)) && !SENTENCE_STARTS.some(w => text.startsWith(w, i))) return -Infinity;
+  // 「していく／際」「切る／時」: 前の言葉に続く名詞（際・時・とき・ため・場合・こと・もの・ほう）を切り離さない
+  if (charType(prev) === 'hira' && /^(?:際|時|とき|ため|場合|こと|もの|ほう)/.test(text.slice(i))) return -4;
+  if (inside && inside.has(i)) return -6; // 「すき／バサミ」のように用語の途中では切らない
+  let sc = grammarScore(text, i, inside, prev, next);
+  // 声の間は意味の切れ目の手がかり。ただし、言葉の途中らしい所（「でき」「アホ／毛」「こ／の」）では、間があっても優先しない
+  // （1文字ごとの時刻は少しずれるため、言葉の途中に間があるように見えることがある）
+  if (sc <= -1) return sc;
+  if (sc < 0) sc += pause >= 0.35 ? 1 : 0;
+  else if (pause >= 0.35) sc += 4;
+  else if (pause >= 0.18) sc += 1.5;
+  return sc;
+}
+
+function grammarScore(text, i, inside, prev, next) {
+  // 用語のすぐ後（「すきバサミ／以外に」）は、助詞が続かなければ区切りやすい。
   const a = charType(prev), b = charType(next);
+  // ただし用語のあとに同じ種類の文字が続く（「根元／付近」）ときは、ひとつの言葉の続き
+  // ただし用語のすぐ後が漢字なら、ひとまとまりの言葉のことが多い（「トップ表面」「ボブ全体」）
+  // 漢字で終わる用語のすぐ後の漢字（「生え際辺り」）はひとまとまり。カタカナの用語の後の漢字（「すきバサミ／以外」）は区切ってよい
+  if (inside?.ends?.has(i) && !PARTICLES.includes(next) && !(a === b && a !== 'hira')) return b === 'kanji' ? (a === 'kanji' ? -4 : 0.5) : 3;
+  if ('、。！？!? '.includes(prev)) return 4;
+  // 「〜ない／ということ」「〜する／という」: 引用の「という」から始まる所は区切ってよい
+  if (/^という/.test(text.slice(i)) && prev !== 'と' && prev !== 'か') return 2.5;
+  // 用語の始まり（「セルフカットで／すきバサミ」）は区切りやすい（「で」と「す」が「です」に見えても）
+  if (inside?.starts?.has(i) && PARTICLES.includes(prev)) return 3;
+  // 送り仮名をはさむ漢字の言葉（「取り／返し」「引き／出す」）の途中では分けない
+  if (b === 'kanji' && a === 'hira' && charType(text[i - 2]) === 'kanji' && !PARTICLES.includes(prev) && !'てでたしくいう'.includes(prev)) return -3;
+  // 次の文の始まりらしい言葉（「…しない／それを」「…です／この場所を」）。字幕AIは句読点を出さないため
+  // （カタカナ語の後は、3文字以上の始まりの言葉（「それを」「それは」）のときだけ。「ボブ／この」のような2文字は言葉の続きのことが多い）
+  if (!PARTICLES.includes(prev) && SENTENCE_STARTS.some(w => text.startsWith(w, i) && (charType(prev) !== 'kata' || w.length >= 3))) return 4;
+  const before = text.slice(0, i);
+  // 「〜ないと／」「〜しまうと／」「〜すると／」: 条件の「と」のあとは、「〜なら」「〜れば」と同じく意味のまとまりの終わり
+  // （「入れると／なると」のように「となると」「となれば」の途中は除く）
+  if (/^な[るれっ]/.test(text.slice(i)) && prev === 'と') return -3;
+  if (prev === 'と' && 'いうるたすく'.includes(text[i - 2] || '') && b !== 'hira' || /(?:ないと|うと|ると)$/.test(before) && !PARTICLE_PAIRS.includes('と' + next)) return 3.5;
+  // 「〜ように／なって」「〜ので／」「〜ます／」: 意味のまとまりの終わり
+  if (GOOD_ENDINGS.some(e => before.endsWith(e)) && !PARTICLES.includes(next) && !(a === 'kanji' && b === 'kanji')) return 3.5;
+  // 「て・で」＋補助の言葉は分けない（「して／しまう」）
+  if ('てで'.includes(prev) && AUX_AFTER_TE.includes(next)) return -2;
+  // 「〜して」「〜しまって」「〜入れて」のあと（文の途中の区切り）。「で」は助詞のことも多いので、
+  // 前が動詞の形（っ・ん・い・し・き・り・べ・め・れ・せ・け）のときだけ
+  // ただし「伸びて／重くなったボブ」のように、後ろが名詞を修飾する（〜た・〜い＋名詞）ときは、名詞までがひとまとまり
+  if (prev === 'て' && !PARTICLES.includes(next)) return /^[^をにがはで、。]{1,6}[たい][一-鿿々ァ-ヶ]/.test(text.slice(i)) ? 1.5 : 3;
+  // 「で」は「読んで／」のような形でも、後ろが「き」「す」（「でき」「です」）なら言葉の途中なので分けない
+  if (prev === 'で' && 'んい'.includes(text[i - 2] || '') && !PARTICLES.includes(next) && charType(next) !== 'hira') return 2.5;
+  // 助詞の後（「…を」「…に」）。ただし「の」は名詞のつながりが多いので低め
+  // 区切りの強さ: 文の境目（4）> 節の境目（〜て・〜後に・〜ので・〜と: 3〜3.5）> 助詞の後（は・も: 3、を・が・に・で・と・へ: 2.5）。
+  // 「重さを／感じやすい」のように、目的語と述語を分けるより、節の境目で分ける方が意味のまとまりになる
+  if (PARTICLES.includes(prev) && b !== 'hira') return prev === 'の' ? 1.5 : 'はも'.includes(prev) ? 3 : 2.5;
+  // 「の」のあとのひらがな（「アホ毛のような」「切ることのため」）は、ひとまとまりの言葉なので分けない
+  if (prev === 'の' && b === 'hira') return -1.5;
+  // 助詞の後にひらがな（「形に／なりました」）。「には」「です」のようにひとまとまりの組み合わせは分けない
+  if ('はをにでがもへと'.includes(prev) && b === 'hira') {
+    if (PARTICLE_PAIRS.includes(prev + next)) return -2;
+    return a === 'hira' && charType(text[i - 2]) === 'hira' ? 0.5 : 2;
+  }
+  // 言い切りの形（「使わない」「使っていく」「使う」「短い」）のあとに漢字・カタカナで始まる言葉が来たら、次の文・句の始まり
+  // 言い切りの形（〜ます・〜です）の後は文の終わりのことが多い。「結べる／ボブ」「していい／場所」のように、
+  // 動詞・形容詞のあとに名詞が続くのは、名詞を説明している（ひとまとまり）ことが多いので分けにくくする
+  if (a === 'hira' && (b === 'kanji' || b === 'kata') && /(?:ます|です|ません|でした|ました)$/.test(before)) return 2.5;
+  if (a === 'hira' && (b === 'kanji' || b === 'kata') && /(?:[るたいう]|ない)$/.test(before) && !/(?:という|ような|ように)$/.test(before)) return 0.5;
   if (a === 'hira' && (b === 'kanji' || b === 'kata')) return 1;
+  if (a === 'kata' && b === 'kanji') return -4; // 「アホ毛」「カット面」のようなひとまとまりの言葉が多い
   if ((a === 'num' || b === 'num') && a !== b) return -1; // 「0度」「45度」を分けない
-  if (a === b && a !== 'hira') return -3; // カタカナ語・漢字語・数字の途中では切らない
+  if (a === 'kanji' && b === 'hira') return -1; // 送り仮名（「伸／びて」）を分けない
+  if (a === b && a !== 'hira') return -Infinity; // カタカナ語・漢字語・数字の途中では切らない
+  if (a === 'hira' && b === 'hira') return -3; // ひらがなの言葉の途中（「よ／う」「ついていな／い」）では分けない（10文字を少し超える方がよい）
   return 0;
 }
 
-// [lo, hi] の範囲で、中央 target に近く、自然な区切り位置を選ぶ
-function bestBreak(text, lo, hi, target) {
+// [lo, hi] の範囲で、中央 target に近く、自然な区切り位置を選ぶ。pauseAt(i): i の前の声の間
+function bestBreak(text, lo, hi, target, pauseAt, distW = 0.35) {
   let best = -1, bestScore = -Infinity;
+  const inside = insideTerms(text);
   for (let i = Math.max(1, lo); i <= Math.min(text.length - 1, hi); i++) {
-    const sc = breakScore(text, i) * 2 - Math.abs(i - target) * 0.35;
+    const sc = breakScore(text, i, inside, pauseAt ? pauseAt(i) : 0) * 2 - Math.abs(i - target) * distW;
     if (sc > bestScore) { bestScore = sc; best = i; }
   }
   return best > 0 ? best : Math.min(text.length - 1, Math.max(1, Math.round(target)));
 }
 
-export function wrapLines(text, maxChars) {
+export function wrapLines(text, maxChars, pauseAt, slack = 2) {
   const t = (text || '').trim();
-  if (t.length <= maxChars) return t ? [t] : [];
+  // 1〜2文字（slack）だけはみ出す行は、改行せずに1行にする（書き出しでは文字を少し小さくして収める）
+  if (t.length <= maxChars + slack) return t ? [t] : [];
   const lines = [];
-  let rest = t;
+  let rest = t, off = 0;
   while (rest.length > maxChars) {
     // 残りが2行分以内なら半分ずつ、それより長ければ1行分を目安に区切る
     const target = rest.length <= maxChars * 2 ? rest.length / 2 : maxChars;
     const lo = Math.max(3, rest.length - maxChars * (rest.length <= maxChars * 2 ? 1 : 99));
-    const cut = bestBreak(rest, Math.min(lo, maxChars), maxChars, target);
+    const o = off;
+    // 1行の文字数を、読点の1文字だけは超えてよい（「…することで、／軽やかで…」を「こと／で、」と分けない）
+    const hi = maxChars + (/[、。]/.test(rest[maxChars] || '') ? 1 : 0);
+    const cut = bestBreak(rest, Math.min(lo, maxChars), hi, target, pauseAt && (i => pauseAt(o + i)));
     lines.push(rest.slice(0, cut).trim());
-    rest = rest.slice(cut).trim();
+    rest = rest.slice(cut);
+    off += cut;
   }
-  if (rest) lines.push(rest);
+  if (rest.trim()) lines.push(rest.trim());
   return lines.filter(Boolean);
 }
 
-// 2行に分けるとき、自然な区切りが見つかるか
-function canWrap(t, maxChars) {
-  if (t.length <= maxChars) return true;
-  for (let i = t.length - maxChars; i <= maxChars; i++) if (breakScore(t, i) >= 1) return true;
-  return false;
+// 2行に分けるときの、いちばんよい改行位置の自然さ
+function wrapQuality(text, maxChars, pauseAt) {
+  const inside = insideTerms(text);
+  let best = -Infinity;
+  for (let i = Math.max(1, text.length - maxChars); i <= Math.min(maxChars, text.length - 1); i++) {
+    best = Math.max(best, breakScore(text, i, inside, pauseAt ? pauseAt(i) : 0));
+  }
+  return best;
 }
 
-// 文を2行ずつのページに分ける。ページの切れ目も自然な位置にし、
-// 2行にきれいに分けられない長さなら、もう1ページに分ける
-function pageTexts(text, maxChars, maxLines) {
+// 文を2行ずつのページに分ける。2行に収まる文は1ページにする（区切りがよくなくても、言葉の途中でページを変えない）。
+// 2行に収まらない文・はっきりした声の間（0.5秒以上）がある文は、自然な位置でページを分ける
+// 1行の字幕のページ分け: 文全体で、区切りの自然さ（breakScore）とページの長さ（目安12文字・最大 maxChars）が
+// 一番よくなる区切り方を選ぶ（前から順に区切ると、後ろのページが「軽く／しないように」のように不自然になるため）
+function linePages(text, maxChars, pauseAt) {
+  const L = text.length;
+  if (L <= 3) return [text];
+  const inside = insideTerms(text);
+  // ページの長さの悪さ（目安の文字数から離れるほど悪い）と、区切りの悪さ（よい区切り＝breakScore 4 以上なら 0）の合計を
+  // 一番小さくする。よい区切りでもページを増やすほど点が下がるので、必要以上に細かく分けない
+  // 3文字以下のページ（「それは」「しかも」だけ）は、次の言葉とまとめた方が読みやすい
+  const lenCost = n => (n < 3 ? 6 : n < 4 ? 3 : 0) + 0.05 * (n - SUB_TARGET_CHARS) ** 2 + 1.0 * Math.max(0, n - SUB_SOFT_MAX) + 1;
+  // 文の境目（字幕AIは句点を出さないので、語尾と次の文の始まりの言葉から判断する）をまたぐページは作らない
+  const ends = [];
+  for (let k = 1; k < L; k++) if (!/[、。,\s]/.test(text[k]) && sentenceBoundary(text, k)) ends.push(k); // 読点の前ではなく後を境目とする
+  const cost = new Array(L + 1).fill(Infinity), from = new Array(L + 1).fill(-1);
+  cost[0] = 0;
+  for (let j = 1; j <= L; j++) {
+    const bs = j < L ? breakScore(text, j, inside, pauseAt ? pauseAt(j) : 0) : 0;
+    if (bs === -Infinity) continue;
+    for (let i = Math.max(0, j - maxChars); i <= j - 1; i++) {
+      if (cost[i] === Infinity) continue;
+      const mixed = ends.some(k => k > i && k < j) ? 8 : 0;
+      // 話す時間が短すぎるページ（0.9秒未満で消える）は読みにくいので避ける（1文字ごとの時刻がわかるとき）。
+      // 「セルフで」のような短いまとまりは、0.9秒あれば読める
+      const sec = pauseAt?.span ? pauseAt.span(i, j) : null;
+      const long = sec != null && sec > SUB_LONG_SEC ? sec - SUB_LONG_SEC : 0;
+      const c = cost[i] + lenCost(normalizeText(text.slice(i, j)).length || 1) + 1.5 * Math.max(0, 4 - bs) + (sec != null && sec < 0.9 ? 6 * (0.9 - sec) : 0) + long + mixed;
+      if (c < cost[j]) { cost[j] = c; from[j] = i; }
+    }
+  }
+  if (cost[L] === Infinity) return [text];
+  const cuts = [];
+  for (let j = L; j > 0; j = from[j]) cuts.unshift(j);
+  return cuts.map((j, k) => text.slice(k ? cuts[k - 1] : 0, j).trim()).filter(Boolean);
+}
+
+function pageTexts(text, maxChars, maxLines, pauseAt) {
+  if (maxLines === 1) return linePages(text, maxChars, pauseAt);
   const cap = maxChars * maxLines;
   const out = [];
-  let rest = text;
-  for (let guard = 0; guard < 20 && (rest.length > cap || !canWrap(rest, maxChars)); guard++) {
-    const n = Math.max(2, Math.ceil(rest.length / cap));
-    const target = rest.length / n; // ページの長さをそろえる
-    const cut = bestBreak(rest, Math.max(3, rest.length - cap * (n - 1)), Math.min(cap, rest.length - 3), target);
+  let rest = text, off = 0;
+  for (let guard = 0; guard < 20; guard++) {
+    const o = off;
+    const pa = pauseAt && (i => pauseAt(o + i));
+    let cut = -1;
+    // 1行の字幕は、1ページ12文字前後を目安に分ける（お手本の手動編集は 7〜16文字・中央11文字）
+    const n = Math.max(Math.ceil(rest.length / cap), maxLines === 1 ? Math.round(rest.length / SUB_TARGET_CHARS) : 0);
+    if (n >= 2) {
+      // ページの区切りは、長さをそろえるより意味の切れ目を優先する（どのページも2行に収まる範囲で）
+      cut = bestBreak(rest, Math.max(3, rest.length - cap * (n - 1)), Math.min(cap, rest.length - 3), rest.length / n, pa, 0.15);
+    } else if (rest.length > maxChars && wrapQuality(rest, maxChars, pa) < 1) {
+      // 2行に分けると言葉の途中で改行してしまう（よい区切りがない）: 意味の切れ目でページを分ける
+      const inside = insideTerms(rest);
+      let bestI = -1, bestS = 1.5;
+      for (let i = 4; i <= rest.length - 4; i++) {
+        const sc = breakScore(rest, i, inside, pa ? pa(i) : 0) - Math.abs(i - rest.length / 2) * 0.05;
+        if (sc > bestS) { bestS = sc; bestI = i; }
+      }
+      cut = bestI;
+    }
+    if (cut < 0 && pa && rest.length >= 10 && rest.length <= cap) {
+      // 長めの間で、前後どちらも5文字以上なら、そこでページを変える（話す速さに合わせて読みやすく）
+      const inside = insideTerms(rest);
+      let bestI = -1, bestP = maxLines === 1 ? 0.3 : 0.5;
+      for (let i = 5; i <= rest.length - 5; i++) {
+        const p = pa(i);
+        if (p >= bestP && breakScore(rest, i, inside) > -2) { bestP = p; bestI = i; }
+      }
+      cut = bestI;
+    }
     if (cut <= 0 || cut >= rest.length) break;
     out.push(rest.slice(0, cut).trim());
-    rest = rest.slice(cut).trim();
+    rest = rest.slice(cut);
+    off += cut;
   }
-  if (rest) out.push(rest);
+  if (rest.trim()) out.push(rest.trim());
   return out;
 }
 
-export function subtitlePages(text, duration, maxChars = 14, maxLines = 2) {
+// 字幕は1行だけ（2行にしない）。基本は10文字前後で、意味のまとまり・息継ぎ・話すテンポで切り替える。
+// 分けると不自然になる（「段を入れる必要が／あります」）ときは、12〜15文字も使う（最大15文字）
+export const SUB_MAX_CHARS = 15;
+export const SUB_LINES = 1;
+const SUB_TARGET_CHARS = 9;
+const SUB_SOFT_MAX = 11; // これより長いページは、よい区切りがあれば分ける
+const SUB_LONG_SEC = 3; // これより長く出ているページは、よい区切りがあれば分ける
+// pauseAt(i): text の i 文字目の前の声の間（秒）。わかるときは、声の間を意味の切れ目として区切りに使う
+// pauseAt を文字の位置 off からの関数にする（話す時間 span もずらす）
+function shiftPause(pa, off) {
+  if (!pa) return null;
+  const f = i => pa(off + i);
+  if (pa.span) f.span = (i, j) => pa.span(off + i, off + j);
+  return f;
+}
+
+export function subtitlePages(text, duration, maxChars = SUB_MAX_CHARS, maxLines = SUB_LINES, pauseAt = null) {
   const clean = (text || '').replace(/\s+/g, ' ').trim();
   if (!clean || duration <= 0) return [];
+  const pa = clean === text ? pauseAt : null; // 空白を詰めて文字の位置がずれたときは使わない
   const pages = [];
+  let cursor = 0;
   for (const sentence of splitSentences(clean)) {
-    for (const pt of pageTexts(sentence.replace(/[、。]+$/, ''), maxChars, maxLines)) {
+    const sOff = clean.indexOf(sentence, cursor);
+    cursor = sOff + sentence.length;
+    const body = sentence.replace(/[、。]+$/, '');
+    let pOff = 0;
+    for (const pt of pageTexts(body, maxChars, maxLines, shiftPause(pa, sOff))) {
+      const at = body.indexOf(pt, pOff);
+      pOff = at + pt.length;
       // 行末の「、」「。」は字幕では付けない（すっきり見せる）
-      const lines = wrapLines(pt, maxChars).map(l => l.replace(/[、。]+$/, '')).filter(Boolean);
+      const lines = (maxLines === 1 ? [pt] : wrapLines(pt, maxChars, pa && (i => pa(sOff + at + i)))).map(l => l.trim().replace(/[、。]+$/, '')).filter(Boolean);
       if (lines.length) pages.push(lines.slice(0, maxLines).length === lines.length ? lines : [lines.slice(0, maxLines - 1).join(''), lines.slice(maxLines - 1).join('')]);
     }
   }
@@ -761,16 +1399,21 @@ export function cropRect(srcW, srcH, cx = 0.5, box = null) {
 }
 
 // 字幕の位置（文字の中心の高さ。画面の高さに対する割合）。
-// YouTube ショートの画面下部（タイトル・ボタン）と上部を避けた高さにしている
-export const SUB_ZONES = { top: 0.2, bottom: 0.745 };
-const ZONE_BANDS = { top: [0.12, 0.29], bottom: [0.65, 0.84] };
+// 手動編集のお手本と同じく画面の下に固定する（場面ごとに上下が入れ替わると目が追いにくいため）。
+// お手本（約0.88）より少しだけ上げて、YouTube ショートの下部の表示（チャンネル名・説明）と重なりにくくしている
+// 字幕の縦の位置（文字の中心・画面の高さに対する割合）。お手本の手動編集は 0.90
+export const SUB_ZONES = { top: 0.2, bottom: 0.9 };
+// 控えめなズーム: 1.03〜1.06倍・1分に1〜2回まで・場面の長さいっぱいを使ってゆっくり寄る／引く。
+// 元の動画の画素を拡大することになる（1080の幅の動画など）ときはズームしない（1.03倍でも髪の細かさが約2割落ちるため）
 export const ZOOM_MIN = 1.03;
-export const ZOOM_MAX = 1.08;
-const ZOOM_SPACING = 10; // ズームとズームの間は最低この秒数あける
-// 編集スタイルごとのズーム。テンポ重視は間隔を短く、少しだけ強く（それでも 1.10 倍まで）
+export const ZOOM_MAX = 1.06;
+const ZOOM_SPACING = 20; // ズームとズームの間は最低この秒数あける（頻繁に動かさない）
+const ZOOM_PER_SEC = 1 / 30; // 完成動画30秒あたり1回まで（1分なら2回まで）
+const ZOOM_MIN_SAMPLES = 3; // 手元の範囲を確かめるのに使う、場面の中の動きの測定の数
+// 編集スタイルごとのズーム。テンポ重視は間隔を少し短く（倍率は同じ 1.03〜1.06 倍）
 export const ZOOM_STYLES = {
   simple: { spacing: ZOOM_SPACING, max: ZOOM_MAX },
-  tempo: { spacing: 6, max: 1.10 },
+  tempo: { spacing: 12, max: ZOOM_MAX },
 };
 const FADE = 0.2;       // 字幕のフェード（秒）
 const FADE_SHORT = 0.1; // 字幕が切れ目なく続くときのフェード
@@ -784,11 +1427,6 @@ function boxInCrop(box, crop, srcW, srcH) {
     (box[0] * srcW - crop.left) / crop.width, (box[1] * srcW - crop.left) / crop.width,
     (box[2] * srcH - crop.top) / crop.height, (box[3] * srcH - crop.top) / crop.height,
   ];
-}
-
-function bandHit(b, band) {
-  if (!b) return false;
-  return Math.max(0, Math.min(b[3], band[1]) - Math.max(b[2], band[0])) / (band[1] - band[0]) > 0.3;
 }
 
 // 書き出し用のタイムライン。ピースごとのフレーム数を確定し、字幕の時刻を出力側に変換する。
@@ -824,35 +1462,42 @@ export function buildTimeline(clips, opts = {}) {
     // 話している時刻がわかっている字幕は、元の動画の時刻から、カット後の時刻に変換して出す
     const subs = text && c.subStart != null && c.subEnd > c.subStart
       ? timedPages(clip, text)
-      : subtitlePages(text, outDuration).map(p => ({ ...p, start: p.start + outStart, end: p.end + outStart }));
+      : toDisplay(subtitlePages(text, outDuration).map(p => ({ ...p, start: p.start + outStart, end: p.end + outStart })));
     const crop = cropRect(srcW, srcH, c.cx ?? 0.5, c.box);
-    return { ...clip, subtitles: subs, crop, inCrop: boxInCrop(c.box, crop, srcW, srcH) };
+    return { ...clip, subtitles: subs, subOmitted: subs.omitted || [], crop, inCrop: boxInCrop(c.box, crop, srcW, srcH), inCropWide: boxInCrop(c.boxWide || c.box, crop, srcW, srcH) };
   });
 
-  // 字幕の位置: 基本は下。手元が下の方で動く場面が多い動画では上にする。
-  // 場面ごとには、その場面で手元が字幕の位置にかかるときだけ反対側にする
-  const moving = tl.filter(c => c.subtitles.length && c.inCrop && (c.motion ?? 0) >= 0.2);
-  const lowHands = moving.filter(c => bandHit(c.inCrop, ZONE_BANDS.bottom) && !bandHit(c.inCrop, ZONE_BANDS.top)).length;
-  const base = moving.length && lowHands > moving.length / 2 ? 'top' : 'bottom';
-  const other = base === 'top' ? 'bottom' : 'top';
-  for (const c of tl) {
-    const hit = (c.motion ?? 0) >= 0.2 && bandHit(c.inCrop, ZONE_BANDS[base]) && !bandHit(c.inCrop, ZONE_BANDS[other]);
-    c.subPos = hit ? other : base;
+  // 字幕の位置: いつも下（お手本と同じ）。文字を小さめにして、髪や手元を隠す面積を減らしている
+  for (const c of tl) c.subPos = 'bottom';
+
+  // 場面の最後の字幕が短すぎて読めないとき（場面の終わりで切れる）は、次の場面の最初の字幕が出るまでのすき間に
+  // 同じ字幕を続けて出す（字幕は場面ごとに描くので、次の場面に続きのページを入れる。フェードはかけない）
+  for (let i = 0; i + 1 < tl.length; i++) {
+    const L = tl[i].subtitles[tl[i].subtitles.length - 1], N = tl[i + 1];
+    if (!L || L.end < tl[i].outStart + tl[i].outDuration - 0.05) continue;
+    const need = readTime(L) - (L.end - L.start);
+    const room = (N.subtitles[0]?.start ?? N.outStart + N.outDuration) - 0.05 - L.end;
+    const add = Math.min(need, room, READ_SEC.shift + 0.2);
+    if (add > 0.05) N.subtitles.unshift({ ...L, start: L.end, end: L.end + add, cont: true, omitted: undefined, doubt: undefined });
   }
 
-  // 字幕のフェード: 前後に字幕が切れ目なく続くときは短く
+  // 字幕のフェード: 前後に字幕が切れ目なく続くときは短く（同じ字幕の続きにはかけない）
   const pages = tl.flatMap(c => c.subtitles.map(p => Object.assign(p, { pos: c.subPos })));
   pages.forEach((p, i) => {
     const prev = pages[i - 1], next = pages[i + 1];
-    p.fadeIn = prev && Math.abs(prev.end - p.start) < 0.05 && prev.pos === p.pos ? FADE_SHORT : FADE;
-    p.fadeOut = next && Math.abs(next.start - p.end) < 0.05 && next.pos === p.pos ? FADE_SHORT : FADE;
+    p.fadeIn = p.cont ? 1e-6 : prev && Math.abs(prev.end - p.start) < 0.05 && prev.pos === p.pos ? FADE_SHORT : FADE;
+    p.fadeOut = next?.cont ? 1e-6 : next && Math.abs(next.start - p.end) < 0.05 && next.pos === p.pos ? FADE_SHORT : FADE;
   });
 
   // 自然なズーム: 手元がまとまって動いている2秒以上の場面だけ、ゆっくり 1.03〜1.08 倍まで寄る。
   // 続けてズームしない・間隔をあける・手元が枠からはみ出す場合はズームしない
-  let lastEnd = -Infinity, prevZoomed = false;
+  let lastEnd = -Infinity, prevZoomed = false, zoomCount = 0;
+  const totalSec = tl.reduce((a, c) => a + c.outDuration, 0);
+  const maxZooms = Math.max(1, Math.round(totalSec * ZOOM_PER_SEC));
+  let lowRes = false; // 拡大になる（画質が落ちる）ためにズームしなかった
   for (const c of tl) {
     c.zoom = null;
+    if (zoomCount >= maxZooms) continue;
     const b = c.inCrop;
     const ok = zoom && b && c.outDuration >= 2 && (c.motion ?? 0) >= 0.35 && !prevZoomed && c.outStart - lastEnd >= zs.spacing;
     prevZoomed = false;
@@ -863,6 +1508,8 @@ export function buildTimeline(clips, opts = {}) {
     if (z < ZOOM_MIN) continue;
     const { crop } = c;
     const zw = crop.width / z, zh = crop.height / z;
+    // 寄った後の範囲が書き出しの大きさ（1080）より小さくなる＝拡大になる素材（1080pなど）ではズームしない（ぼやけるため）
+    if (zw < OUT_W - 1) { lowRes = true; continue; }
     const cx = crop.left + ((b[0] + b[1]) / 2) * crop.width;
     const cy = crop.top + ((b[2] + b[3]) / 2) * crop.height;
     const rect = {
@@ -870,23 +1517,50 @@ export function buildTimeline(clips, opts = {}) {
       top: clamp(cy - zh / 2, crop.top, crop.top + crop.height - zh),
       width: zw, height: zh,
     };
-    // 手元（＋少しの余白）が寄った後の枠に収まるか確かめる
-    const bx0 = crop.left + b[0] * crop.width, bx1 = crop.left + b[1] * crop.width;
-    const by0 = crop.top + b[2] * crop.height, by1 = crop.top + b[3] * crop.height;
-    const mx = zw * 0.04, my = zh * 0.04;
-    if (bx0 - mx < rect.left || bx1 + mx > rect.left + zw || by0 - my < rect.top || by1 + my > rect.top + zh) continue;
-    c.zoom = { z, rect };
+    // 手元（動いた範囲のほぼ全部＋余白）が寄った後の枠に収まるか確かめる（手・ハサミ・髪を切らない）。
+    // 動きを測った時点が場面の中に3つ未満のときは、手元の範囲が確かでないのでズームしない
+    if (c.boxSamples != null && c.boxSamples < ZOOM_MIN_SAMPLES || !fitsZoom(c.inCropWide || b, crop, rect)) continue;
+    // ゆっくり寄る（in）と、寄った所からゆっくり引く（out）を交互に使う
+    c.zoom = { z, rect, dir: zoomCount++ % 2 ? 'out' : 'in' };
     lastEnd = c.outStart + c.outDuration;
     prevZoomed = true;
   }
+  // 手元がまとまって動く場面がなく、一度もズームしなかったとき: 単調にならないよう、長めの説明の場面だけ
+  // ごく控えめ（1.04倍）に、画面の中央へゆっくり寄る・引く。手元の範囲がわかる場面は、それが切れない場合だけ
+  if (zoom && !zoomCount) {
+    lastEnd = -Infinity;
+    for (const c of tl) {
+      if (zoomCount >= maxZooms) break;
+      if (c.outDuration < 4 || c.outStart - lastEnd < zs.spacing || c.outStart < 2) continue;
+      const z = 1.04, { crop } = c;
+      const zw = crop.width / z, zh = crop.height / z;
+      if (zw < OUT_W - 1) { lowRes = true; continue; } // 拡大になる（ぼやける）素材ではズームしない
+      const rect = { left: crop.left + (crop.width - zw) / 2, top: crop.top + (crop.height - zh) / 2, width: zw, height: zh };
+      // 手元の範囲がわからない・確かでない場面では寄らない（端の手やハサミを切らないため）
+      const b = c.inCropWide || c.inCrop;
+      if (!b || (c.boxSamples != null && c.boxSamples < ZOOM_MIN_SAMPLES) || !fitsZoom(b, crop, rect)) continue;
+      c.zoom = { z, rect, dir: zoomCount++ % 2 ? 'out' : 'in', gentle: true };
+      lastEnd = c.outStart + c.outDuration;
+    }
+  }
+  if (zoom && !zoomCount && lowRes) tl.zoomSkipped = 'resolution';
   return tl;
+}
+
+// 動いた範囲 b（切り抜き枠 crop の中の割合）が、寄った後の枠 rect に余白（8%）をつけて収まるか
+function fitsZoom(b, crop, rect) {
+  const bx0 = crop.left + b[0] * crop.width, bx1 = crop.left + b[1] * crop.width;
+  const by0 = crop.top + b[2] * crop.height, by1 = crop.top + b[3] * crop.height;
+  const mx = rect.width * 0.08, my = rect.height * 0.08;
+  return !(bx0 - mx < rect.left || bx1 + mx > rect.left + rect.width || by0 - my < rect.top || by1 + my > rect.top + rect.height);
 }
 
 // 出力の時刻 t での切り抜き枠（ズームはゆっくり始まりゆっくり止まる）
 export function cropAt(clip, t) {
   if (!clip.zoom) return clip.crop;
   const x = clamp((t - clip.outStart) / clip.outDuration, 0, 1);
-  const e = x * x * (3 - 2 * x);
+  const s = x * x * (3 - 2 * x);
+  const e = clip.zoom.dir === 'out' ? 1 - s : s;
   const a = clip.crop, b = clip.zoom.rect;
   return {
     left: a.left + (b.left - a.left) * e, top: a.top + (b.top - a.top) * e,
@@ -1102,12 +1776,84 @@ export function srcToOut(clip, t) {
 const SUB_LEAD = 0.1;   // 声より少しだけ先に出し始める（フェードの分）
 const SUB_LINGER = 0.25; // 話し終わってから少しだけ残す
 
+// 1文字ごとの時刻（ReazonSpeech・原稿）がわかるときは、ページの最初の文字を話した時刻でページを切り替える。
+// 文字の時刻は声より少し早めに出るので CHAR_LAG を足す。字幕を手直しした・文の一部を取り除いた場合（文字と時刻が
+// 合わない）は使わない（null を返す）
+const CHAR_LAG = 0.15;
+function charPageTimes(pageTexts, clip, fine) {
+  const text = clip.text || '', times = clip.times;
+  if (!times || times.length !== text.length) return null;
+  const strip = t => t.replace(/[、。\s]/g, '');
+  const out = [];
+  let cursor = 0;
+  for (const pt of pageTexts) {
+    const head = strip(pt).slice(0, 2);
+    let at = -1;
+    for (let i = cursor; i < text.length; i++) if (strip(text.slice(i, i + 4)).startsWith(head)) { at = i; break; }
+    if (at < 0) return null;
+    out.push({ at, start: times[at] + CHAR_LAG });
+    cursor = at + Math.max(1, strip(pt).length - 1);
+  }
+  // 最後のページの終わり: 最後の文字の時刻のあと、声が続いている所まで
+  const lastT = times[times.length - 1] + CHAR_LAG;
+  const v = fine.find(r => r.start <= lastT + 0.05 && r.end >= lastT - 0.05);
+  const end = Math.min(clip.subEnd ?? lastT + 0.4, Math.max(lastT + 0.2, v ? v.end : lastT + 0.3));
+  // 2ページ目からは、文字の時刻の少し後に声の出始め（声の区間の始まり）があれば、そこに合わせる。
+  // 原稿の文字の時刻は、字幕AIの文字と対応しない所では前後から割り振るため、声より早くなることがある
+  for (let i = 1; i < out.length; i++) {
+    const on = fine.find(r => r.start >= out[i].start - 0.15 && r.start <= out[i].start + 0.8);
+    if (on) out[i].start = Math.max(out[i - 1].start + 0.3, on.start - 0.1);
+  }
+  // 最初のページは、声の出始めに合わせた表示開始（subStart）から
+  return out.map((p, i) => ({ start: i ? p.start : (clip.subStart ?? p.start), end: i + 1 < out.length ? out[i + 1].start : end }));
+}
+
+// 時刻 a〜b の間の無音（声の区間 fine のすき間）の長さ
+function silenceBetween(fine, a, b) {
+  let sum = 0;
+  for (let i = 1; i < fine.length; i++) {
+    const g0 = Math.max(a, fine[i - 1].end), g1 = Math.min(b, fine[i].start);
+    if (g1 > g0) sum += g1 - g0;
+  }
+  return sum;
+}
+
+// 1文字ごとの時刻と声の区間から、「i 文字目の前の声の間」を返す関数を作る（わからないときは null）
+function charPauses(clip, fine) {
+  const text = clip.text || '', times = clip.times;
+  if (!times || times.length !== text.length || !fine.length) return null;
+  const f = i => {
+    let a = i - 1;
+    while (a >= 0 && /[、。\s]/.test(text[a])) a--;
+    if (a < 0 || i >= text.length) return 0;
+    return silenceBetween(fine, times[a] + CHAR_LAG, times[i] + CHAR_LAG);
+  };
+  // i〜j 文字目を表示しておく時間（i 文字目を話し始めてから j 文字目を話し始めるまで。文の最後は少し残す）
+  // ページの切り替えは、文字の時刻の少し後の声の出始めに合わせる（charPageTimes と同じ）
+  const at = k => { const t = times[k] + CHAR_LAG, on = fine.find(r => r.start >= t - 0.15 && r.start <= t + 0.8); return on ? on.start - 0.1 : t; };
+  f.span = (i, j) => (j < text.length ? at(j) : times[text.length - 1] + CHAR_LAG + 0.4) - (i ? at(i) : times[0]);
+  return f;
+}
+
+// 1ページを表示しておく長さの上限（読むのに十分な時間）。字幕AIが言葉を聞き落とした区間で、
+// 残った文字が何秒も出たままにならないようにする
+export function pageMaxDuration(text) {
+  return Math.max(1.6, 1.0 + moraCount(text) * 0.2);
+}
+
 function timedPages(clip, text) {
-  const pages = subtitlePages(text, 1);
-  if (!pages.length) return [];
+  // 表示用の字幕の1段目: 文の中の「ね」「という」・つなぎ言葉を、1文字ごとの時刻と一緒に省いてから、ページに分ける
+  let inline = [];
+  if (text === clip.text && clip.times?.length === text.length) {
+    const c = cleanForDisplay(text, clip.times);
+    if (c.text !== text) { clip = { ...clip, text: c.text, times: c.times }; text = c.text; inline = c.omitted; }
+  }
   // 手直しで表示時刻が変わっていても、その範囲の中の発話だけを使う
   const fine = (clip.fine || []).map(r => ({ start: Math.max(r.start, clip.subStart), end: Math.min(r.end, clip.subEnd) })).filter(r => r.end > r.start);
-  const src = pageSourceTimes(pages.map(p => p.lines.join('')), clip.subStart, clip.subEnd, fine);
+  // 声の間を、ページ・行の区切りに使う（1文字ごとの時刻がわかるとき）
+  const pages = subtitlePages(text, 1, SUB_MAX_CHARS, SUB_LINES, text === clip.text ? charPauses(clip, fine) : null);
+  if (!pages.length) return [];
+  const src = charPageTimes(pages.map(p => p.lines.join('')), clip, fine) || pageSourceTimes(pages.map(p => p.lines.join('')), clip.subStart, clip.subEnd, fine);
   const clipEnd = clip.outStart + clip.outDuration;
   const out = pages.map((p, i) => ({
     lines: p.lines,
@@ -1116,9 +1862,147 @@ function timedPages(clip, text) {
   }));
   for (let i = 0; i < out.length; i++) {
     const limit = i + 1 < out.length ? out[i + 1].start : clipEnd;
-    out[i].end = Math.min(out[i].end, limit);
+    out[i].end = Math.min(out[i].end, limit, out[i].start + pageMaxDuration(out[i].lines.join('')));
     // 短すぎて読めないページは、次のページの直前まで延ばす（文字は省かない）
     if (out[i].end - out[i].start < 0.5) out[i].end = Math.min(limit, out[i].start + 0.5);
   }
-  return out;
+  readable(out, clip.outStart, clipEnd);
+  const shown = markIncomplete(toDisplay(out));
+  // 字幕で省いた言葉（文の中の「ね」「という」と、ページの頭の「なので」など）。確認・診断情報に出す
+  shown.omitted = [...inline, ...shown.flatMap(p => p.omitted || [])];
+  return shown;
+}
+
+// 読み取れる表示時間（文字数に合わせる）。短く速く話した所の字幕（「グラデーションのように」0.56秒）は、
+// 前のページとの間のすき間から少し早く出し始め（最大0.3秒）、まだ足りなければ次のページへの切り替えを少し遅らせる
+// （次のページも読める長さを残す。最大0.3秒）。声とのずれは0.3秒以内にとどめる
+export const READ_SEC = { base: 0.3, perChar: 0.08, min: 0.8, shift: 0.3 };
+const readTime = p => Math.max(READ_SEC.min, READ_SEC.base + READ_SEC.perChar * p.lines.join('').length);
+function readable(pages, clipStart, clipEnd = Infinity) {
+  for (let i = 0; i < pages.length; i++) {
+    const p = pages[i];
+    let need = readTime(p) - (p.end - p.start);
+    if (need <= 0) continue;
+    const prevEnd = i ? pages[i - 1].end : clipStart;
+    const early = Math.min(need, READ_SEC.shift, Math.max(0, p.start - prevEnd));
+    p.start -= early; need -= early;
+    const next = pages[i + 1];
+    if (need > 0 && next && next.start <= p.end + 1e-6) {
+      const late = Math.min(need, READ_SEC.shift, Math.max(0, (next.end - next.start) - readTime(next)));
+      p.end += late; next.start += late;
+    } else if (need > 0 && !next) p.end = Math.min(clipEnd, p.end + need); // 場面の最後の字幕は、場面の終わりまで延ばしてよい
+  }
+  return pages;
+}
+
+// 文の途中で終わっている字幕（「結べなく」「やっていき」）。文字起こしAIが文の終わり（「なります」「ましょう」）を
+// 聞き落とした所なので、字幕の文字を足すことはせず、確認が必要な字幕として印をつける（page.doubt）
+const INCOMPLETE_END_RE = /(?:なく|ていき|でいき|まし|ませ)$/;
+function markIncomplete(pages) {
+  pages.forEach((p, i) => {
+    const t = p.lines.join('');
+    const next = pages[i + 1];
+    const nextHead = next ? (next.spoken || next.lines.join('')) : '';
+    if (INCOMPLETE_END_RE.test(t) && (!next || SENTENCE_STARTS.some(w => nextHead.startsWith(w)) || (next.omitted && next.omitted.length))) {
+      p.doubt = '文の終わりが聞き取れていない可能性があります（音声を確認して、必要なら字幕を直してください）';
+    }
+  });
+  return pages;
+}
+
+// 表示用の字幕にする: 各ページの文字から、字幕に書かなくても意味が伝わる言葉を省く（captions.js）。
+// 表示の時刻は、話した文字の時刻で決めた後なので変わらない。省いた言葉は page.omitted に残す（確認・計測用）
+function toDisplay(pages) {
+  return pages.map(p => {
+    const spoken = p.lines.join('');
+    const d = displayText(spoken);
+    return d.text !== spoken ? { ...p, lines: [d.text], omitted: d.omitted, spoken } : p;
+  }).filter(p => p.lines.join('').trim());
+}
+
+// ---------- 冒頭のテキスト・最後のフェード ----------
+
+// 冒頭に大きく出す短い文字（白の太いゴシック・最大3行）。表示は約2秒で、ふわっと出てふわっと消える
+// お手本の手動編集は、冒頭の約0.7秒だけ・画面の中央（文字の中心が高さの47%）に出していた。初期設定は1秒・高さの47%
+export const OPENING = { maxLines: 3, maxChars: 9, start: 0, duration: 1.0, minDuration: 0.6, maxDuration: 4.0, fadeIn: 0.1, fadeOut: 0.25, y: 0.47 };
+// 冒頭のテキストの表示時間の選択肢（秒）
+export const OPENING_DURATIONS = [0.7, 1.0, 1.5, 2.0, 3.0];
+
+// 動画タイトルから、冒頭に出す文字の案を作る（1行9文字前後・最大3行。言葉の途中では改行しない）。
+// 長いタイトルは3行に収まる所までにする（確認画面で直せる）
+export function openingLines(title) {
+  const t = (title || '').normalize('NFKC').replace(/[【】「」『』《》〈〉"]/g, ' ').trim();
+  if (!t) return [];
+  const parts = t.split(/[\n／/｜|!！?？。・]+|\s{1,}|、/).map(x => x.trim()).filter(Boolean);
+  for (const maxChars of [OPENING.maxChars, OPENING.maxChars + 2]) {
+    const lines = parts.flatMap(p => wrapLines(p, maxChars, null, 0));
+    if (lines.length <= OPENING.maxLines || maxChars > OPENING.maxChars) return lines.slice(0, OPENING.maxLines);
+  }
+  return [];
+}
+
+// 入力された冒頭の文字（改行で行を分ける）を、表示する行にする。1行が長すぎるときは自然な位置で折り返す
+export function openingText(text) {
+  const lines = (text || '').normalize('NFKC').split('\n').map(l => l.trim()).filter(Boolean)
+    .flatMap(l => (l.length > OPENING.maxChars + 3 ? wrapLines(l, OPENING.maxChars + 2, null, 0) : [l]));
+  return lines.slice(0, OPENING.maxLines);
+}
+
+// 書き出しに使う冒頭のテキストの設定。clip: 最初の場面（手元の位置を避ける）
+export function openingPlan(lines, duration = OPENING.duration, firstClip = null) {
+  if (!lines || !lines.length) return null;
+  const d = clamp(duration, OPENING.minDuration, OPENING.maxDuration);
+  // 最初の場面で手元が画面の上の方で動いているときは、文字を少し下げる（手元を隠さない）
+  const b = firstClip?.inCrop;
+  const y = b && (firstClip.motion ?? 0) >= 0.2 && b[2] < 0.4 && b[3] < 0.6 ? 0.5 : OPENING.y;
+  return { lines: lines.slice(0, OPENING.maxLines), start: OPENING.start, end: OPENING.start + d, fadeIn: OPENING.fadeIn, fadeOut: OPENING.fadeOut, y };
+}
+
+// 冒頭のテキストの不透明度（ゆっくり始まりゆっくり終わる）
+export function openingAlpha(op, t) {
+  if (!op) return 0;
+  const x = clamp(Math.min((t - op.start) / op.fadeIn, (op.end - t) / op.fadeOut, 1), 0, 1);
+  return x * x * (3 - 2 * x);
+}
+
+// 最後のフェードアウト（映像をなめらかに黒く・音声も同じ時間で小さくする）。
+// END_FADE 秒で黒くなり、最後の END_HOLD 秒は真っ黒のまま終わる（最後のコマが必ず黒になる）
+export const END_FADE = 0.9;
+export const END_HOLD = 0.2;
+
+// 出力の時刻 t での黒の濃さ（0〜1）。total は完成動画の長さ
+export function endFadeAlpha(t, total, sec = END_FADE, hold = END_HOLD) {
+  const h = Math.min(hold, total * 0.1);
+  const d = Math.min(sec, total * 0.2);
+  const end = total - h; // ここで真っ黒になる
+  if (d <= 0 || t < end - d) return 0;
+  const x = clamp((t - (end - d)) / d, 0, 1);
+  return x * x * (3 - 2 * x);
+}
+
+// 最初の場面の前を少しだけ延ばす（話し始める前に、冒頭のテキストを読む時間を作る）。お手本の手動編集3本は、
+// 最初の言葉の 0〜1.0秒前から始めていた（素材の始まりにすぐ話し始める動画では延ばせない）。前の声には食い込まない
+export const START_LEAD = 0.4;
+export function extendStart(clips, voice, lead = START_LEAD) {
+  if (!clips.length || lead <= 0) return clips;
+  const first = clips[0], p = first.pieces[0];
+  const prev = (voice || []).filter(v => v.end <= p.start + 0.01).pop();
+  const start = Math.max(0, p.start - lead, prev ? prev.end + 0.05 : 0);
+  if (start >= p.start) return clips;
+  return [{ ...first, pieces: [{ ...p, start }, ...first.pieces.slice(1)], start }, ...clips.slice(1)];
+}
+
+// 最後の場面の後ろを少しだけ延ばす（最後のフェードアウトが話し声に重なりすぎないように）。
+// 次の声が始まる前・元の動画の終わりまでの範囲で、最大 extra 秒。フェードは消えていく語尾（声の区間の最後）に
+// 少し重なってよい（お手本の手動編集は、話し終わりから約0.2秒で終わり、最後の言葉に重ねて黒くしていた）
+export function extendEnding(clips, voice, duration, extra = 0.36, lead = START_LEAD) {
+  if (!clips.length) return clips;
+  clips = extendStart(clips, voice, lead);
+  const last = clips[clips.length - 1];
+  const p = last.pieces[last.pieces.length - 1];
+  const next = (voice || []).find(v => v.start >= p.end - 0.01);
+  const end = Math.min(duration, p.end + extra, next ? next.start - 0.05 : Infinity);
+  if (end <= p.end) return clips;
+  const pieces = [...last.pieces.slice(0, -1), { ...p, end }];
+  return [...clips.slice(0, -1), { ...last, pieces, end }];
 }
