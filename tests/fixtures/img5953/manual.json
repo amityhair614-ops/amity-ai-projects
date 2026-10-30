@@ -1,0 +1,396 @@
+{
+ "source": "IMG_5953.mp4（67.83秒）",
+ "manual": "タイトルなし(10).mp4（62.47秒）",
+ "ai": "amity-short-20261030-0838.mp4（60.83秒・v0.9.3）",
+ "duration": 62.47,
+ "pauses": {
+  "median": 0.15,
+  "p75": 0.25,
+  "p90": 0.31,
+  "max": 0.65,
+  "note": "手動編集の動画の音声を測った話の途中の間（1.5秒未満）"
+ },
+ "note": "手動編集（正解）と元の動画の照合結果。kept/removed は元の動画の秒（2コマ以内の小さなカットは見分けられない）。subtitles は手動編集の字幕（画面から読んだ）。spoken は解析後に追加",
+ "kept": [
+  {
+   "srcStart": 0.6,
+   "srcEnd": 9.77,
+   "outStart": 0.0,
+   "outEnd": 9.17
+  },
+  {
+   "srcStart": 10.0,
+   "srcEnd": 14.57,
+   "outStart": 9.0,
+   "outEnd": 13.57
+  },
+  {
+   "srcStart": 14.83,
+   "srcEnd": 21.53,
+   "outStart": 13.43,
+   "outEnd": 20.13
+  },
+  {
+   "srcStart": 21.73,
+   "srcEnd": 32.47,
+   "outStart": 19.7,
+   "outEnd": 30.44
+  },
+  {
+   "srcStart": 33.13,
+   "srcEnd": 37.13,
+   "outStart": 30.43,
+   "outEnd": 34.43
+  },
+  {
+   "srcStart": 37.93,
+   "srcEnd": 52.2,
+   "outStart": 34.43,
+   "outEnd": 48.7
+  },
+  {
+   "srcStart": 52.47,
+   "srcEnd": 58.87,
+   "outStart": 48.17,
+   "outEnd": 54.57
+  },
+  {
+   "srcStart": 59.33,
+   "srcEnd": 67.33,
+   "outStart": 54.57,
+   "outEnd": 62.57
+  }
+ ],
+ "removed": [
+  {
+   "srcStart": 0,
+   "srcEnd": 0.6,
+   "dur": 0.6
+  },
+  {
+   "srcStart": 9.77,
+   "srcEnd": 10.0,
+   "dur": 0.23
+  },
+  {
+   "srcStart": 14.57,
+   "srcEnd": 14.83,
+   "dur": 0.26
+  },
+  {
+   "srcStart": 21.53,
+   "srcEnd": 21.73,
+   "dur": 0.2
+  },
+  {
+   "srcStart": 32.47,
+   "srcEnd": 33.13,
+   "dur": 0.66
+  },
+  {
+   "srcStart": 37.13,
+   "srcEnd": 37.93,
+   "dur": 0.8
+  },
+  {
+   "srcStart": 52.2,
+   "srcEnd": 52.47,
+   "dur": 0.27
+  },
+  {
+   "srcStart": 58.87,
+   "srcEnd": 59.33,
+   "dur": 0.46
+  },
+  {
+   "srcStart": 67.33,
+   "srcEnd": 67.83,
+   "dur": 0.5
+  }
+ ],
+ "subtitles": [
+  {
+   "text": "セルフカットで",
+   "outStart": 1.0,
+   "outEnd": 2.0,
+   "srcStart": 1.6,
+   "srcEnd": 2.6,
+   "chars": 7
+  },
+  {
+   "text": "伸びて重くなったボブを",
+   "outStart": 2.0,
+   "outEnd": 3.93,
+   "srcStart": 2.6,
+   "srcEnd": 4.53,
+   "chars": 11
+  },
+  {
+   "text": "軽くした後に",
+   "outStart": 3.93,
+   "outEnd": 5.57,
+   "srcStart": 4.53,
+   "srcEnd": 6.17,
+   "chars": 6
+  },
+  {
+   "text": "重さを感じやすい理由",
+   "outStart": 5.77,
+   "outEnd": 8.83,
+   "srcStart": 6.37,
+   "srcEnd": 9.43,
+   "chars": 10
+  },
+  {
+   "text": "それは表面の髪が長いからです",
+   "outStart": 9.17,
+   "outEnd": 13.47,
+   "srcStart": 10.17,
+   "srcEnd": 14.47,
+   "chars": 14
+  },
+  {
+   "text": "ボブは表面の長さと下の長さが同じぐらいです",
+   "outStart": 13.77,
+   "outEnd": 19.67,
+   "srcStart": 15.17,
+   "srcEnd": 21.07,
+   "chars": 21
+  },
+  {
+   "text": "それもあって重さを感じやすいです",
+   "outStart": 19.87,
+   "outEnd": 22.83,
+   "srcStart": 21.27,
+   "srcEnd": 24.86,
+   "chars": 16
+  },
+  {
+   "text": "段がついていない",
+   "outStart": 22.87,
+   "outEnd": 24.27,
+   "srcStart": 24.9,
+   "srcEnd": 26.3,
+   "chars": 8
+  },
+  {
+   "text": "レイヤーがついていないので",
+   "outStart": 24.27,
+   "outEnd": 26.8,
+   "srcStart": 26.3,
+   "srcEnd": 28.83,
+   "chars": 13
+  },
+  {
+   "text": "動きが出しにくい",
+   "outStart": 27.27,
+   "outEnd": 30.23,
+   "srcStart": 29.3,
+   "srcEnd": 32.26,
+   "chars": 8
+  },
+  {
+   "text": "まとまりやすいメリットはあります",
+   "outStart": 31.0,
+   "outEnd": 34.43,
+   "srcStart": 33.7,
+   "srcEnd": 37.13,
+   "chars": 16
+  },
+  {
+   "text": "もしボブを軽くして",
+   "outStart": 34.43,
+   "outEnd": 36.9,
+   "srcStart": 37.93,
+   "srcEnd": 40.4,
+   "chars": 9
+  },
+  {
+   "text": "重くて仕方ない",
+   "outStart": 36.9,
+   "outEnd": 38.77,
+   "srcStart": 40.4,
+   "srcEnd": 42.27,
+   "chars": 7
+  },
+  {
+   "text": "段を入れる必要があります",
+   "outStart": 39.77,
+   "outEnd": 42.0,
+   "srcStart": 43.27,
+   "srcEnd": 45.5,
+   "chars": 12
+  },
+  {
+   "text": "でもレイヤーを入れるとなると",
+   "outStart": 42.0,
+   "outEnd": 45.27,
+   "srcStart": 45.5,
+   "srcEnd": 48.77,
+   "chars": 14
+  },
+  {
+   "text": "セルフではかなり難しいです",
+   "outStart": 45.27,
+   "outEnd": 48.27,
+   "srcStart": 48.77,
+   "srcEnd": 51.77,
+   "chars": 13
+  },
+  {
+   "text": "美容室に行ってカットしてもらう方が",
+   "outStart": 48.9,
+   "outEnd": 51.8,
+   "srcStart": 53.2,
+   "srcEnd": 56.1,
+   "chars": 17
+  },
+  {
+   "text": "思い通りのスタイルになっていきます",
+   "outStart": 51.8,
+   "outEnd": 54.63,
+   "srcStart": 56.1,
+   "srcEnd": 59.39,
+   "chars": 17
+  },
+  {
+   "text": "そもそもボブは重めなスタイル",
+   "outStart": 54.6,
+   "outEnd": 57.83,
+   "srcStart": 59.36,
+   "srcEnd": 62.59,
+   "chars": 14
+  },
+  {
+   "text": "セルフカットをやってみてください",
+   "outStart": 59.73,
+   "outEnd": 62.4,
+   "srcStart": 64.49,
+   "srcEnd": 67.16,
+   "chars": 16
+  }
+ ],
+ "spoken": [
+  {
+   "start": 1.6,
+   "end": 2.6,
+   "text": "セルフカットで",
+   "retake": false
+  },
+  {
+   "start": 2.6,
+   "end": 4.53,
+   "text": "伸びて重くなったボブを",
+   "retake": false
+  },
+  {
+   "start": 4.53,
+   "end": 6.17,
+   "text": "軽くした後に",
+   "retake": false
+  },
+  {
+   "start": 6.37,
+   "end": 9.43,
+   "text": "重さを感じやすい理由",
+   "retake": false
+  },
+  {
+   "start": 10.17,
+   "end": 14.47,
+   "text": "それは表面の髪が長いからです",
+   "retake": false
+  },
+  {
+   "start": 15.17,
+   "end": 21.07,
+   "text": "ボブは表面の長さと下の長さが同じぐらいです",
+   "retake": false
+  },
+  {
+   "start": 21.27,
+   "end": 24.86,
+   "text": "それもあって重さを感じやすいです",
+   "retake": false
+  },
+  {
+   "start": 24.9,
+   "end": 26.3,
+   "text": "段がついていない",
+   "retake": false
+  },
+  {
+   "start": 26.3,
+   "end": 28.83,
+   "text": "レイヤーがついていないので",
+   "retake": false
+  },
+  {
+   "start": 29.3,
+   "end": 32.26,
+   "text": "動きが出しにくい",
+   "retake": false
+  },
+  {
+   "start": 33.7,
+   "end": 37.13,
+   "text": "まとまりやすいメリットはあります",
+   "retake": false
+  },
+  {
+   "start": 37.93,
+   "end": 40.4,
+   "text": "もしボブを軽くして",
+   "retake": false
+  },
+  {
+   "start": 40.4,
+   "end": 42.27,
+   "text": "重くて仕方ない",
+   "retake": false
+  },
+  {
+   "start": 43.27,
+   "end": 45.5,
+   "text": "段を入れる必要があります",
+   "retake": false
+  },
+  {
+   "start": 45.5,
+   "end": 48.77,
+   "text": "でもレイヤーを入れるとなると",
+   "retake": false
+  },
+  {
+   "start": 48.77,
+   "end": 51.77,
+   "text": "セルフではかなり難しいです",
+   "retake": false
+  },
+  {
+   "start": 53.2,
+   "end": 56.1,
+   "text": "美容室に行ってカットしてもらう方が",
+   "retake": false
+  },
+  {
+   "start": 56.1,
+   "end": 59.39,
+   "text": "思い通りのスタイルになっていきます",
+   "retake": false
+  },
+  {
+   "start": 59.36,
+   "end": 62.59,
+   "text": "そもそもボブは重めなスタイル",
+   "retake": false
+  },
+  {
+   "start": 64.49,
+   "end": 67.16,
+   "text": "セルフカットをやってみてください",
+   "retake": false
+  }
+ ],
+ "targetSec": 60
+}

@@ -1164,6 +1164,10 @@ function styleSummary(timeline, useSubs, useZoom, overlay) {
   if (useSubs) {
     const all = timeline.filter(c => c.subtitles.length).length;
     parts.push(`字幕: ${all}場面（画面の下）`);
+    // 音声は残して、字幕にだけ書かなかった言葉（つなぎ言葉・調子をとる「ね」・「という」・文の頭の「なので」など）
+    const counts = new Map();
+    for (const w of timeline.flatMap(c => c.subOmitted || [])) counts.set(w, (counts.get(w) || 0) + 1);
+    if (counts.size) parts.push(`字幕で省いた言葉（音声は残す）: ${[...counts].map(([w, n]) => n > 1 ? `${w}×${n}` : w).join('・')}`);
   } else {
     parts.push('字幕: なし');
   }

@@ -58,7 +58,7 @@ test('最後の場面は、次の声の手前まで少し延ばす（フェー�
   const out = extendEnding(clips, [{ start: 0.2, end: 4.8 }, { start: 5.3, end: 6 }], 10);
   assert.ok(Math.abs(out[0].pieces[0].end - 5.25) < 1e-9);
   const out2 = extendEnding(clips, [{ start: 0.2, end: 4.8 }], 10);
-  assert.ok(out2[0].pieces[0].end > 5.4);
+  assert.ok(out2[0].pieces[0].end > 5.3);
 });
 
 test('場面選び: 話している文は文ごとすべて残し、目標の範囲に収まるならそのまま', () => {

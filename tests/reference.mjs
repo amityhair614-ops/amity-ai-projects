@@ -23,6 +23,7 @@ export function rebuildChunks(analysis) {
 
 // アプリの makePlan と書き出しのタイムラインを、入力なし（目標 targetSec）で作る
 export function planFixture(analysis, targetSec = 45) {
+  targetSec ??= 45;
   const { duration, rmsDb, speech, motion } = analysis;
   const chunks = rebuildChunks(analysis);
   setBreakTerms([]);
@@ -91,6 +92,20 @@ export function breakRecall(manualTexts, autoTexts) {
   return { recall: theirs.length ? hit.length / theirs.length : 1, missed: theirs.filter(c => !hit.includes(c)).map(c => A.slice(Math.max(0, c - 6), c) + '｜' + A.slice(c, c + 6)) };
 }
 
+// 字幕に出さなくても意味が伝わる言葉（つなぎ言葉・調子をとる「ね」・「という」・文の頭の「なので」など）が、字幕に出た回数
+const UNNEEDED = [/(?:^|、)(?:えー+と?|えっと|ええと|あのー?|まあ|まぁ|うーん)/, /^(?:なので|ですので|それで|そうなると|じゃあ)/, /(?:[一-鿿々ァ-ヶー]|それ|これ)[がをはにでもと]ね(?=..)|分ね/, /[いな]という(?=[一-鿿々ァ-ヶ])/];
+export function subtitleStats(texts, durs) {
+  const lens = texts.map(t => normalizeText(t).length);
+  return {
+    n: texts.length,
+    avgChars: lens.reduce((a, b) => a + b, 0) / Math.max(1, lens.length),
+    over12: lens.filter(n => n > 12).length,
+    avgSec: durs.reduce((a, b) => a + b, 0) / Math.max(1, durs.length),
+    maxSec: Math.max(0, ...durs),
+    unneeded: texts.reduce((a, t) => a + UNNEEDED.filter(re => re.test(t)).length, 0),
+  };
+}
+
 const median = a => { const s = [...a].sort((x, y) => x - y); return s.length ? s[Math.floor(s.length / 2)] : 0; };
 
 export function report(manual, cmp) {
@@ -106,6 +121,9 @@ export function report(manual, cmp) {
   const mLens = manual.subtitles.map(s => s.chars), mDurs = manual.subtitles.map(s => s.outEnd - s.outStart);
   out.push(`字幕: 自動 ${cmp.pages.length}枚（2行 ${cmp.pages.filter(p => p.lines.length > 1).length}枚・文字数 中央 ${median(lens)} 最大 ${Math.max(...lens)}・表示 中央 ${f(median(durs))}秒 最大 ${f(Math.max(...durs))}秒）`);
   out.push(`      お手本 ${manual.subtitles.length}枚（すべて1行・文字数 中央 ${median(mLens)} 最大 ${Math.max(...mLens)}・表示 中央 ${f(median(mDurs))}秒 最大 ${f(Math.max(...mDurs))}秒）`);
+  const a = subtitleStats(cmp.pages.map(p => p.text), cmp.pages.map(p => p.end - p.start));
+  const b = subtitleStats(manual.subtitles.map(x => x.text), manual.subtitles.map(x => x.outEnd - x.outStart));
+  out.push(`字幕の平均: 自動 ${a.avgChars.toFixed(1)}文字・${f(a.avgSec)}秒（12文字より長い ${a.over12}枚・不要な言葉 ${a.unneeded}回） / お手本 ${b.avgChars.toFixed(1)}文字・${f(b.avgSec)}秒（12文字より長い ${b.over12}枚・不要な言葉 ${b.unneeded}回）`);
   out.push(`字幕の切れ目: お手本の切れ目のうち自動でも切れ目 ${(cmp.breaks.recall * 100).toFixed(0)}%${cmp.breaks.missed.length ? '（違う所: ' + cmp.breaks.missed.join('、') + '）' : ''}`);
   if (cmp.pauses) {
     const p = cmp.pauses, m = manual.pauses || {};
@@ -120,7 +138,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const dirs = process.argv.length > 2 ? process.argv.slice(2) : fs.readdirSync(root).map(d => path.join(root, d)).filter(d => fs.existsSync(path.join(d, 'manual.json')));
   for (const dir of dirs) {
     const { analysis, manual } = loadFixture(dir);
-    const { timeline } = planFixture(analysis);
+    const { timeline } = planFixture(analysis, manual.targetSec);
     console.log(`===== ${path.basename(dir)} =====`);
     console.log(report(manual, compare(manual, timeline, analysis)));
   }
