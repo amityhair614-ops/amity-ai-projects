@@ -37,7 +37,9 @@ const reference = arg('reference');
 const selectAll = process.argv.includes('--select-all');
 const hideDuringRender = process.argv.includes('--hide-during-render');
 const failDecoder = arg('fail-decoder');
-const base = sample.replace(/\.[^.]+$/, '');
+// 複数の動画は「,」でつなぐ（a.mov,b.mov）
+const samples = sample.split(',');
+const base = samples[0].replace(/\.[^.]+$/, '') + (samples.length > 1 ? `-x${samples.length}` : '');
 const tFile = fs.existsSync(path.join(dir, `${base}-transcript.json`)) ? `${base}-transcript.json` : 'sample-transcript.json';
 const transcript = JSON.parse(fs.readFileSync(path.join(dir, tFile), 'utf8'));
 const tag = `rs-${base}-${killAt.replace(':', '')}${process.argv.includes('--select-all') ? '-all' : ''}${kills > 1 ? '-x' + kills : ''}${dropSource ? '-drop' : ''}${noAsr ? '-noasr' : ''}`;
@@ -194,7 +196,7 @@ try {
   // ---- 1回目: 最初から編集を始め、途中で強制終了する ----
   phase = '1回目';
   let { ctx, page } = await launch();
-  await page.setInputFiles('#file', path.join(dir, sample));
+  await page.setInputFiles('#file', samples.map(f => path.join(dir, f)));
   await page.waitForSelector('#stepAnalyze:not([hidden])', { timeout: 60000 });
   if (noAsr) await page.uncheck('#optAsr'); else await page.check('#optAsr');
   if (await page.$('#optEngine')) await page.selectOption('#optEngine', 'whisper'); // 偽の文字起こしは Whisper の形で返す
@@ -326,7 +328,7 @@ try {
       await page.evaluate(async () => {
         const root = await navigator.storage.getDirectory();
         const base = await root.getDirectoryHandle('amity-jobs');
-        for await (const [name, h] of base.entries()) if (h.kind === 'directory') await h.removeEntry('source').catch(() => {});
+        for await (const [name, h] of base.entries()) if (h.kind === 'directory') for (const n of ['source', 'source-1', 'source-2']) await h.removeEntry(n).catch(() => {});
       });
     }
     t1 = Date.now();
@@ -334,7 +336,7 @@ try {
     if (dropSource && k === 2) {
       await page.waitForSelector('#resumeNeedFile:not([hidden])', { timeout: 10000 });
       report.push('元の動画のコピーがないとき: ' + await page.$eval('#resumeNeedFile', el => el.textContent));
-      await page.setInputFiles('#file', path.join(dir, sample));
+      await page.setInputFiles('#file', samples.map(f => path.join(dir, f)));
     }
     if (k <= kills && kStage === 'render') {
       // もう一度、途中で強制終了する

@@ -14,7 +14,8 @@ import { registerAacEncoder } from '@mediabunny/aac-encoder';
 import { FRAME_SEC, FPS, OUT_W, OUT_H, SUB_ZONES, cropAt, subtitleAlpha, openingAlpha, endFadeAlpha } from './plan.js';
 import { log } from './diag.js';
 import { Resampler } from './resample.js';
-import { AudioStitcher, applyGain, applyEndFade } from './audiomix.js';
+import { AudioStitcher, applyGain, applyEndFade, mixBgm } from './audiomix.js';
+import { localPiece } from './sources.js';
 
 export const ASR_RATE = 16000;
 
@@ -520,7 +521,7 @@ function decodeError(err, info) {
 // ピース piece のうち、出力のコマ f0〜f1 を描く。コマごとに emit(出力の時刻) を呼ぶ（その時点の画像は base にある）。
 // opts.lowLatency: false にすると、デコーダーの低遅延モードを使わない（やり直しのとき）
 // opts.earlierKey: true にすると、1つ前のキーフレームからデコードする（やり直しのとき）
-async function drawFrames(src, packets, rc, clip, piece, f0, f1, emit, opts = {}) {
+async function drawFrames(src, packets, rc, clip, piece, f0, f1, emit, opts = {}, painter = rc.painter, scale = 1) {
   const from = piece.srcStart + f0 / FPS;
   const n = f1 - f0;
   const end = from + n / FPS;
@@ -533,7 +534,10 @@ async function drawFrames(src, packets, rc, clip, piece, f0, f1, emit, opts = {}
     while (k < n && from + k / FPS < ts - 1e-3) await out();
     // ズーム中は、このコマの出力時刻に合わせた枠で切り抜く
     if (k < n) {
-      try { rc.painter.draw(rc.bctx, frame, cropAt(clip, piece.outStart + f0 / FPS + Math.max(0, ts - from))); }
+      try {
+        const r = cropAt(clip, piece.outStart + f0 / FPS + Math.max(0, ts - from));
+        painter.draw(rc.bctx, frame, scale === 1 ? r : { left: r.left * scale, top: r.top * scale, width: r.width * scale, height: r.height * scale });
+      }
       catch (err) { throw Object.assign(err, { stage: 'draw' }); }
     }
   };
@@ -578,7 +582,10 @@ async function drawFrames(src, packets, rc, clip, piece, f0, f1, emit, opts = {}
 // 区間 seg（resume.planSegments の結果の1つ）の映像だけを、stream（ファイル）に MP4 として書き出す。
 // rc: createRenderContext の結果（区間をまたいで使い回す）。shouldPause() が true になったら、きりのよい所で RenderPaused を投げる
 // overlay: { opening: 冒頭のテキスト（openingPlan の結果）, total: 完成動画の長さ（最後のフェード用）}
-export async function renderSegment(src, timeline, seg, stream, { onProgress, rc, shouldPause, decode, overlay } = {}) {
+// srcs: 動画（openVideo の結果）か、複数の動画を1本にするときはその並び（lay: sources.js の layout。ピースの時刻はつないだ時刻）
+export async function renderSegment(srcs, timeline, seg, stream, { onProgress, rc, shouldPause, decode, overlay, lay = null } = {}) {
+  const list = Array.isArray(srcs) ? srcs : [srcs];
+  const src = list[0];
   await checkVideoEncoder();
   rc = rc || createRenderContext(src);
   const output = new Output({ format: new Mp4OutputFormat({ fastStart: false }), target: new StreamTarget(stream) });
@@ -588,14 +595,24 @@ export async function renderSegment(src, timeline, seg, stream, { onProgress, rc
   const videoSource = new CanvasSource(rc.canvas, { codec: 'avc', bitrate: VIDEO_BITRATE, keyFrameInterval: 2 });
   output.addVideoTrack(videoSource, { frameRate: FPS });
   await output.start();
-  const packets = new EncodedPacketSink(src.video);
+  // 動画ごとの読み出し口と、回転に合わせた描き方（向きが違う動画もあるため）
+  const sinks = new Map();
+  const reader = k => {
+    if (!sinks.has(k)) {
+      const v = list[k];
+      sinks.set(k, { packets: new EncodedPacketSink(v.video), painter: v.rotation === src.rotation ? rc.painter : new FramePainter(v.rotation, OUT_W, OUT_H), scale: v.width / src.width });
+    }
+    return sinks.get(k);
+  };
   let done = 0;
   let current = null;
   try {
     for (const s of seg.slices) {
       const clip = timeline[s.c];
       current = s;
-      await drawFrames(src, packets, rc, clip, clip.pieces[s.p], s.f0, s.f1, async t => {
+      const { source, piece } = lay ? localPiece(lay, clip.pieces[s.p]) : { source: 0, piece: clip.pieces[s.p] };
+      const r = reader(source);
+      await drawFrames(list[source], r.packets, rc, clip, piece, s.f0, s.f1, async t => {
         if (shouldPause?.()) throw new RenderPaused();
         rc.ctx.drawImage(rc.base, 0, 0);
         drawSubtitle(rc.ctx, clip.subtitles.find(p => t >= p.start && t < p.end), t);
@@ -608,7 +625,7 @@ export async function renderSegment(src, timeline, seg, stream, { onProgress, rc
         }
         done++;
         onProgress?.(done / seg.frames);
-      }, decode);
+      }, decode, r.painter, r.scale);
     }
     await output.finalize();
   } catch (err) {
@@ -645,8 +662,13 @@ function sameConfig(a, b) {
 
 // 保存した区間の映像をつなぎ、音声を通して作って、stream（ファイル）に完成したMP4を書き出す。
 // getSegment(i): i 番目の区間のファイル（File）
-export async function assembleOutput(src, timeline, segments, getSegment, stream, { gainDb = 0, onProgress, endFade = 0, endHold = 0 } = {}) {
-  const withAudio = !!src.audio;
+// srcs・lay: renderSegment と同じ（複数の動画を1本にするとき）。bgm: { reader（readBgm の結果）, volume（0〜0.1）, speech（声の区間・つないだ時刻） }
+export async function assembleOutput(srcs, timeline, segments, getSegment, stream, { gainDb = 0, onProgress, endFade = 0, endHold = 0, lay = null, bgm = null } = {}) {
+  const list = Array.isArray(srcs) ? srcs : [srcs];
+  const src = list[0];
+  const withAudio = list.some(v => v.audio);
+  // 動画ごとに音声の標本化の周波数が違うときは、最初の動画にそろえる
+  const outSr = (list.find(v => v.audio) || src).audio?.sampleRate;
   // 音声は、ブラウザの AAC エンコーダーではなく、内蔵の AAC エンコーダー（FFmpeg の WASM 版）で作る。
   // WebKit（Safari と同じエンジン）のエンコーダーは、1回に渡した音声から作られる AAC のフレームすべてに
   // 同じ時刻を付けて返すことがあり（Linux の WebKit で確認）、MP4 の音声の時刻が壊れるため
@@ -670,13 +692,18 @@ export async function assembleOutput(src, timeline, segments, getSegment, stream
       // 音声: この区間の分を、前の区間から続けて作る（つなぎ目のクロスフェードは区間をまたいでも同じ）
       if (withAudio) {
         for (const s of seg.slices) {
-          const piece = timeline[s.c].pieces[s.p];
+          const vpiece = timeline[s.c].pieces[s.p];
+          const { source, piece } = lay ? localPiece(lay, vpiece) : { source: 0, piece: vpiece };
           const dur = (s.f1 - s.f0) / FPS;
-          const raw = await readAudioSafe(src, piece.srcStart + s.f0 / FPS, dur + AudioStitcher.extra());
+          let raw = list[source].audio ? await readAudioSafe(list[source], piece.srcStart + s.f0 / FPS, dur + AudioStitcher.extra()) : null;
+          if (!raw) raw = { sr: outSr, data: [new Float32Array(Math.ceil((dur + AudioStitcher.extra()) * outSr))] };
+          if (raw.sr !== outSr) raw = { sr: outSr, data: raw.data.map(ch => resampleLinear(ch, raw.sr, outSr)) };
           applyGain(raw.data, gain);
           const len = Math.round(dur * raw.sr);
           const last = seg === lastSeg && s === seg.slices[seg.slices.length - 1];
           const data = stitcher.add(raw.data, raw.sr, { len, contiguous: s.f0 > 0 || piece.contiguous, last });
+          // BGM（選んだときだけ）: 話し声の下にごく小さく重ねる
+          if (bgm) mixBgm(data, raw.sr, await bgm.reader.read(len, raw.sr), piece.outStart + s.f0 / FPS, outTotal, bgm);
           // 最後のフェードアウト（映像が黒くなるのと同じ時間で、音声も小さくする）
           if (endFade) applyEndFade(data, raw.sr, piece.outStart + s.f0 / FPS, outTotal, endFade, endHold);
           await audioSource.add(toAudioBuffer(data, raw.sr, 0, len));
@@ -709,4 +736,74 @@ export async function assembleOutput(src, timeline, segments, getSegment, stream
     await output.cancel().catch(() => {});
     throw err;
   }
+}
+
+// x をちょうど n サンプルに伸び縮みさせる（直線でつなぐ）
+function resampleTo(x, n) {
+  const y = new Float32Array(n), r = x.length / n;
+  for (let i = 0; i < n; i++) {
+    const p = i * r, k = Math.floor(p), f = p - k;
+    y[i] = (x[k] ?? 0) * (1 - f) + (x[k + 1] ?? x[k] ?? 0) * f;
+  }
+  return y;
+}
+
+// 音声の標本化の周波数をそろえる（直線でつなぐ。動画ごとに違うときだけ使う）
+function resampleLinear(x, from, to) {
+  const n = Math.round(x.length * to / from), y = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    const p = i * from / to, k = Math.floor(p), f = p - k;
+    y[i] = (x[k] ?? 0) * (1 - f) + (x[k + 1] ?? x[k] ?? 0) * f;
+  }
+  return y;
+}
+
+// ---------- BGM ----------
+
+// 選んだ音楽ファイルを、先頭から順に、必要な長さずつ読む（全体を一度にメモリに置かない）。
+// 曲が動画より短いときは、最初に戻って続ける。read(len, sr): sr の周波数で len サンプル（2チャンネル）
+export async function readBgm(file) {
+  const input = new Input({ source: new BlobSource(file, { useStreamReader: false, maxCacheSize: 4 * 1024 * 1024 }), formats: ALL_FORMATS });
+  const track = await input.getPrimaryAudioTrack();
+  if (!track) { input.dispose(); throw new Error('選んだファイルに音声が見つかりませんでした。'); }
+  if (!(await track.canDecode())) { input.dispose(); throw new Error(`この音声の形式（${track.codec}）は読み込めません。MP3・AAC（m4a）・WAV の音楽ファイルを選んでください。`); }
+  const duration = await input.computeDuration();
+  let iter = null, buf = [[], []], have = 0, srIn = track.sampleRate, pos = 0; // pos: 出力側で読んだサンプル数（周波数変換の位置）
+  const open = () => { iter?.return?.(); iter = new AudioBufferSink(track).buffers(0, duration)[Symbol.asyncIterator](); };
+  open();
+  const pull = async () => {
+    let r = await iter.next();
+    if (r.done) { open(); r = await iter.next(); if (r.done) return false; } // 曲の最後まで来たら最初から
+    const ab = r.value.buffer;
+    for (let c = 0; c < 2; c++) buf[c].push(ab.getChannelData(Math.min(c, ab.numberOfChannels - 1)).slice());
+    have += ab.length;
+    return true;
+  };
+  const take = n => {
+    const out = [new Float32Array(n), new Float32Array(n)];
+    for (let c = 0; c < 2; c++) {
+      let k = 0;
+      while (k < n) {
+        const b = buf[c][0];
+        const m = Math.min(n - k, b.length);
+        out[c].set(b.subarray(0, m), k);
+        k += m;
+        if (m === b.length) buf[c].shift(); else buf[c][0] = b.subarray(m);
+      }
+    }
+    have -= n;
+    return out;
+  };
+  return {
+    duration,
+    async read(len, sr) {
+      // 出力 len サンプル分の入力サンプル（周波数が違えば、ちょうど len サンプルに変換する）
+      const start = Math.round(pos * srIn / sr), end = Math.round((pos + len) * srIn / sr), n = Math.max(1, end - start);
+      while (have < n) if (!(await pull())) break;
+      const raw = take(Math.min(have, n));
+      pos += len;
+      return raw.map(ch => (ch.length === len ? ch : resampleTo(ch, len)));
+    },
+    close() { iter?.return?.(); input.dispose(); },
+  };
 }

@@ -50,6 +50,7 @@ export const BEAUTY_TERMS = [
   { term: 'チョップカット', variants: ['チョップカッと', 'チャップカット', 'チョップカッド', 'ちょっとカット'] },
   { term: '丸み', reading: 'マルミ', variants: ['マルミ', 'まるみ'] },
   { term: '根元', reading: 'ネモト', variants: ['ねもと', '根本'] },
+  { term: 'すき量', reading: 'スキリョウ', variants: ['すきりょう'] },
   { term: '生え際', reading: 'ハエギワ', variants: ['はえぎわ', '生え技'] },
   { term: 'つむじ', reading: 'ツムジ', variants: ['ツムジ', '旋毛'] },
   { term: '軽さ', reading: 'カルサ', variants: ['カルサ'] },
@@ -467,7 +468,8 @@ export function passDoubts(c, passes, terms = []) {
   if (texts.some(t => hasNegation(t) !== hasNegation(c.text))) out.push('否定の言葉（ない・ません）を聞き落としている可能性');
   for (const t of terms) if (t.length >= 2 && !(c.text || '').includes(t) && texts.some(x => x.includes(t))) out.push(`「${t}」を聞き落としている可能性`);
   // 数（回数・長さ）の聞き取りが読み方によって違う
-  const nums = t => formatNumbers(t).numbers.map(n => n.label + n.counter).join('・');
+  // 窓の端で読み落とした（数がひとつ少ないだけ）のは違いとみなさない: 出てきた数の種類で比べる
+  const nums = t => [...new Set(formatNumbers(t).numbers.map(n => n.label + n.counter))].sort().join('・');
   const mine = nums(c.text || ''), other = texts.map(nums).find(x => x && x !== mine);
   if (other) out.push(`数の聞き取りが読み方によって違います（${mine || 'なし'} / ${other}）`);
   return out;
@@ -1103,13 +1105,15 @@ function sentenceBoundary(text, i) {
 
 // 次の文の始まりによく使う言葉
 // （特定の動画の言葉ではなく、一般的な接続の言葉・指示の言葉。前の語尾と合わせて判断する）
-const SENTENCE_STARTS = ['なぜかというと', 'なぜなら', 'それは', 'それを', 'それで', 'それが', 'そして', 'しかも', 'また', 'さらに', 'でも', 'しかし', 'ただ', 'なので', 'だから', 'ですので', 'そのため', 'つまり', '例えば', 'まず', '次に', '最後に', 'あとは', 'もし', 'となれば', '下手すれば', 'この', 'その', 'こう', 'そう'];
+const SENTENCE_STARTS = ['なぜかというと', 'なぜなら', 'それは', 'それを', 'それで', 'それが', 'そして', 'しかも', 'また', 'さらに', 'でも', 'しかし', 'ただ', 'なので', 'だから', 'ですので', 'そのため', 'つまり', '例えば', 'まず', '次に', '最後に', 'あとは', 'もし', 'となれば', '下手すれば', '逆に', 'この', 'その', 'こう', 'そう'];
 // 区切りやすい語尾（この後で区切ると、意味のまとまりで分かれる）
 const GOOD_ENDINGS = ['際', '後に', 'あとに', 'ように', 'ために', 'ので', 'から', 'けど', 'けれど', 'ても', 'たら', 'れば', 'なら', 'ながら', 'まで', 'より', 'など', 'とき', 'ときに', '際に', '時に', '場合は', '場合', 'なのか', 'ます', 'です', 'ました', 'でした', 'ません', 'ください'];
 // 助詞のあとにひらがなが続いても、ひとまとまりの言葉になる組み合わせ（「には」「でも」「です」「できる」など）
 const PARTICLE_PAIRS = ['には', 'にも', 'では', 'でも', 'です', 'でき', 'でし', 'とは', 'とも', 'とき', 'とこ', 'はず', 'がら', 'もう', 'もの', 'への', 'との', 'での', 'にく', 'にな'];
 // 「て・で」のあとに続く補助の言葉（「して／しまう」「て／ください」「で／いる」は分けない）
 const AUX_AFTER_TE = 'しいくおみあもくだるたき下'; // 「出て／きて」「やってみて／下さい」も分けない
+// 形式名詞（前の言葉に続けて使う、ひらがなの名詞）
+const FUNC_WORDS = ['わけ', 'ため', 'こと', 'もの', 'とき', 'ほう', 'よう', 'はず', 'ところ', 'つもり'];
 // この言葉で始まる所の前では区切らない（打ち消し・否定）
 const NEGATION_HEAD_RE = /^(?:ない|なく|なかっ|なけれ|ません|ず[、。にも]|ずに)/; // 「売って／る」「して／た」のような話し言葉の縮まった形も含む
 
@@ -1119,7 +1123,7 @@ function breakScore(text, i, inside, pause = 0) {
   const prev = text[i - 1], next = text[i];
   if (!prev || !next || NO_LINE_START.includes(next) || next === 'ん') return -Infinity;
   // 数と数える言葉（「1回」「3cm」「1〜3度」）の途中では切らない
-  if ((charType(prev) === 'num' && (charType(next) === 'num' || /^(?:[〜~.%]|cm|mm|[回度本枚個人歳秒分日年割段つ]|時間|週間|[ヶか]月|カ月|[箇か]所|ヶ所|番目)/.test(text.slice(i))))
+  if ((charType(prev) === 'num' && (charType(next) === 'num' || /^(?:[〜~.%]|cm|mm|[回度本枚個人歳秒分日年割段つ円均]|万円|時間|週間|[ヶか]月|カ月|[箇か]所|ヶ所|番目)/.test(text.slice(i))))
     || '〜~'.includes(prev) || '〜~'.includes(next)) return -Infinity;
   // 否定・打ち消しの言葉を前の言葉から離さない（「軽く／しないように」と分けると、前のページだけで意味が逆になる）
   if (NEGATION_HEAD_RE.test(text.slice(i)) || (prev === 'く' && /^(?:し|な|さ)/.test(text.slice(i)) && !SENTENCE_STARTS.some(w => text.startsWith(w, i)))) return -Infinity;
@@ -1129,6 +1133,12 @@ function breakScore(text, i, inside, pause = 0) {
   if (PARTICLES.includes(next) && charType(prev) !== 'hira' && !'、。'.includes(prev)) return -5;
   // 「と／いう」「ても／らう」「ても／いい」、調子をとる「ね」を前の言葉から切り離さない
   if ((prev === 'と' && /^いう/.test(text.slice(i))) || (prev === 'も' && text[i - 2] === 'て' && 'らい'.includes(next)) || next === 'ね') return -Infinity;
+  // 形式名詞（わけ・ため・こと・もの・とき・ほう・よう・はず・ところ）の途中では切らない（「というわ／けでは」）
+  for (const w of FUNC_WORDS) for (let k = 1; k < w.length; k++) if (text.slice(i - k, i - k + w.length) === w && charType(text[i - k - 1] || '') === 'hira') return -Infinity;
+  // 「高ければ／高いほど」: 「〜ば〜ほど」の言い方を切り離さない
+  if (/ば$/.test(text.slice(0, i)) && /^[^、。]{1,4}ほど/.test(text.slice(i))) return -4;
+  // 「〜で／はなく」「〜では／なく」を切り離さない
+  if ((prev === 'で' && /^はな[くいか]/.test(text.slice(i))) || (/では$/.test(text.slice(0, i)) && /^な[くいか]/.test(text.slice(i)))) return -Infinity;
   // 「〜か／もしれない」「〜かも／しれない」を切り離さない
   if ((prev === 'か' && /^もしれ/.test(text.slice(i))) || (/かも$/.test(text.slice(0, i)) && /^しれ/.test(text.slice(i)))) return -Infinity;
   // 「〜ない／ように」「〜する／ような」と、「よう」を前の言葉から切り離さない
@@ -1156,6 +1166,8 @@ function grammarScore(text, i, inside, prev, next) {
   // 漢字で終わる用語のすぐ後の漢字（「生え際辺り」）はひとまとまり。カタカナの用語の後の漢字（「すきバサミ／以外」）は区切ってよい
   if (inside?.ends?.has(i) && !PARTICLES.includes(next) && !(a === b && a !== 'hira')) return b === 'kanji' ? (a === 'kanji' ? -4 : 0.5) : 3;
   if ('、。！？!? '.includes(prev)) return 4;
+  // 問いかけの言葉の前（「使うすきバサミ／何を基準に」）は、意味のまとまりの切れ目
+  if (/^(?:何[をがでに]|どこ[をがに]|どう(?:やって|して)|どの|いつ|なぜ)/.test(text.slice(i)) && (PARTICLES.includes(prev) || charType(prev) !== 'hira')) return 3;
   // 「〜ない／ということ」「〜する／という」: 引用の「という」から始まる所は区切ってよい
   if (/^という/.test(text.slice(i)) && prev !== 'と' && prev !== 'か') return 2.5;
   // 用語の始まり（「セルフカットで／すきバサミ」）は区切りやすい（「で」と「す」が「です」に見えても）
@@ -1469,6 +1481,18 @@ export function buildTimeline(clips, opts = {}) {
 
   // 字幕の位置: いつも下（お手本と同じ）。文字を小さめにして、髪や手元を隠す面積を減らしている
   for (const c of tl) c.subPos = 'bottom';
+
+  // 文の終わりの後に、次の文の始まりの接続の言葉だけが場面の最後に付いている（「軽くなっちゃいます逆に」）ときは、
+  // その言葉を次の場面の最初の字幕に移す（字幕の文字だけ。声の時刻は変えない）
+  for (let i = 0; i + 1 < tl.length; i++) {
+    const L = tl[i].subtitles[tl[i].subtitles.length - 1], F = tl[i + 1].subtitles[0];
+    if (!L || !F || F.start - L.end > 1.5) continue;
+    const t = L.lines.join(''), m = t.match(/(?:ます|です|ません|ました|でした|ください|下さい)(逆に|なので|だから|でも|つまり|それで|そして|例えば)$/);
+    const f = F.lines.join('');
+    if (!m || (f.length + m[1].length) > SUB_MAX_CHARS) continue;
+    L.lines = [t.slice(0, -m[1].length)];
+    F.lines = [m[1] + f];
+  }
 
   // 場面の最後の字幕が短すぎて読めないとき（場面の終わりで切れる）は、次の場面の最初の字幕が出るまでのすき間に
   // 同じ字幕を続けて出す（字幕は場面ごとに描くので、次の場面に続きのページを入れる。フェードはかけない）

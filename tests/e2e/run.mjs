@@ -45,7 +45,12 @@ const target = arg('target');
 const style = arg('style');
 const withBrief = process.argv.includes('--brief');
 const replan = arg('replan');
-const base = path.basename(sample).replace(/\.(mp4|mov)$/, '');
+// 複数の動画は「,」でつなぐ（a.mov,b.mov）。上から順に1本の動画にまとめる
+const samples = sample.split(',');
+const base = path.basename(samples[0]).replace(/\.(mp4|mov)$/, '') + (samples.length > 1 ? `-x${samples.length}` : '');
+// --bgm=FILE: BGM の曲（--bgm-vol=2 のように % で音量）
+const bgmArg = (process.argv.find(a => a.startsWith('--bgm=')) || '').slice('--bgm='.length);
+const bgmVol = arg('bgm-vol');
 const tFile = fs.existsSync(path.join(dir, `${base}-transcript.json`)) ? `${base}-transcript.json` : 'sample-transcript.json';
 const transcript = JSON.parse(fs.readFileSync(path.join(dir, tFile), 'utf8'));
 const tag = base + (noAsr ? '-noasr' : '') + (failAsr ? '-failasr' : '') + (webaudio ? '-webaudio' : '') + (realAsr ? '-realasr' : '') + (reazon ? '-reazon' : '') + (scriptArg ? '-script' : '') + (process.env.TAG || '')
@@ -272,7 +277,7 @@ async function reloadDuring(stage) {
 
 try {
   await page.goto((process.env.APP_URL || 'http://127.0.0.1:8123/') + (webaudio ? '?audio=webaudio' : ''));
-  await page.setInputFiles('#file', path.join(dir, sample));
+  await page.setInputFiles('#file', samples.map(f => path.join(dir, f)));
   await page.waitForSelector('#stepAnalyze:not([hidden]), #fileError:not([hidden])', { timeout: 60000 });
   const fileErr = await page.$eval('#fileError', el => (el.hidden ? null : el.textContent));
   if (fileErr) {
@@ -395,6 +400,11 @@ try {
   if (zoom === false) await page.uncheck('#optZoom');
   if (noSubs) await page.uncheck('#optSubs');
   mem.stage = '書き出し';
+  if (bgmArg) {
+    await page.check('#optBgm');
+    await page.setInputFiles('#bgmFile', bgmArg);
+    if (bgmVol) await page.$eval('#bgmVol', (el, v) => { el.value = v; el.dispatchEvent(new Event('input')); }, bgmVol);
+  }
   await page.click('#btnRender');
   if (reloadAt === 'render') await reloadDuring('render');
   await page.waitForSelector('#stepResult:not([hidden]), #renderError:not([hidden])', { timeout: +(process.env.RENDER_TIMEOUT || 600000) });

@@ -20,10 +20,14 @@
 const FILLER_RE = /^(?:えー+と?|えっと|ええと|あのー?|あの[、,]|まあ|まぁ|うーん|んー)[、,\s]*/;
 const HEAD_CONNECTIVE_RE = /^(?:なので|ですので|それで|そして|それから|そうなると|なぜかというと|で[、,]|じゃあ)[、,\s]*/;
 // 調子をとる「ね」: 漢字・カタカナの言葉＋助詞の後、「分」の後、指示語＋助詞の後。後ろに言葉が続くときだけ
-const INTERJECTION_NE_RE = /((?:[一-鿿々ァ-ヶー]|それ|これ|あれ)[がをはにでもとの]|分|[一-鿿][ぁ-ゖ]?な)ね(?=[^、。\s]{2})/g;
+const INTERJECTION_NE_RE = /((?:[一-鿿々ァ-ヶー]|それ|これ|あれ)[がをはにでもとの]|分|[一-鿿][ぁ-ゖ]?な|あまり|かなり|すごく|ちょっと|やっぱり|本当に|ほんとに|結構|けっこう)ね(?=[^、。\s]{2})/g;
 // 形容詞（〜い）・「〜ない」の後の「という」＋名詞
 const TOIU_RE = /([いな])という(?=[一-鿿々ァ-ヶ])/g;
 const HEAD_DEMONSTRATIVE_RE = /^(?:それ|あれ|これ)[、,]\s*/;
+// ページの頭の「あと」（「あと価格は…」＝それから）。後ろが数（「あと3cm」＝残り）・「で」「は」（「あとで」「あとは」）のときは省かない
+const HEAD_ALSO_RE = /^あと[、,]?\s*(?=[一-鿿々ァ-ヶ][^、。]*[はがも])/;
+// 答えの「それは」（「それはすき量です」）: 名詞で言い切るページだけ（「それは大事」「それは使わない」のように指す物が要る所は省かない）
+const HEAD_ANSWER_RE = /^それは[、,]?\s*(?=[一-鿿々ァ-ヶーぁ-ゖ]{2,8}(?:です|だ)$)(?![^]*(?:ない|ません))/;
 // 省いた後に残る文字がこれより短いときは省かない（「なので」だけのページは、そのまま出す）
 const MIN_REST = 4;
 
@@ -70,7 +74,7 @@ export function displayText(text) {
     return { text: '', omitted: [...omitted, lone] };
   }
   for (let guard = 0; guard < 4; guard++) {
-    const m = t.match(FILLER_RE) || t.match(HEAD_CONNECTIVE_RE) || t.match(HEAD_DEMONSTRATIVE_RE);
+    const m = t.match(FILLER_RE) || t.match(HEAD_CONNECTIVE_RE) || t.match(HEAD_DEMONSTRATIVE_RE) || t.match(HEAD_ALSO_RE) || t.match(HEAD_ANSWER_RE);
     if (!m || restLen(t.slice(m[0].length)) < MIN_REST) break;
     omitted.push(m[0].replace(/[、,\s]+$/, ''));
     t = t.slice(m[0].length);
@@ -99,7 +103,7 @@ export function displayText(text) {
 const KANJI_DIGITS = { 〇: 0, 零: 0, 一: 1, 二: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9 };
 const KANJI_UNITS = { 十: 10, 百: 100, 千: 1000 };
 const COUNTERS = [['センチメートル', 'cm'], ['センチ', 'cm'], ['ミリ', 'mm'], ['パーセント', '%'], ['％', '%'], ['%', '%'], ['cm', 'cm'], ['mm', 'mm'],
-  ['時間', '時間'], ['週間', '週間'], ['ヶ月', 'ヶ月'], ['か月', 'か月'], ['カ月', 'カ月'], ['箇所', '箇所'], ['か所', 'か所'], ['ヶ所', 'ヶ所'], ['番目', '番目'],
+  ['万円', '万円'], ['円', '円'], ['時間', '時間'], ['週間', '週間'], ['ヶ月', 'ヶ月'], ['か月', 'か月'], ['カ月', 'カ月'], ['箇所', '箇所'], ['か所', 'か所'], ['ヶ所', 'ヶ所'], ['番目', '番目'],
   ['回', '回'], ['度', '度'], ['本', '本'], ['枚', '枚'], ['個', '個'], ['人', '人'], ['歳', '歳'], ['秒', '秒'], ['分', '分'], ['日', '日'], ['年', '年'], ['割', '割'], ['段', '段'], ['つ', 'つ']];
 const NUM_CHAR_RE = /[〇零一二三四五六七八九十百千0-9０-９]/;
 
@@ -149,7 +153,7 @@ export function formatNumbers(text, times = null) {
     const idiom = lone || (run === '十' && c?.w === '分') || (run === '二' && c?.w === '度' && t[k + 1] === 'と')
       || (c?.w === 'つ' && !/^[一二三四五六七八九]$/.test(run))
       // 漢字の言葉の一部（「統一」の「一」）は数にしない。前の数のすぐ後（「1回二回」）・「約」「第」の後は数
-      || (i > 0 && /[一-鿿々]/.test(t[i - 1]) && !(last && last.end === out.length) && t[i - 1] !== '約' && t[i - 1] !== '第');
+      || (run.length === 1 && i > 0 && /[一-鿿々]/.test(t[i - 1]) && !(last && last.end === out.length) && t[i - 1] !== '約' && t[i - 1] !== '第');
     if (!c || idiom) { put(run, tm); i = j; last = null; continue; }
     let label;
     const v = kanjiNumber(run), v2 = range != null ? kanjiNumber(range) : null;

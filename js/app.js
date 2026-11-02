@@ -1,7 +1,8 @@
 import {
   checkSupport, openVideo, closeVideo, analyzeAudio, analyzeMotion, renderSegment, assembleOutput, getAudioMode, ASR_RATE,
-  createRenderContext, RenderPaused,
+  createRenderContext, RenderPaused, readBgm,
 } from './media.js';
+import { MAX_SOURCES, layout, totalDuration, sourceAt, concatFrames, concatPcm, concatMotion, clampPieces, checkCompatible, move } from './sources.js';
 import {
   openWritable, copyIn, readFile, removeFile, listFiles, storageInfo, requestPersist, isStorageFull,
   saveJob, loadJob, listJobs, deleteJob, getWriteMode,
@@ -33,6 +34,7 @@ const FROM_LABEL = { home: 'ホーム画面のアプリ', safari: 'Safari' };
 // 端末内に保存するファイルの名前（作業ごとのフォルダの中）
 const SOURCE_NAME = 'source';
 const PCM_NAME = 'pcm.f32';
+const BGM_NAME = 'bgm';
 const OUTPUT_NAME = 'output.mp4';
 // 画面に表示されるまで待つ
 function waitVisible() {
@@ -286,16 +288,108 @@ writeBrief(normalizeBrief({ ...EMPTY_BRIEF, ...(loadJSON(PREFS_KEY) || {}) }));
 
 // ---------- 1. 動画を選ぶ ----------
 $('file').addEventListener('change', async () => {
-  const file = $('file').files && $('file').files[0];
-  if (!file) return;
+  let files = [...($('file').files || [])];
+  if (!files.length) return;
+  if (files.length > MAX_SOURCES) {
+    files = files.slice(0, MAX_SOURCES);
+    showNotice(`動画は${MAX_SOURCES}本までです。最初の${MAX_SOURCES}本を使います。`);
+  }
   // 再開のために選び直してもらった動画なら、保存してある作業の続きをする
   const pending = state.pendingResume;
-  await loadSource(file, { preview: !(pending && ['render', 'assemble'].includes(pending.stage)) });
+  await loadSources(files, { preview: !(pending && ['render', 'assemble'].includes(pending.stage)) });
   if (pending && state.src) {
-    if (sameSource(pending, file, state.src.duration)) await continueJob(pending, { reselected: true });
-    else showError($('fileError'), '保存してある編集とは別の動画のようです（大きさか長さが違います）。同じ動画を選ぶか、新しく編集してください。');
+    if (sameSources(pending, files, state.src.duration)) await continueJob(pending, { reselected: true });
+    else showError($('fileError'), '保存してある編集とは別の動画のようです（大きさか長さが違います）。同じ動画を同じ順番で選ぶか、新しく編集してください。');
   }
 });
+
+// 選び直した動画が、保存してある作業と同じか（複数の動画なら、本数・順番・大きさ）
+function sameSources(job, files, duration) {
+  if (!job.files || job.files.length <= 1) return files.length === 1 && sameSource(job, files[0], duration);
+  return files.length === job.files.length && files.every((f, k) => f.size === job.files[k].size) && Math.abs((job.duration ?? 0) - duration) < 0.5;
+}
+
+// 動画を追加する（3本まで）
+$('fileAdd').addEventListener('change', async () => {
+  const add = [...($('fileAdd').files || [])];
+  $('fileAdd').value = '';
+  if (!add.length) return;
+  const files = [...(state.files || []), ...add];
+  if (files.length > MAX_SOURCES) showNotice(`動画は${MAX_SOURCES}本までです。最初の${MAX_SOURCES}本を使います。`);
+  await loadSources(files.slice(0, MAX_SOURCES));
+});
+
+// 選んだ動画の一覧（並べ替え・削除）。解析の前だけ操作できる
+function renderFileList() {
+  const files = state.files || [];
+  $('fileListBox').hidden = !files.length;
+  const ol = $('fileList');
+  ol.innerHTML = '';
+  const busy = false;
+  files.forEach((f, k) => {
+    const li = document.createElement('li');
+    const name = document.createElement('span');
+    name.className = 'fname';
+    const d = state.lay ? state.lay[k].duration : state.src?.duration;
+    name.textContent = `${f.name}${d ? `（${formatSec(d)}）` : ''}`;
+    li.appendChild(name);
+    const btn = (label, title, fn, disabled) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.textContent = label;
+      b.title = title;
+      b.setAttribute('aria-label', `${f.name}を${title}`);
+      b.disabled = disabled || busy;
+      b.addEventListener('click', fn);
+      li.appendChild(b);
+    };
+    if (files.length > 1) {
+      btn('▲', '上へ', () => loadSources(move(files, k, -1)), k === 0);
+      btn('▼', '下へ', () => loadSources(move(files, k, 1)), k === files.length - 1);
+      btn('✕', '一覧から外す', () => loadSources(files.filter((_, i) => i !== k)));
+    }
+    ol.appendChild(li);
+  });
+  $('fileAddLabel').hidden = files.length >= MAX_SOURCES || busy;
+}
+
+// 複数の動画を開く。1本なら今までどおり。2〜3本なら、1本目で入力画面を出してから残りを開き、
+// 向き・比率がそろっているかを確かめて、つないだ時刻（sources.js の layout）を作る
+async function loadSources(files, opts = {}) {
+  if (!files.length) return;
+  await loadSource(files[0], opts);
+  state.files = files.slice(0, 1);
+  if (files.length > 1 && state.src) {
+    const srcs = [state.src];
+    try {
+      for (const f of files.slice(1)) srcs.push(await openVideo(f));
+    } catch (err) {
+      srcs.slice(1).forEach(closeVideo);
+      showError($('fileError'), err);
+      renderFileList();
+      return;
+    }
+    const why = checkCompatible(srcs);
+    if (why) {
+      srcs.slice(1).forEach(closeVideo);
+      showError($('fileError'), why);
+      renderFileList();
+      return;
+    }
+    state.files = files;
+    state.srcs = srcs;
+    state.lay = layout(srcs);
+    state.urls = [state.url, ...files.slice(1).map(f => URL.createObjectURL(f))];
+    const total = totalDuration(state.lay);
+    // 解析・構成の計算は「つないだ1本の動画」として行う（映像の大きさ・向きは1本目のもの）
+    state.src = { ...srcs[0], duration: total, audio: srcs.find(v => v.audio)?.audio || null, info: { ...srcs[0].info, files: files.length, duration: +total.toFixed(2) } };
+    log('複数の動画を選択', { files: files.map((f, k) => ({ name: f.name, sizeMB: +(f.size / 1e6).toFixed(1), duration: +state.lay[k].duration.toFixed(2) })) });
+    $('name').textContent = files.map(f => f.name).join(' ＋ ');
+    $('size').textContent = formatSize(files.reduce((a, f) => a + f.size, 0));
+    $('duration').textContent = `${formatSec(state.lay.reduce((a, x) => a + x.duration, 0))}（${files.length}本の合計）`;
+  }
+  renderFileList();
+}
 
 // 動画を開いて、入力画面を出す。file は選んだ動画、または端末内に保存したコピー。
 // preview: 確認用の再生欄に読み込むか（続きから書き出すときは、読み込んですぐ外すことになるので読み込まない。
@@ -312,6 +406,8 @@ async function loadSource(file, { preview = true } = {}) {
   unloadVideo($('outVideo'));
   if (state.url) URL.revokeObjectURL(state.url);
   if (state.outUrl) URL.revokeObjectURL(state.outUrl);
+  for (const u of (state.urls || []).slice(1)) URL.revokeObjectURL(u);
+  for (const v of (state.srcs || []).slice(1)) closeVideo(v);
   closeVideo(state.src);
   Object.keys(state).forEach(k => delete state[k]);
   state.file = file;
@@ -597,15 +693,21 @@ function verifyTranscript(pcm, units, words, { saved = {}, onResult } = {}) {
 $('btnAnalyze').addEventListener('click', async () => {
   const src = state.src;
   if (!src) return;
-  const id = state.job?.id && state.sourceFromStore ? state.job.id : jobIdFor(state.file);
+  const files = state.files || [state.file];
+  const multi = files.length > 1;
+  // 複数の動画: 名前と大きさをつないだもので作業を見分ける
+  const key = multi ? { name: files.map(f => f.name).join('+'), size: files.reduce((a, f) => a + f.size, 0) } : state.file;
+  const id = state.job?.id && state.sourceFromStore ? state.job.id : jobIdFor(key);
   const old = await loadJob(id).catch(() => null);
   const keepSource = !!old?.sourceSaved && state.sourceFromStore;
   if (old) {
-    for (const f of await listFiles(id)) if (!(keepSource && f.name === SOURCE_NAME)) await removeFile(id, f.name);
+    for (const f of await listFiles(id)) if (!(keepSource && f.name.startsWith(SOURCE_NAME))) await removeFile(id, f.name);
   }
   const job = {
     id, version: 1, createdAt: Date.now(), stage: 'analyze',
-    file: { name: state.file.name, size: state.file.size, type: state.file.type }, duration: src.duration,
+    file: multi ? { name: `${files[0].name} ほか${files.length - 1}本`, size: key.size, type: files[0].type } : { name: state.file.name, size: state.file.size, type: state.file.type },
+    ...(multi ? { files: files.map((f, k) => ({ name: f.name, size: f.size, type: f.type, duration: state.lay[k].duration })) } : {}),
+    duration: src.duration,
     useAsr: $('optAsr').checked && !!src.audio, asrEngine: $('optEngine').value === 'whisper' ? 'whisper' : 'reazon', brief: readBrief(),
     sourceSaved: keepSource, analysis: { warnings: [] }, review: null, render: null, output: null, from: OPENED_FROM,
   };
@@ -663,6 +765,7 @@ async function runAnalysis(job) {
   $('stepResult').hidden = true;
   $('btnAnalyze').disabled = true;
   $('file').disabled = true;
+  $('fileListBox').inert = true;
   $('resumeCard').hidden = true; // 処理中は「途中の編集」を押せないようにする（終わったら表示し直す）
   unloadVideo($('preview'));
   unloadVideo($('clipPreview'));
@@ -702,7 +805,7 @@ async function runAnalysis(job) {
     if ((!A.audio && src.audio) || (needPcm && !pcm && src.audio && A.audio && !A.audio.failed)) {
       setStep('audio', 'active');
       try {
-        const a = await analyzeAudio(src, r => setProgress(r, `音声を読み込み中… ${Math.round(r * 100)}%`));
+        const a = await analyzeAudioAll(r => setProgress(r, `音声を読み込み中… ${Math.round(r * 100)}%`));
         pcm = a.pcm;
         state.rmsDb = a.rmsDb;
         A.audio = { rmsDb: a.rmsDb, mode: getAudioMode(), pcmSaved: false };
@@ -820,10 +923,12 @@ async function runAnalysis(job) {
     } else {
       setStep('motion', 'active', A.motion?.partial ? '途中から再開' : undefined);
       try {
-        state.motion = await analyzeMotion(src, r => setProgress(r, `手元の動きを解析中… ${Math.round(r * 100)}%`), 1, {
-          resume: A.motion?.partial || null,
-          onCheckpoint: async partial => { A.motion = { partial }; await persistJob(job); },
-        });
+        state.motion = state.srcs
+          ? await analyzeMotionAll(r => setProgress(r, `手元の動きを解析中… ${Math.round(r * 100)}%`), A, job)
+          : await analyzeMotion(src, r => setProgress(r, `手元の動きを解析中… ${Math.round(r * 100)}%`), 1, {
+            resume: A.motion?.partial || null,
+            onCheckpoint: async partial => { A.motion = { partial }; await persistJob(job); },
+          });
         A.motion = { done: true, data: state.motion };
         await persistJob(job);
         setStep('motion', 'done');
@@ -854,6 +959,7 @@ async function runAnalysis(job) {
   } finally {
     $('btnAnalyze').disabled = false;
     $('file').disabled = false;
+    $('fileListBox').inert = false;
     $('preview').src = state.url;
     lock?.release?.();
     $('renderContext').textContent = `今は${FROM_LABEL[OPENED_FROM]}で開いています。再開するときも${FROM_LABEL[OPENED_FROM]}から開いてください（iPhoneでは保存場所が別です）。`;
@@ -862,7 +968,32 @@ storageInfo().then(info => setEnv('保存', { ...info, openedFrom: OPENED_FROM, 
   }
 }
 
+// 複数の動画の音声を1本ずつ読み、つないだ時刻に並べる（動画と動画の間は無音。メモリには1本ずつ読む）
+async function analyzeAudioAll(onProgress) {
+  if (!state.srcs) return analyzeAudio(state.src, onProgress);
+  const n = state.srcs.length, parts = [];
+  for (const [k, v] of state.srcs.entries()) parts.push(v.audio ? await analyzeAudio(v, r => onProgress((k + r) / n)) : null);
+  const floor = Math.min(...parts.filter(Boolean).map(p => p.rmsDb.reduce((m, x) => Math.min(m, x), Infinity)));
+  return {
+    rmsDb: concatFrames(parts.map(p => p?.rmsDb), state.lay, FRAME_SEC, Number.isFinite(floor) ? floor : -100),
+    pcm: concatPcm(parts.map(p => p?.pcm), state.lay, ASR_RATE),
+  };
+}
+
+// 複数の動画の手元の動きを1本ずつ解析してつなぐ（1本終わるごとに保存し、再開時は続きの動画から）
+async function analyzeMotionAll(onProgress, A, job) {
+  const n = state.srcs.length, parts = A.motion?.parts || [];
+  for (let k = parts.length; k < n; k++) {
+    parts.push(await analyzeMotion(state.srcs[k], r => onProgress((k + r) / n)));
+    A.motion = { parts };
+    await persistJob(job);
+  }
+  return concatMotion(parts, state.lay);
+}
+
 // 元の動画を端末内にコピーする。空きが足りない・失敗したときはコピーせずに進む（再開時に選び直してもらう）
+// 複数の動画は source・source-1・source-2 として保存する
+const sourceName = k => (k ? `${SOURCE_NAME}-${k}` : SOURCE_NAME);
 async function storeSource(job) {
   setStep('store', 'active');
   const info = await storageInfo();
@@ -873,7 +1004,10 @@ async function storeSource(job) {
     return;
   }
   try {
-    await copyIn(job.id, SOURCE_NAME, state.file, r => setProgress(r, `元の動画を端末内に保存中… ${Math.round(r * 100)}%`));
+    const files = state.files || [state.file];
+    for (const [k, f] of files.entries()) {
+      await copyIn(job.id, sourceName(k), f, r => setProgress((k + r) / files.length, `元の動画を端末内に保存中… ${Math.round(((k + r) / files.length) * 100)}%`));
+    }
     job.sourceSaved = true;
     await persistJob(job);
     setStep('store', 'done');
@@ -1225,7 +1359,13 @@ let stopAt = null;
 function playRange(start, end) {
   const v = $('clipPreview');
   v.hidden = false;
-  if (!v.getAttribute('src')) v.src = state.url;
+  // 複数の動画: その場面がある動画を、その動画の中の時刻で再生する
+  if (state.lay) {
+    const s = sourceAt(state.lay, (start + end) / 2);
+    if (v.dataset.source !== String(s.index)) { v.src = state.urls[s.index]; v.dataset.source = String(s.index); }
+    start -= s.offset;
+    end -= s.offset;
+  } else if (!v.getAttribute('src')) v.src = state.url;
   if (stopAt) v.removeEventListener('timeupdate', stopAt);
   stopAt = () => {
     if (v.currentTime >= end) { v.pause(); v.removeEventListener('timeupdate', stopAt); stopAt = null; }
@@ -1377,7 +1517,9 @@ $('btnRender').addEventListener('click', async () => {
   const useZoom = $('optZoom').checked;
   setBreakTerms(briefPlan(readBrief()).items);
   // 最後の場面は、話し終わりの後を少し延ばしてからフェードアウトする（声にフェードがかからないように）
-  const shaped = extendEnding(clips.map(u => ({ ...u, text: state.chunks ? u.text : '', ...shifted(u, state.subOffset) })), state.speech?.voice, state.src.duration);
+  let shaped = extendEnding(clips.map(u => ({ ...u, text: state.chunks ? u.text : '', ...shifted(u, state.subOffset) })), state.speech?.voice, state.src.duration);
+  // 複数の動画: 場面の使う範囲を、それぞれの動画の中に収める（動画と動画の間の無音・となりの動画にはみ出さない）
+  if (state.lay) shaped = shaped.map(u => ({ ...u, pieces: clampPieces(u.pieces, state.lay) })).filter(u => u.pieces.length);
   const timeline = buildTimeline(shaped, {
     srcW: state.src.width, srcH: state.src.height, zoom: useZoom, subtitles: useSubs, style: state.brief?.style,
   });
@@ -1397,7 +1539,20 @@ $('btnRender').addEventListener('click', async () => {
   const segments = planSegments(timeline);
   job.stage = 'render';
   job.review = { selected: [...state.selected], brief: readBrief(), trims: { ...state.trims }, opening: state.opening, openingOn: $('optOpening').checked, openingDur: openingDur(), doubtOk: [...state.doubtOk] };
+  // BGM（選んだときだけ）: 曲のファイルも端末内に保存して、途中から再開しても同じ曲を使う
+  let bgm = null;
+  if ($('optBgm').checked && !state.bgmFile && !confirm('BGMの曲が選ばれていません。BGMなしで書き出しますか？')) { $('btnRender').disabled = false; return; }
+  if ($('optBgm').checked && state.bgmFile) {
+    try {
+      await copyIn(job.id, BGM_NAME, state.bgmFile);
+      bgm = { name: state.bgmFile.name, size: state.bgmFile.size, volume: bgmVolume() };
+    } catch (err) {
+      log('BGMの曲を保存できませんでした', errorText(err));
+      if (!confirm(`BGMの曲を読み込めませんでした（${errorText(err)}）。BGMなしで書き出しますか？`)) { $('btnRender').disabled = false; return; }
+    }
+  }
   job.render = {
+    lay: state.lay || null, bgm,
     timeline, segments, done: segments.map(() => false), gainDb: computeGainDb(clips), overlay, endFade: END_FADE, endHold: END_HOLD,
     styleNote: styleSummary(timeline, useSubs, useZoom, overlay) + (state.doubtfulAtRender?.length ? ` / 字幕の要確認（未確認のまま書き出し）: ${state.doubtfulAtRender.map(d => `${formatTime(d.t)}「${d.text.slice(0, 16)}」`).join('、')}` : ''), outSec, startedAt: Date.now(), elapsed: 0, sessions: 0,
   };
@@ -1417,6 +1572,7 @@ async function runRender(job) {
   $('btnRender').disabled = true;
   $('btnAnalyze').disabled = true;
   $('file').disabled = true;
+  $('fileListBox').inert = true;
   $('resumeCard').hidden = true;
   $('renderBar').hidden = false;
   unloadVideo($('preview'));
@@ -1465,8 +1621,8 @@ async function runRender(job) {
         await removeFile(job.id, name);
         const w = await openWritable(job.id, name);
         try {
-          await renderSegment(state.src, R.timeline, seg, w.stream, {
-            rc, decode: DECODE_MODES[attempt], overlay: R.overlay,
+          await renderSegment(state.srcs || state.src, R.timeline, seg, w.stream, {
+            rc, decode: DECODE_MODES[attempt], overlay: R.overlay, lay: R.lay,
             shouldPause: () => document.hidden,
             onProgress: r => {
               const all = (doneFrames() + r * seg.frames) / total;
@@ -1506,13 +1662,27 @@ async function runRender(job) {
       const hiddenBefore = state.hiddenCount;
       await removeFile(job.id, OUTPUT_NAME);
       const w = await openWritable(job.id, OUTPUT_NAME);
+      // BGM: 仕上げのたびに曲の最初から読む（読み込めないときはBGMなしで仕上げ、そのことを記録する）
+      let bgm = null;
+      if (R.bgm) {
+        try {
+          const f = await readFile(job.id, BGM_NAME);
+          if (!f) throw new Error('保存した曲が見つかりません');
+          bgm = { reader: await readBgm(f), volume: R.bgm.volume };
+        } catch (err) {
+          log('BGMを読み込めないため、BGMなしで仕上げます', errorText(err));
+          R.bgmFailed = errorText(err);
+        }
+      }
       try {
-        await assembleOutput(state.src, R.timeline, R.segments, i => readFile(job.id, `seg-${i}.mp4`), w.stream, {
-          gainDb: R.gainDb, endFade: R.endFade || 0, endHold: R.endHold || 0,
+        await assembleOutput(state.srcs || state.src, R.timeline, R.segments, i => readFile(job.id, `seg-${i}.mp4`), w.stream, {
+          gainDb: R.gainDb, endFade: R.endFade || 0, endHold: R.endHold || 0, lay: R.lay, bgm,
           onProgress: r => show(0.92 + 0.08 * r, `MP4を仕上げ中… ${Math.round(92 + 8 * r)}%`),
         });
+        bgm?.reader.close();
         break;
       } catch (err) {
+        bgm?.reader.close();
         await w.dispose();
         await removeFile(job.id, OUTPUT_NAME);
         // 画面を離れていた間に音声のエンコーダーが止められた: 戻ってから仕上げだけやり直す（区間は残っている）
@@ -1527,6 +1697,7 @@ async function runRender(job) {
     }
     const out = await readFile(job.id, OUTPUT_NAME);
     for (const seg of R.segments) await removeFile(job.id, `seg-${seg.index}.mp4`);
+    if (R.bgm) log('BGM', R.bgmFailed ? { failed: R.bgmFailed } : { name: R.bgm.name, volume: `${+(R.bgm.volume * 100).toFixed(1)}%` });
     R.elapsed = (R.elapsed || 0) + (performance.now() - t0) / 1000;
     job.stage = 'done';
     job.output = { size: out.size, finishedAt: Date.now() };
@@ -1561,6 +1732,7 @@ async function runRender(job) {
     $('btnRender').disabled = false;
     $('btnAnalyze').disabled = false;
     $('file').disabled = false;
+    $('fileListBox').inert = false;
     $('preview').src = state.url;
     lock?.release?.();
     refreshJobs();
@@ -1614,7 +1786,25 @@ function showNotice(msg) {
 async function continueJob(job, { reselected = false } = {}) {
   state.pendingResume = null;
   $('resumeNeedFile').hidden = true;
-  if (!reselected) {
+  if (!reselected && job.files?.length > 1) {
+    // 複数の動画: 保存したコピーをすべて開く（1本でも欠けていたら、同じ動画を同じ順番で選び直してもらう）
+    const fs = [];
+    for (const [k, m] of job.files.entries()) {
+      const f = job.sourceSaved ? await readFile(job.id, sourceName(k)) : null;
+      fs.push(f && f.size === m.size ? new File([f], m.name, { type: m.type || 'video/quicktime' }) : null);
+    }
+    if (fs.some(f => !f)) {
+      state.pendingResume = job;
+      job.sourceSaved = false;
+      $('resumeNeedFile').textContent = `続きから再開するには、同じ動画${job.files.length}本（${job.files.map(m => m.name).join('・')}）を、同じ順番で「1. 動画を選ぶ」からまとめて選んでください。保存済みの解析・書き出しの結果はそのまま使います。`;
+      $('resumeNeedFile').hidden = false;
+      $('file').scrollIntoView({ behavior: 'smooth', block: 'center' });
+      return;
+    }
+    await loadSources(fs, { preview: !['render', 'assemble'].includes(job.stage) });
+    if (!state.src) return;
+    state.sourceFromStore = true;
+  } else if (!reselected) {
     const f = job.sourceSaved ? await readFile(job.id, SOURCE_NAME) : null;
     if (!f || f.size !== job.file.size) {
       // 元の動画のコピーがない（保存しなかった・消えた）: 同じ動画を選び直してもらう
@@ -1625,7 +1815,7 @@ async function continueJob(job, { reselected = false } = {}) {
       $('file').scrollIntoView({ behavior: 'smooth', block: 'center' });
       return;
     }
-    await loadSource(new File([f], job.file.name, { type: job.file.type || 'video/quicktime' }), { preview: !['render', 'assemble'].includes(job.stage) });
+    await loadSources([new File([f], job.file.name, { type: job.file.type || 'video/quicktime' })], { preview: !['render', 'assemble'].includes(job.stage) });
     if (!state.src) return;
     state.sourceFromStore = true;
   }
@@ -1670,6 +1860,18 @@ async function continueJob(job, { reselected = false } = {}) {
     await persistJob(job);
   }
 }
+
+// ---------- BGM ----------
+// 使う人が用意した曲だけ（著作権を確認できない曲をアプリが足すことはしない）。初期の音量は2%
+const bgmVolume = () => Math.max(0, Math.min(10, +$('bgmVol').value || 0)) / 100;
+$('optBgm').addEventListener('change', () => { $('bgmControls').hidden = !$('optBgm').checked; });
+$('bgmVol').addEventListener('input', () => { $('bgmVolOut').textContent = `${+$('bgmVol').value}%`; });
+$('bgmFile').addEventListener('change', () => {
+  const f = $('bgmFile').files?.[0] || null;
+  state.bgmFile = f;
+  $('bgmName').textContent = f ? `${f.name}（${formatSize(f.size)}）` : '未選択';
+  if (f) log('BGMの曲を選択', { name: f.name, type: f.type, sizeMB: +(f.size / 1e6).toFixed(1) });
+});
 
 // 画面上部の「途中の編集」を作る
 async function refreshJobs() {

@@ -92,3 +92,36 @@ export function applyEndFade(data, sr, outStart, total, sec, hold = 0) {
     }
   }
 }
+
+// ---------- BGM ----------
+// BGM は、話し声の邪魔にならないよう、ごく小さく重ねる（初期の音量 2%。0〜10%で選べる）。
+// - 話している間は、さらに半分に下げる（声の大きさを20msごとに見て、ゆっくり下げ・ゆっくり戻す）
+// - 冒頭はフェードイン（1.5秒）、最後はフェードアウト（2秒。映像の最後のフェードとも重なる）
+// 選んだ曲は使う人が用意したもの（著作権を確認できた曲）だけ。アプリが曲を足すことはしない
+export const BGM = { volume: 0.02, max: 0.1, duck: 0.5, fadeIn: 1.5, fadeOut: 2.0, voiceDb: -38, attack: 0.15, release: 0.5 };
+
+// data: 話し声（チャンネルごと・この部分の長さ）。music: 同じ長さのBGM（2チャンネル）。t0: この部分の完成動画での時刻。
+// opt: { volume, state（呼び出しをまたいで使う。下げ具合） }
+export function mixBgm(data, sr, music, t0, total, opt) {
+  const vol = Math.max(0, Math.min(BGM.max, opt.volume ?? BGM.volume));
+  if (!vol || !music) return data;
+  const st = opt.state || (opt.state = { duck: 1 });
+  const len = data[0].length, block = Math.max(1, Math.round(sr * 0.02));
+  const up = 1 - Math.exp(-0.02 / BGM.release), down = 1 - Math.exp(-0.02 / BGM.attack);
+  for (let b = 0; b < len; b += block) {
+    const e = Math.min(len, b + block);
+    let sum = 0;
+    for (let i = b; i < e; i++) for (const ch of data) sum += ch[i] * ch[i];
+    const db = 10 * Math.log10(sum / ((e - b) * data.length) + 1e-12);
+    const target = db > BGM.voiceDb ? BGM.duck : 1;
+    st.duck += (target - st.duck) * (target < st.duck ? down : up);
+    for (let i = b; i < e; i++) {
+      const t = t0 + i / sr;
+      const fade = Math.min(1, t / BGM.fadeIn, Math.max(0, (total - t) / BGM.fadeOut));
+      const g = vol * st.duck * Math.max(0, fade);
+      if (data.length === 1) data[0][i] += g * 0.5 * (music[0][i] + music[1][i]);
+      else for (let c = 0; c < data.length; c++) data[c][i] += g * music[Math.min(c, 1)][i];
+    }
+  }
+  return data;
+}
