@@ -242,7 +242,7 @@
     <p class="lead">カット解説動画から、字幕付きのYouTube動画を自動で作ります。動画の内容や完成時間を入力すると、それに合わせて場面を選びます。処理はすべてこのiPhoneの中で行い、動画はどこにも送信しません。</p>
   </header>
 
-  <div class="banner"><b>テスト版です（v0.9.9）。</b> ①分けて撮った動画を3本まで選び、並べ替え・外したうえで、動画ごとに無音・言い直しを切ってから1本の動画にまとめます（つなぎ目に余分な無音は入れません）②ご自身で用意した曲をBGMとして入れられます（初期の音量2%・0〜10%。話し声を優先し、冒頭と最後はフェード）③字幕は1行・短い意味のまとまりで切り替え、数は算用数字にします。確信できない数・言葉は「要確認」と表示します。<b>これらは iPhone 実機ではまだ確認できていません。</b>うまく動かない場合は、下の「診断情報」をコピーして送ってください。</div>
+  <div class="banner"><b>テスト版です（v1.0 候補）。</b> ①分けて撮った動画を3本まで1本にまとめます②字幕はポイントだけ（「このように」「それは」「しかも」などは、意味が変わらない所では字幕に書きません。音声は残します）。1行・短い意味のまとまりで、数は算用数字③ご自身で用意した曲を、やわらかく小さく（初期2%）BGMとして入れます。にぎやかな曲のときはお知らせします。<b>これらは iPhone 実機ではまだ確認できていません。</b>うまく動かない場合は、下の「診断情報」をコピーして送ってください。</div>
 
   <div class="recover" id="recover" role="alert" hidden>
     <b>前回の処理が途中で止まりました</b>
@@ -417,7 +417,8 @@
         <label class="picker small"><input type="file" id="bgmFile" accept="audio/*,.mp3,.m4a,.aac,.wav"><span class="btn secondary">音楽ファイルを選ぶ</span> <small id="bgmName">未選択</small></label>
         <label class="field">BGMの音量 <output id="bgmVolOut">2%</output>
           <input type="range" id="bgmVol" min="0" max="10" step="0.5" value="2"></label>
-        <small class="note">初期は2%（話し声の邪魔にならない、ごく小さい音量）。0〜10%で選べます</small>
+        <small class="note">初期は2%（話し声の邪魔にならない、ごく小さい音量）。0〜10%で選べます。話している間は、さらに小さくします。曲は高い音と急に大きくなる音（ドラムなど）を抑えて、やわらかく入れます。やさしいピアノや静かなアンビエントの曲がおすすめです</small>
+        <p class="note" id="bgmNote" role="status" hidden></p>
       </div>
     </div>
     <button class="btn block" id="btnRender">この内容でMP4を書き出す</button>
@@ -461,7 +462,7 @@
     </ul>
   </section>
 
-  <footer>Amity AI動画編集 ・ テスト版 v0.9.9</footer>
+  <footer>Amity AI動画編集 ・ テスト版 v1.0 候補</footer>
 </main>
 <script type="module" src="js/app.js"></script>
 </body>

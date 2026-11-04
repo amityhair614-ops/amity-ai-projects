@@ -1,6 +1,6 @@
 import {
   checkSupport, openVideo, closeVideo, analyzeAudio, analyzeMotion, renderSegment, assembleOutput, getAudioMode, ASR_RATE,
-  createRenderContext, RenderPaused, readBgm,
+  createRenderContext, RenderPaused, readBgm, analyzeBgm,
 } from './media.js';
 import { MAX_SOURCES, layout, totalDuration, sourceAt, concatFrames, concatPcm, concatMotion, clampPieces, checkCompatible, move } from './sources.js';
 import {
@@ -13,7 +13,7 @@ import {
 import {
   detectSpeech, transcriptionWindows, asrWindows, mergeAsrPasses, passDoubts, buildUnits, selectUnits, buildTimeline, formatTime, FRAME_SEC, trimUnit, untrimUnit,
   cleanSubtitle, alignSentences, refineSubtitleTiming, fineSpeech, setBreakTerms, openingLines, openingText, openingPlan,
-  END_FADE, END_HOLD, extendEnding, outputLength, OPENING_DURATIONS, BEAUTY_TERMS,
+  END_FADE, END_HOLD, extendEnding, outputLength, OPENING_DURATIONS, BEAUTY_TERMS, clearOpening,
 } from './plan.js';
 import { verifyUnits, verifiedRaw, attachAudioFixes, briefWords, domainWords } from './verify.js';
 import { tokensToChunks, fixTerms, checkRanges, alignScript, assignScript, cutEnding, numberDoubts } from './asrtext.js';
@@ -1527,6 +1527,7 @@ $('btnRender').addEventListener('click', async () => {
   // 冒頭のテキスト（標準1秒・選べる）と最後のフェードアウト（0.9秒＋黒い画面0.2秒）
   const lines = $('optOpening').checked ? openingText(state.opening ?? '') : [];
   const overlay = { opening: openingPlan(lines, openingDur(), timeline[0]), total: outSec };
+  clearOpening(timeline, overlay.opening);
   // 保存できる容量を確かめる（区間のファイルと完成したMP4が一時的に両方必要）
   const need = renderBytes(outSec).total;
   const sc = spaceCheck(await storageInfo(), need);
@@ -1870,7 +1871,23 @@ $('bgmFile').addEventListener('change', () => {
   const f = $('bgmFile').files?.[0] || null;
   state.bgmFile = f;
   $('bgmName').textContent = f ? `${f.name}（${formatSize(f.size)}）` : '未選択';
-  if (f) log('BGMの曲を選択', { name: f.name, type: f.type, sizeMB: +(f.size / 1e6).toFixed(1) });
+  $('bgmNote').hidden = true;
+  if (!f) return;
+  log('BGMの曲を選択', { name: f.name, type: f.type, sizeMB: +(f.size / 1e6).toFixed(1) });
+  // 曲の雰囲気の目安を知らせる（打つ音・高い音が多い曲は、話し声がメインの動画には向かないことがある）
+  analyzeBgm(f).then(c => {
+    log('BGMの曲の雰囲気', c);
+    if (state.bgmFile !== f) return;
+    $('bgmNote').textContent = c.lively
+      ? 'ドラムなどの打つ音や高い音が多めの曲です。話し声がメインの動画には、やさしいピアノや静かなアンビエントの曲がおすすめです（このまま使う場合も、音をやわらかくして小さく入れます）。'
+      : '落ち着いた曲です。話し声の下に、やわらかく小さく入れます。';
+    $('bgmNote').hidden = false;
+  }).catch(err => {
+    log('BGMの曲を読み込めません', errorText(err));
+    if (state.bgmFile !== f) return;
+    $('bgmNote').textContent = `この曲は読み込めませんでした（${errorText(err)}）。MP3・AAC（m4a）・WAV の曲を選んでください。`;
+    $('bgmNote').hidden = false;
+  });
 });
 
 // 画面上部の「途中の編集」を作る

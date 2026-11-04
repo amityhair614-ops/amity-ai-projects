@@ -1,0 +1,367 @@
+{
+ "source": "IMG_6183.mp4（61.67秒）",
+ "manual": "タイトルなし(20261103-235657).mp4（57.37秒）",
+ "ai": "amity-short-20261104-0840.mp4（58.37秒・v0.9.9）",
+ "duration": 57.37,
+ "targetSec": 60,
+ "pauses": {
+  "median": 0.15,
+  "p75": 0.25,
+  "p90": 0.35,
+  "max": 0.7,
+  "note": "手動編集の動画の音声を測った話の途中の間（1.5秒未満）"
+ },
+ "note": "手動編集（正解）と元の動画の照合結果。kept/removed は元の動画の秒（2コマ以内の小さなカットは見分けられない）。subtitles は手動編集の字幕26枚（画面の字幕の帯を見つけて読んだ）。照合は音声だけで行った。言い間違いはほとんどない動画（spoken はすべて retake なし）",
+ "kept": [
+  {
+   "srcStart": 1.0,
+   "srcEnd": 8.93,
+   "outStart": 0.0,
+   "outEnd": 7.87
+  },
+  {
+   "srcStart": 9.1,
+   "srcEnd": 13.17,
+   "outStart": 7.87,
+   "outEnd": 11.9
+  },
+  {
+   "srcStart": 13.47,
+   "srcEnd": 24.73,
+   "outStart": 11.9,
+   "outEnd": 22.87
+  },
+  {
+   "srcStart": 24.93,
+   "srcEnd": 27.03,
+   "outStart": 22.87,
+   "outEnd": 25.0
+  },
+  {
+   "srcStart": 28.2,
+   "srcEnd": 40.7,
+   "outStart": 25.0,
+   "outEnd": 37.5
+  },
+  {
+   "srcStart": 41.33,
+   "srcEnd": 55.47,
+   "outStart": 37.5,
+   "outEnd": 51.63
+  },
+  {
+   "srcStart": 55.77,
+   "srcEnd": 61.5,
+   "outStart": 51.63,
+   "outEnd": 57.37
+  }
+ ],
+ "removed": [
+  {
+   "srcStart": 0,
+   "srcEnd": 1.0,
+   "dur": 1.0
+  },
+  {
+   "srcStart": 8.93,
+   "srcEnd": 9.1,
+   "dur": 0.17
+  },
+  {
+   "srcStart": 13.17,
+   "srcEnd": 13.47,
+   "dur": 0.3
+  },
+  {
+   "srcStart": 24.73,
+   "srcEnd": 24.93,
+   "dur": 0.2
+  },
+  {
+   "srcStart": 27.03,
+   "srcEnd": 28.2,
+   "dur": 1.17
+  },
+  {
+   "srcStart": 40.7,
+   "srcEnd": 41.33,
+   "dur": 0.63
+  },
+  {
+   "srcStart": 55.47,
+   "srcEnd": 55.77,
+   "dur": 0.3
+  },
+  {
+   "srcStart": 61.5,
+   "srcEnd": 61.67,
+   "dur": 0.17
+  }
+ ],
+ "subtitles": [
+  {
+   "text": "セルフカットで",
+   "outStart": 0.77,
+   "outEnd": 1.83,
+   "srcStart": 1.77,
+   "srcEnd": 2.84,
+   "chars": 7
+  },
+  {
+   "text": "ボブを切っていく際",
+   "outStart": 1.83,
+   "outEnd": 4.03,
+   "srcStart": 2.83,
+   "srcEnd": 5.04,
+   "chars": 9
+  },
+  {
+   "text": "これをやってしまうと",
+   "outStart": 4.07,
+   "outEnd": 4.9,
+   "srcStart": 5.07,
+   "srcEnd": 5.91,
+   "chars": 10
+  },
+  {
+   "text": "ガタガタになってしまうこと",
+   "outStart": 4.9,
+   "outEnd": 6.67,
+   "srcStart": 5.9,
+   "srcEnd": 7.67,
+   "chars": 13
+  },
+  {
+   "text": "左右何度も同じように切り進める",
+   "outStart": 7.77,
+   "outEnd": 12.0,
+   "srcStart": 8.83,
+   "srcEnd": 13.57,
+   "chars": 15
+  },
+  {
+   "text": "どういうことかというと",
+   "outStart": 12.03,
+   "outEnd": 12.87,
+   "srcStart": 13.6,
+   "srcEnd": 14.44,
+   "chars": 11
+  },
+  {
+   "text": "右を切った",
+   "outStart": 12.87,
+   "outEnd": 14.67,
+   "srcStart": 14.43,
+   "srcEnd": 16.24,
+   "chars": 5
+  },
+  {
+   "text": "次",
+   "outStart": 14.67,
+   "outEnd": 15.47,
+   "srcStart": 16.23,
+   "srcEnd": 17.07,
+   "chars": 1
+  },
+  {
+   "text": "左を切った",
+   "outStart": 15.67,
+   "outEnd": 16.67,
+   "srcStart": 17.27,
+   "srcEnd": 18.31,
+   "chars": 5
+  },
+  {
+   "text": "次また右、また左",
+   "outStart": 16.67,
+   "outEnd": 19.1,
+   "srcStart": 18.3,
+   "srcEnd": 20.87,
+   "chars": 7
+  },
+  {
+   "text": "これを何度も繰り返していくと",
+   "outStart": 19.6,
+   "outEnd": 22.3,
+   "srcStart": 21.47,
+   "srcEnd": 24.21,
+   "chars": 14
+  },
+  {
+   "text": "気づけば",
+   "outStart": 23.0,
+   "outEnd": 23.47,
+   "srcStart": 25.07,
+   "srcEnd": 25.54,
+   "chars": 4
+  },
+  {
+   "text": "長さが短くなって",
+   "outStart": 23.47,
+   "outEnd": 24.77,
+   "srcStart": 25.53,
+   "srcEnd": 26.84,
+   "chars": 8
+  },
+  {
+   "text": "毛先ガタガタになってしまいます",
+   "outStart": 24.77,
+   "outEnd": 27.4,
+   "srcStart": 26.83,
+   "srcEnd": 30.61,
+   "chars": 15
+  },
+  {
+   "text": "目印をつける",
+   "outStart": 29.37,
+   "outEnd": 30.7,
+   "srcStart": 32.57,
+   "srcEnd": 33.91,
+   "chars": 6
+  },
+  {
+   "text": "ヘアクリップなどで",
+   "outStart": 30.97,
+   "outEnd": 32.8,
+   "srcStart": 34.17,
+   "srcEnd": 36.01,
+   "chars": 9
+  },
+  {
+   "text": "残したい長さに留めておく",
+   "outStart": 32.8,
+   "outEnd": 36.1,
+   "srcStart": 36.0,
+   "srcEnd": 39.31,
+   "chars": 12
+  },
+  {
+   "text": "反対側の横にも同じように留めておいて",
+   "outStart": 36.5,
+   "outEnd": 40.77,
+   "srcStart": 39.7,
+   "srcEnd": 44.61,
+   "chars": 18
+  },
+  {
+   "text": "ヘアクリップの位置合っているか？",
+   "outStart": 40.8,
+   "outEnd": 42.43,
+   "srcStart": 44.63,
+   "srcEnd": 46.27,
+   "chars": 16
+  },
+  {
+   "text": "チェックして",
+   "outStart": 42.43,
+   "outEnd": 43.27,
+   "srcStart": 46.27,
+   "srcEnd": 47.11,
+   "chars": 6
+  },
+  {
+   "text": "良ければ",
+   "outStart": 43.47,
+   "outEnd": 44.07,
+   "srcStart": 47.3,
+   "srcEnd": 47.91,
+   "chars": 4
+  },
+  {
+   "text": "ヘアクリップの下",
+   "outStart": 44.07,
+   "outEnd": 45.87,
+   "srcStart": 47.9,
+   "srcEnd": 49.71,
+   "chars": 8
+  },
+  {
+   "text": "毛先に当たるところを少しずつ切っていくです",
+   "outStart": 45.87,
+   "outEnd": 48.37,
+   "srcStart": 49.7,
+   "srcEnd": 52.21,
+   "chars": 21
+  },
+  {
+   "text": "左右は合います",
+   "outStart": 49.87,
+   "outEnd": 51.63,
+   "srcStart": 53.7,
+   "srcEnd": 55.47,
+   "chars": 7
+  },
+  {
+   "text": "ガタガタになりにくいです",
+   "outStart": 52.37,
+   "outEnd": 54.6,
+   "srcStart": 56.5,
+   "srcEnd": 58.74,
+   "chars": 12
+  },
+  {
+   "text": "ボブを切る際はこれをやっていきましょう",
+   "outStart": 54.67,
+   "outEnd": 57.27,
+   "srcStart": 58.8,
+   "srcEnd": 61.41,
+   "chars": 19
+  }
+ ],
+ "spoken": [
+  {
+   "start": 1.25,
+   "end": 13.1,
+   "text": "セルフカットでボブを切っていく際にこれをやってしまうとガタガタになってしまうことそれは左右何度もね同じように切り進めるです",
+   "retake": false
+  },
+  {
+   "start": 13.01,
+   "end": 16.03,
+   "text": "どういうことかというと右をね切った",
+   "retake": false
+  },
+  {
+   "start": 16,
+   "end": 17.8,
+   "text": "次左を切った",
+   "retake": false
+  },
+  {
+   "start": 18.25,
+   "end": 27.31,
+   "text": "次また右また左これを何度も繰り返していくと気づけば長さが短くなって",
+   "retake": false
+  },
+  {
+   "start": 27.41,
+   "end": 33.8,
+   "text": "毛先もガタガタになってしまいそうならないために目印をつけてです",
+   "retake": false
+  },
+  {
+   "start": 33.74,
+   "end": 39.1,
+   "text": "ヘアクリップなどで残したい長さにこのように留めておく",
+   "retake": false
+  },
+  {
+   "start": 39.6,
+   "end": 52.48,
+   "text": "反対側の横にも同じように留めておいてヘアクリップの位置合っているかどうかチェックしてよければヘアクリップの下毛先に当たる所を少しずつ切っていくんです",
+   "retake": false
+  },
+  {
+   "start": 52.45,
+   "end": 58.45,
+   "text": "そうやることで左右は合いますしかもガタガタになりにくいです",
+   "retake": false
+  },
+  {
+   "start": 57.95,
+   "end": 61.45,
+   "text": "ボブを切る際はこのようにやっていきましょう",
+   "retake": false
+  }
+ ]
+}

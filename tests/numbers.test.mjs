@@ -57,3 +57,12 @@ test('数: 前後の数とかけ離れた数（「1〜4回」の後の「123度�
 test('字幕: 読み取れる表示時間の目安（短い字幕でも0.8秒以上・文字数に合わせて長く）', () => {
   assert.ok(READ_SEC.min >= 0.8 && READ_SEC.shift <= 0.3);
 });
+
+test('冒頭のテキストが出ている間は字幕を出さない（消え始めから出す）', async () => {
+  const { clearOpening, openingPlan } = await import('../js/plan.js');
+  const op = openingPlan(['セルフカット'], 1.0);
+  const tl = [{ subtitles: [{ start: 0.45, end: 1.68, lines: ['セルフカットで'] }, { start: 1.68, end: 3.2, lines: ['ボブを'] }] }];
+  clearOpening(tl, op);
+  assert.ok(Math.abs(tl[0].subtitles[0].start - (op.end - op.fadeOut)) < 1e-9);
+  assert.equal(tl[0].subtitles[1].start, 1.68);
+});

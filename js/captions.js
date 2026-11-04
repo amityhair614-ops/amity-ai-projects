@@ -18,7 +18,7 @@
 // 「でも」「もし」「ただ」「だから」など、省くと意味が変わる言葉は省かない。「それは」「それも」のように、
 // 文の中で何かを指している指示語も省かない。否定の言葉・用語・数字・注意の言葉を含む部分は、省く対象にならない
 const FILLER_RE = /^(?:えー+と?|えっと|ええと|あのー?|あの[、,]|まあ|まぁ|うーん|んー)[、,\s]*/;
-const HEAD_CONNECTIVE_RE = /^(?:なので|ですので|それで|そして|それから|そうなると|なぜかというと|で[、,]|じゃあ)[、,\s]*/;
+const HEAD_CONNECTIVE_RE = /^(?:なので|ですので|それで|そして|それから|しかも|そうなると|そうならないために|そうしないために|なぜかというと|で[、,]|じゃあ)[、,\s]*/;
 // 調子をとる「ね」: 漢字・カタカナの言葉＋助詞の後、「分」の後、指示語＋助詞の後。後ろに言葉が続くときだけ
 const INTERJECTION_NE_RE = /((?:[一-鿿々ァ-ヶー]|それ|これ|あれ)[がをはにでもとの]|分|[一-鿿][ぁ-ゖ]?な|あまり|かなり|すごく|ちょっと|やっぱり|本当に|ほんとに|結構|けっこう)ね(?=[^、。\s]{2})/g;
 // 形容詞（〜い）・「〜ない」の後の「という」＋名詞
@@ -28,12 +28,19 @@ const HEAD_DEMONSTRATIVE_RE = /^(?:それ|あれ|これ)[、,]\s*/;
 const HEAD_ALSO_RE = /^あと[、,]?\s*(?=[一-鿿々ァ-ヶ][^、。]*[はがも])/;
 // 答えの「それは」（「それはすき量です」）: 名詞で言い切るページだけ（「それは大事」「それは使わない」のように指す物が要る所は省かない）
 const HEAD_ANSWER_RE = /^それは[、,]?\s*(?=[一-鿿々ァ-ヶーぁ-ゖ]{2,8}(?:です|だ)$)(?![^]*(?:ない|ません))/;
+// ページの頭の「それは」（前の文を受けて説明を始める言い方。「それは左右何度も…」）。後ろが「何」「どこ」などの問いかけのときは残す
+const HEAD_SOREWA_RE = /^それは[、,]?\s*(?![何どいなぜ])(?=[一-鿿々ァ-ヶー])/;
+// ページの頭の「その」「あの」（指す言葉。「そのパーセンテージが」）。「その後」「その時」「その分」「そのまま」「その場」など、
+// 時・量・様子を表す言い方は意味が変わるので残す
+const HEAD_SONO_RE = /^(?:その|あの)(?!後|あと|時|とき|分|まま|場|代わり|ため|くらい|ぐらい|程度|辺|上|中|前|先|次)(?=[一-鿿々ァ-ヶー])/;
 // 省いた後に残る文字がこれより短いときは省かない（「なので」だけのページは、そのまま出す）
 const MIN_REST = 4;
 
 const restLen = t => t.replace(/[、。,\s]/g, '').length;
 
 const MID_FILLER_RE = /([、,]\s*)(?:えー+と?|えっと|ええと|あのー|まあ|まぁ|うーん)[、,]/g;
+// 文の中の「このように」（手元を見せながら言う言葉。字幕では書かなくても伝わる。「残したい長さにこのように留めておく」）
+const KONOYOUNI_RE = /(^|[^ぁ-ゖ]|[にでをはがも])このように[、,]?/g;
 
 // 1段目（字幕のページに分ける前）: 文の中の、調子をとる「ね」・「という」・つなぎ言葉を省く。
 // 1文字ごとの時刻 times があれば、同じ文字を省いた時刻の並びも返す（ページの切り替えを話した時刻に合わせるため）。
@@ -54,6 +61,7 @@ export function cleanForDisplay(text, times = null) {
   mark(INTERJECTION_NE_RE, m => m[1], 'ね');
   mark(TOIU_RE, m => m[1], 'という');
   mark(MID_FILLER_RE, m => m[1]);
+  mark(KONOYOUNI_RE, m => m[1], 'このように');
   let out = '';
   const outTimes = [];
   for (let k = 0; k < t.length; k++) if (!drop[k]) { out += t[k]; if (times) outTimes.push(times[k]); }
@@ -74,7 +82,7 @@ export function displayText(text) {
     return { text: '', omitted: [...omitted, lone] };
   }
   for (let guard = 0; guard < 4; guard++) {
-    const m = t.match(FILLER_RE) || t.match(HEAD_CONNECTIVE_RE) || t.match(HEAD_DEMONSTRATIVE_RE) || t.match(HEAD_ALSO_RE) || t.match(HEAD_ANSWER_RE);
+    const m = t.match(FILLER_RE) || t.match(HEAD_CONNECTIVE_RE) || t.match(HEAD_DEMONSTRATIVE_RE) || t.match(HEAD_ALSO_RE) || t.match(HEAD_ANSWER_RE) || t.match(HEAD_SOREWA_RE) || t.match(HEAD_SONO_RE);
     if (!m || restLen(t.slice(m[0].length)) < MIN_REST) break;
     omitted.push(m[0].replace(/[、,\s]+$/, ''));
     t = t.slice(m[0].length);
@@ -85,6 +93,8 @@ export function displayText(text) {
   // 話し言葉で、動詞の終わりの形に「です」をつけた所（「軽くするです」）は、字幕では「です」を書かない（意味は同じ）。
   // 「〜ないです」「〜いです」（形容詞）は自然な言い方なので、そのまま
   if (/[うくすつぬむるぐぶ]です$/.test(t) && !/(?:ます|ません)です$/.test(t)) { t = t.slice(0, -2); omitted.push('です'); }
+  // 「〜てです」（「目印をつけてです」）も、字幕では「です」を書かない
+  if (/[^ぁ-ゖ][ぁ-ゖ]*[てで]です$/.test(t) && !/(?:ので|んで)です$/.test(t)) { t = t.slice(0, -2); omitted.push('です'); }
   // 表記をそろえる（「やってみて下さい」→「やってみてください」）
   t = t.replace(/て下さい/g, 'てください');
   // ページの終わりの、調子をとる「ね」（「1〜3度ぐらいね」「その分ね」）は書かない（「ですね」「よね」は文の終わりの言い方なので残す）

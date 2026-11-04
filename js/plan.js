@@ -595,6 +595,21 @@ function sentenceVoice(voice, rmsDb, start, end) {
   return segs.filter(s => s.end - s.start > 0.05);
 }
 
+// 声の区間（voice）は短すぎる声を含まないため、文の頭・終わりの短い言葉（「次、左を切った」の「次」0.2秒）が
+// 声の区間から外れて、音声から切り取られることがある。字幕AIがその言葉の文字を出している（文字の時刻がある）ときは、
+// その時刻の細かい声の区間（fine）を文の声に加える（言葉の頭・語尾を切らない）
+function withShortWords(segs, c, fine) {
+  if (!segs.length || !c.tokens?.length || !fine?.length) return segs;
+  const out = segs.map(x => ({ ...x }));
+  const t0 = c.tokens[0].t, t1 = c.tokens[c.tokens.length - 1].t;
+  // 文字の時刻は、その文字を話している途中〜少し後に出る
+  const head = fine.filter(f => f.end <= out[0].start - 0.05 && f.end >= t0 - 0.35 && f.start <= t0 + 0.05 && f.start >= c.start - 0.3);
+  if (head.length) out.unshift(...head.map(f => ({ start: f.start, end: f.end })));
+  const tail = fine.filter(f => f.start >= out[out.length - 1].end + 0.05 && f.start <= t1 + 0.05 && f.end >= t1 - 0.35 && f.end <= c.end + 0.3);
+  if (tail.length) out.push(...tail.map(f => ({ start: f.start, end: f.end })));
+  return out;
+}
+
 // 文の中の文字の位置 at に当たる声の切れ目を、声の区間から探す。
 // 文字の位置を読みの長さで時刻に直し、その近く（±0.6秒）の声の切れ目（0.08秒以上）を探す。見つからなければ null
 function findGap(u, sp, at) {
@@ -831,7 +846,7 @@ export function buildUnits({ duration, rmsDb, speech, chunks, motion, pace, rest
     const ca = analyzeContent(chunks);
     const flags = ca.map(r => r?.drop || null);
     chunks.forEach((c, i) => {
-      const segs = sentenceVoice(voice, rmsDb, c.start, c.end);
+      const segs = withShortWords(sentenceVoice(voice, rmsDb, c.start, c.end), c, fineAll);
       const speechDur = piecesDuration(speechPieces(regions, c.start, c.end));
       const len = Math.max(0.01, c.end - c.start);
       const text = (c.text || '').trim();
@@ -1980,6 +1995,18 @@ export function openingPlan(lines, duration = OPENING.duration, firstClip = null
   const b = firstClip?.inCrop;
   const y = b && (firstClip.motion ?? 0) >= 0.2 && b[2] < 0.4 && b[3] < 0.6 ? 0.5 : OPENING.y;
   return { lines: lines.slice(0, OPENING.maxLines), start: OPENING.start, end: OPENING.start + d, fadeIn: OPENING.fadeIn, fadeOut: OPENING.fadeOut, y };
+}
+
+// 冒頭のテキストが出ている間は字幕を出さない（手動編集と同じ。2つの文字が重なって読みにくくならないように）。
+// テキストが消え始める所から字幕を出す（字幕のページが短くなりすぎるときは、そのページだけ少し早めに出す）
+export function clearOpening(timeline, op) {
+  if (!op) return timeline;
+  const from = op.end - op.fadeOut;
+  for (const c of timeline) for (const p of c.subtitles || []) {
+    if (p.start >= from || p.end <= op.start) continue;
+    p.start = Math.min(from, p.end - 0.5);
+  }
+  return timeline;
 }
 
 // 冒頭のテキストの不透明度（ゆっくり始まりゆっくり終わる）

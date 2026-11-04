@@ -2,7 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { layout, totalDuration, sourceAt, concatFrames, concatPcm, concatMotion, clampPieces, localPiece, checkCompatible, move, GAP, MAX_SOURCES } from '../js/sources.js';
-import { mixBgm, BGM } from '../js/audiomix.js';
+import { mixBgm, BGM, softenMusic, bgmCharacter } from '../js/audiomix.js';
 
 const lay = layout([{ duration: 29.03 }, { duration: 16 }, { duration: 12.18 }]);
 
@@ -58,7 +58,7 @@ test('BGM: 初期は2%・話している間は半分・冒頭と最後はフェ�
   const added = i => data[0][i] - voice[i];
   assert.ok(added(100) > 0 && added(100) < added(1600), '冒頭はフェードイン');
   assert.ok(Math.abs(added(1600) - 0.02) < 0.002, `無音の所は2%: ${added(1600)}`);
-  assert.ok(Math.abs(added(3900) - 0.01) < 0.002, `話している所は半分: ${added(3900)}`);
+  assert.ok(Math.abs(added(3900) - 0.02 * BGM.duck) < 0.002, `話している所はさらに小さく: ${added(3900)}`);
   const end = [new Float32Array(len)];
   mixBgm(end, sr, music, 96, 100, { volume: 0.02 });
   assert.ok(end[0][3990] < end[0][100], '最後はフェードアウト');
@@ -66,3 +66,26 @@ test('BGM: 初期は2%・話している間は半分・冒頭と最後はフェ�
   mixBgm(none, sr, [new Float32Array(10).fill(1), new Float32Array(10).fill(1)], 5, 100, { volume: 0 });
   assert.ok(none[0].every(v => v === 0));
 });
+
+test('BGM: やわらかくする（高い音を抑え、ドラムのような急に大きくなる音を平均の2倍までに）・曲の雰囲気の目安', () => {
+  const sr = 48000, n = sr * 3;
+  const hi = [new Float32Array(n), new Float32Array(n)];
+  for (let i = 0; i < n; i++) hi[0][i] = hi[1][i] = Math.sin(2 * Math.PI * 9000 * i / sr) * 0.5;
+  const lo = [new Float32Array(n), new Float32Array(n)];
+  for (let i = 0; i < n; i++) lo[0][i] = lo[1][i] = Math.sin(2 * Math.PI * 200 * i / sr) * 0.5;
+  softenMusic(hi, sr, { lp: [[0, 0], [0, 0]], env: 0, avg: 0.3 });
+  softenMusic(lo, sr, { lp: [[0, 0], [0, 0]], env: 0, avg: 0.3 });
+  const rms = x => Math.sqrt(x.slice(n / 2).reduce((a, v) => a + v * v, 0) / (n / 2));
+  assert.ok(rms(lo[0]) > 0.3 && rms(hi[0]) < rms(lo[0]) * 0.75, `${rms(hi[0])} / ${rms(lo[0])}`);
+  // 静かな所に急に大きな音（打つ音）
+  const hit = [new Float32Array(n).fill(0.01), new Float32Array(n).fill(0.01)];
+  for (let i = sr * 2; i < sr * 2 + 2000; i++) hit[0][i] = hit[1][i] = 0.9;
+  softenMusic(hit, sr, { lp: [[0.01, 0.01], [0.01, 0.01]], env: 0.01, avg: 0.01 });
+  assert.ok(Math.max(...hit[0].slice(sr * 2 + 1000, sr * 2 + 2000)) < 0.1, '打つ音を抑える');
+  // 雰囲気: 高い音が多い（シンバルのような雑音）曲は「にぎやか」、低い持続音は「落ち着いた」
+  const noise = new Float32Array(16000 * 5).map(() => Math.random() - 0.5);
+  const pad = new Float32Array(16000 * 5).map((_, i) => Math.sin(2 * Math.PI * 220 * i / 16000) * 0.3);
+  assert.ok(bgmCharacter(noise, 16000).lively);
+  assert.ok(!bgmCharacter(pad, 16000).lively);
+});
+

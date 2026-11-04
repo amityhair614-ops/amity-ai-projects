@@ -14,7 +14,7 @@ import { registerAacEncoder } from '@mediabunny/aac-encoder';
 import { FRAME_SEC, FPS, OUT_W, OUT_H, SUB_ZONES, cropAt, subtitleAlpha, openingAlpha, endFadeAlpha } from './plan.js';
 import { log } from './diag.js';
 import { Resampler } from './resample.js';
-import { AudioStitcher, applyGain, applyEndFade, mixBgm } from './audiomix.js';
+import { AudioStitcher, applyGain, applyEndFade, mixBgm, bgmCharacter } from './audiomix.js';
 import { localPiece } from './sources.js';
 
 export const ASR_RATE = 16000;
@@ -806,4 +806,18 @@ export async function readBgm(file) {
     },
     close() { iter?.return?.(); input.dispose(); },
   };
+}
+
+// 選んだ曲の雰囲気の目安（最初の30秒）。話し声がメインの動画に向くかを知らせる（曲を変えることはしない）
+export async function analyzeBgm(file) {
+  const r = await readBgm(file);
+  try {
+    const sr = 16000, n = Math.round(Math.min(30, r.duration || 30) * sr);
+    const [l, rr] = await r.read(n, sr);
+    const mono = new Float32Array(n);
+    for (let i = 0; i < n; i++) mono[i] = 0.5 * (l[i] + rr[i]);
+    return { duration: r.duration, ...bgmCharacter(mono, sr) };
+  } finally {
+    r.close();
+  }
 }
