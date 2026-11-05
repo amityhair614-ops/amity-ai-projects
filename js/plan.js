@@ -607,6 +607,11 @@ function withShortWords(segs, c, fine) {
   if (head.length) out.unshift(...head.map(f => ({ start: f.start, end: f.end })));
   const tail = fine.filter(f => f.start >= out[out.length - 1].end + 0.05 && f.start <= t1 + 0.05 && f.end >= t1 - 0.35 && f.end <= c.end + 0.3);
   if (tail.length) out.push(...tail.map(f => ({ start: f.start, end: f.end })));
+  // 文の終わりのすぐ後（0.35秒以内）の短い声（0.5秒以下）は、字幕AIが聞き落とした語尾（「〜ちゃいそ｜ます」）のことが多いので残す
+  // （次の文の声には食い込まない）
+  const lastEnd = out[out.length - 1].end;
+  const trail = fine.filter(f => f.start > lastEnd + 0.05 && f.start <= lastEnd + 0.35 && f.end - f.start <= 0.5 && f.end <= c.end + 0.5 && f.start >= t1);
+  if (trail.length) out.push({ start: trail[0].start, end: trail[0].end });
   return out;
 }
 
@@ -1166,6 +1171,9 @@ function breakScore(text, i, inside, pause = 0) {
   let sc = grammarScore(text, i, inside, prev, next);
   // 声の間は意味の切れ目の手がかり。ただし、言葉の途中らしい所（「でき」「アホ／毛」「こ／の」）では、間があっても優先しない
   // （1文字ごとの時刻は少しずれるため、言葉の途中に間があるように見えることがある）
+  // 言い切りの形（〜ない・〜ます・〜た）の後に、はっきりした息継ぎ（0.2秒以上）があれば、ひらがなが続いても意味の切れ目
+  // （「とにかく落ち着かない／まとまりが…」）。言葉の途中（「まと／まり」）には息継ぎが入らない
+  if (sc < 0 && pause >= 0.2 && /(?:ない|ます|です|した|った|ました)$/.test(text.slice(0, i)) && charType(next) === 'hira' && !PARTICLES.includes(next) && !NEGATION_HEAD_RE.test(text.slice(i))) return 2.5 + 1.5;
   if (sc <= -1) return sc;
   if (sc < 0) sc += pause >= 0.35 ? 1 : 0;
   else if (pause >= 0.35) sc += 4;
@@ -1226,7 +1234,10 @@ function grammarScore(text, i, inside, prev, next) {
   if (a === 'hira' && (b === 'kanji' || b === 'kata')) return 1;
   if (a === 'kata' && b === 'kanji') return -4; // 「アホ毛」「カット面」のようなひとまとまりの言葉が多い
   if ((a === 'num' || b === 'num') && a !== b) return -1; // 「0度」「45度」を分けない
-  if (a === 'kanji' && b === 'hira') return -1; // 送り仮名（「伸／びて」）を分けない
+  // 送り仮名・動詞の活用（「伸／ばして」「軽／く」）を分けない。後ろが助詞・「です」などで始まるとき（「場所／は」）は上で扱う
+  if (a === 'kanji' && b === 'hira') return -6;
+  // 動詞の後の「際」「時」（「していく際／今後」）は、それだけで名詞のまとまりの終わり（漢字が続いても別の言葉）
+  if (a === 'kanji' && b === 'kanji' && '際時'.includes(prev) && 'くるすうつぬむぐぶたいだ'.includes(text[i - 2] || '')) return 3.5;
   if (a === b && a !== 'hira') return -Infinity; // カタカナ語・漢字語・数字の途中では切らない
   if (a === 'hira' && b === 'hira') return -3; // ひらがなの言葉の途中（「よ／う」「ついていな／い」）では分けない（10文字を少し超える方がよい）
   return 0;
@@ -1290,6 +1301,10 @@ function linePages(text, maxChars, pauseAt) {
   // 文の境目（字幕AIは句点を出さないので、語尾と次の文の始まりの言葉から判断する）をまたぐページは作らない
   const ends = [];
   for (let k = 1; k < L; k++) if (!/[、。,\s]/.test(text[k]) && sentenceBoundary(text, k)) ends.push(k); // 読点の前ではなく後を境目とする
+  // 言い切りの形（〜ない・〜ます・〜です）の後の息継ぎ（0.18秒以上）も、文の境目として扱う（「とにかく落ち着かない／まとまりが…」）
+  if (pauseAt) for (let k = 2; k < L; k++) {
+    if (pauseAt(k) >= 0.18 && /(?:ない|ます|です)$/.test(text.slice(0, k)) && !PARTICLES.includes(text[k]) && !NEGATION_HEAD_RE.test(text.slice(k)) && !/^[よねか]/.test(text.slice(k)) && !ends.includes(k)) ends.push(k);
+  }
   const cost = new Array(L + 1).fill(Infinity), from = new Array(L + 1).fill(-1);
   cost[0] = 0;
   for (let j = 1; j <= L; j++) {
@@ -1359,7 +1374,7 @@ function pageTexts(text, maxChars, maxLines, pauseAt) {
 // 分けると不自然になる（「段を入れる必要が／あります」）ときは、12〜15文字も使う（最大15文字）
 export const SUB_MAX_CHARS = 15;
 export const SUB_LINES = 1;
-const SUB_TARGET_CHARS = 9;
+const SUB_TARGET_CHARS = 8;
 const SUB_SOFT_MAX = 11; // これより長いページは、よい区切りがあれば分ける
 const SUB_LONG_SEC = 3; // これより長く出ているページは、よい区切りがあれば分ける
 // pauseAt(i): text の i 文字目の前の声の間（秒）。わかるときは、声の間を意味の切れ目として区切りに使う
@@ -1819,6 +1834,7 @@ const SUB_LINGER = 0.25; // 話し終わってから少しだけ残す
 // 文字の時刻は声より少し早めに出るので CHAR_LAG を足す。字幕を手直しした・文の一部を取り除いた場合（文字と時刻が
 // 合わない）は使わない（null を返す）
 const CHAR_LAG = 0.15;
+const PAGE_LEAD = 0.1; // 字幕AIの文字の時刻から、その文字を話し始めた時刻までのおよその差
 function charPageTimes(pageTexts, clip, fine) {
   const text = clip.text || '', times = clip.times;
   if (!times || times.length !== text.length) return null;
@@ -1837,14 +1853,21 @@ function charPageTimes(pageTexts, clip, fine) {
   const lastT = times[times.length - 1] + CHAR_LAG;
   const v = fine.find(r => r.start <= lastT + 0.05 && r.end >= lastT - 0.05);
   const end = Math.min(clip.subEnd ?? lastT + 0.4, Math.max(lastT + 0.2, v ? v.end : lastT + 0.3));
-  // 2ページ目からは、文字の時刻の少し後に声の出始め（声の区間の始まり）があれば、そこに合わせる。
-  // 原稿の文字の時刻は、字幕AIの文字と対応しない所では前後から割り振るため、声より早くなることがある
+  // 2ページ目からは、そのページの最初の文字を話し始めた時刻に切り替える。字幕AIの文字の時刻は、その文字を話している途中〜
+  // 少し後に出るので、直前（0.4秒以内）に声の出始め（息継ぎの後）があればそこ、なければ文字の時刻の少し前にする。
+  // 声が続いている所で、先の声の出始めまで待つと、字幕が声より遅れる（0.5秒ほど）
   for (let i = 1; i < out.length; i++) {
-    const on = fine.find(r => r.start >= out[i].start - 0.15 && r.start <= out[i].start + 0.8);
-    if (on) out[i].start = Math.max(out[i - 1].start + 0.3, on.start - 0.1);
+    const t = times[out[i].at];
+    const on = fine.filter(r => r.start >= t - 0.4 && r.start <= t + 0.1).pop();
+    out[i].start = Math.max(out[i - 1].start + 0.3, on ? on.start - 0.05 : t - PAGE_LEAD);
   }
-  // 最初のページは、声の出始めに合わせた表示開始（subStart）から
-  return out.map((p, i) => ({ start: i ? p.start : (clip.subStart ?? p.start), end: i + 1 < out.length ? out[i + 1].start : end }));
+  // 最初のページは、声の出始めに合わせた表示開始（subStart）から。ただし文の頭の言葉を字幕で省いた（「そうならないために」）ときは、
+  // 残った最初の言葉を話し始めた所から（省いた言葉を話している間は字幕を出さない）
+  const t0 = times[out[0]?.at ?? 0];
+  const on0 = fine.filter(r => r.start >= t0 - 0.4 && r.start <= t0 + 0.1).pop();
+  const sub = clip.subStart ?? out[0]?.start;
+  const first = t0 - 0.6 > sub ? Math.max(sub, on0 ? on0.start - 0.05 : t0 - PAGE_LEAD) : sub;
+  return out.map((p, i) => ({ start: i ? p.start : first, end: i + 1 < out.length ? out[i + 1].start : end }));
 }
 
 // 時刻 a〜b の間の無音（声の区間 fine のすき間）の長さ
@@ -1865,11 +1888,12 @@ function charPauses(clip, fine) {
     let a = i - 1;
     while (a >= 0 && /[、。\s]/.test(text[a])) a--;
     if (a < 0 || i >= text.length) return 0;
-    return silenceBetween(fine, times[a] + CHAR_LAG, times[i] + CHAR_LAG);
+    // 声の区間の無音と、文字の時刻の間（ふだんは1文字0.1〜0.2秒。大きくあいた所は息継ぎ）の大きい方
+    return Math.max(silenceBetween(fine, times[a] + CHAR_LAG, times[i] + CHAR_LAG), times[i] - times[a] - 0.2);
   };
   // i〜j 文字目を表示しておく時間（i 文字目を話し始めてから j 文字目を話し始めるまで。文の最後は少し残す）
   // ページの切り替えは、文字の時刻の少し後の声の出始めに合わせる（charPageTimes と同じ）
-  const at = k => { const t = times[k] + CHAR_LAG, on = fine.find(r => r.start >= t - 0.15 && r.start <= t + 0.8); return on ? on.start - 0.1 : t; };
+  const at = k => { const t = times[k], on = fine.filter(r => r.start >= t - 0.4 && r.start <= t + 0.1).pop(); return on ? on.start - 0.05 : t - PAGE_LEAD; };
   f.span = (i, j) => (j < text.length ? at(j) : times[text.length - 1] + CHAR_LAG + 0.4) - (i ? at(i) : times[0]);
   return f;
 }
@@ -1914,8 +1938,8 @@ function timedPages(clip, text) {
 
 // 読み取れる表示時間（文字数に合わせる）。短く速く話した所の字幕（「グラデーションのように」0.56秒）は、
 // 前のページとの間のすき間から少し早く出し始め（最大0.3秒）、まだ足りなければ次のページへの切り替えを少し遅らせる
-// （次のページも読める長さを残す。最大0.3秒）。声とのずれは0.3秒以内にとどめる
-export const READ_SEC = { base: 0.3, perChar: 0.08, min: 0.8, shift: 0.3 };
+// （次のページも読める長さを残す。最大0.5秒）。声とのずれは早め0.3秒・遅め0.5秒以内にとどめる
+export const READ_SEC = { base: 0.3, perChar: 0.08, min: 0.8, shift: 0.3, late: 0.5 };
 const readTime = p => Math.max(READ_SEC.min, READ_SEC.base + READ_SEC.perChar * p.lines.join('').length);
 function readable(pages, clipStart, clipEnd = Infinity) {
   for (let i = 0; i < pages.length; i++) {
@@ -1927,7 +1951,7 @@ function readable(pages, clipStart, clipEnd = Infinity) {
     p.start -= early; need -= early;
     const next = pages[i + 1];
     if (need > 0 && next && next.start <= p.end + 1e-6) {
-      const late = Math.min(need, READ_SEC.shift, Math.max(0, (next.end - next.start) - readTime(next)));
+      const late = Math.min(need, READ_SEC.late, Math.max(0, (next.end - next.start) - readTime(next)));
       p.end += late; next.start += late;
     } else if (need > 0 && !next) p.end = Math.min(clipEnd, p.end + need); // 場面の最後の字幕は、場面の終わりまで延ばしてよい
   }

@@ -1,0 +1,356 @@
+{
+ "source": "IMG_6289.mp4（48.83秒）",
+ "manual": "タイトルなし(20261104-233832).mp4（44.60秒）",
+ "ai": "amity-short-20261105-0822.mp4（44.27秒・v1.0 候補）",
+ "duration": 44.6,
+ "targetSec": 45,
+ "pauses": {
+  "median": 0.15,
+  "p75": 0.25,
+  "p90": 0.35,
+  "max": 0.7,
+  "note": "手動編集の動画の音声を測った話の途中の間（1.5秒未満）"
+ },
+ "note": "手動編集（正解）と元の動画の照合結果。kept/removed は元の動画の秒（2コマ以内の小さなカットは見分けられない）。subtitles は手動編集の字幕19枚（画面の字幕の帯を見つけて読んだ）。照合は音声だけで行った。言い間違いはほとんどない動画（spoken はすべて retake なし）",
+ "kept": [
+  {
+   "srcStart": 0.97,
+   "srcEnd": 5.57,
+   "outStart": 0.0,
+   "outEnd": 4.6
+  },
+  {
+   "srcStart": 6.2,
+   "srcEnd": 11.63,
+   "outStart": 4.6,
+   "outEnd": 10.03
+  },
+  {
+   "srcStart": 12.1,
+   "srcEnd": 13.8,
+   "outStart": 10.03,
+   "outEnd": 11.73
+  },
+  {
+   "srcStart": 14.17,
+   "srcEnd": 20.57,
+   "outStart": 11.73,
+   "outEnd": 18.13
+  },
+  {
+   "srcStart": 20.77,
+   "srcEnd": 24.07,
+   "outStart": 18.13,
+   "outEnd": 21.43
+  },
+  {
+   "srcStart": 24.3,
+   "srcEnd": 33.33,
+   "outStart": 21.43,
+   "outEnd": 30.47
+  },
+  {
+   "srcStart": 33.57,
+   "srcEnd": 35.77,
+   "outStart": 30.47,
+   "outEnd": 32.67
+  },
+  {
+   "srcStart": 35.97,
+   "srcEnd": 38.33,
+   "outStart": 32.67,
+   "outEnd": 35.03
+  },
+  {
+   "srcStart": 38.6,
+   "srcEnd": 43.27,
+   "outStart": 35.03,
+   "outEnd": 39.7
+  },
+  {
+   "srcStart": 43.53,
+   "srcEnd": 48.43,
+   "outStart": 39.7,
+   "outEnd": 44.6
+  }
+ ],
+ "removed": [
+  {
+   "srcStart": 0,
+   "srcEnd": 0.97,
+   "dur": 0.97
+  },
+  {
+   "srcStart": 5.57,
+   "srcEnd": 6.2,
+   "dur": 0.63
+  },
+  {
+   "srcStart": 11.63,
+   "srcEnd": 12.1,
+   "dur": 0.47
+  },
+  {
+   "srcStart": 13.8,
+   "srcEnd": 14.17,
+   "dur": 0.37
+  },
+  {
+   "srcStart": 20.57,
+   "srcEnd": 20.77,
+   "dur": 0.2
+  },
+  {
+   "srcStart": 24.07,
+   "srcEnd": 24.3,
+   "dur": 0.23
+  },
+  {
+   "srcStart": 33.33,
+   "srcEnd": 33.57,
+   "dur": 0.24
+  },
+  {
+   "srcStart": 35.77,
+   "srcEnd": 35.97,
+   "dur": 0.2
+  },
+  {
+   "srcStart": 38.33,
+   "srcEnd": 38.6,
+   "dur": 0.27
+  },
+  {
+   "srcStart": 43.27,
+   "srcEnd": 43.53,
+   "dur": 0.26
+  },
+  {
+   "srcStart": 48.43,
+   "srcEnd": 48.83,
+   "dur": 0.4
+  }
+ ],
+ "subtitles": [
+  {
+   "text": "セルフカットで",
+   "outStart": 0.77,
+   "outEnd": 1.5,
+   "srcStart": 1.73,
+   "srcEnd": 2.47,
+   "chars": 7
+  },
+  {
+   "text": "伸びて重くなったボブを",
+   "outStart": 1.5,
+   "outEnd": 3.0,
+   "srcStart": 2.47,
+   "srcEnd": 3.97,
+   "chars": 11
+  },
+  {
+   "text": "軽くしていく際",
+   "outStart": 3.0,
+   "outEnd": 4.2,
+   "srcStart": 3.97,
+   "srcEnd": 5.17,
+   "chars": 7
+  },
+  {
+   "text": "今後伸ばしていくなら",
+   "outStart": 4.77,
+   "outEnd": 6.23,
+   "srcStart": 6.37,
+   "srcEnd": 7.84,
+   "chars": 10
+  },
+  {
+   "text": "この場所は",
+   "outStart": 6.23,
+   "outEnd": 7.1,
+   "srcStart": 7.83,
+   "srcEnd": 8.71,
+   "chars": 5
+  },
+  {
+   "text": "軽くしてはいけない",
+   "outStart": 7.1,
+   "outEnd": 8.73,
+   "srcStart": 8.7,
+   "srcEnd": 10.34,
+   "chars": 9
+  },
+  {
+   "text": "生え際",
+   "outStart": 10.23,
+   "outEnd": 11.73,
+   "srcStart": 12.3,
+   "srcEnd": 13.81,
+   "chars": 3
+  },
+  {
+   "text": "横の生え際は",
+   "outStart": 11.9,
+   "outEnd": 13.1,
+   "srcStart": 14.33,
+   "srcEnd": 15.54,
+   "chars": 6
+  },
+  {
+   "text": "軽くしないようにしておきましょう",
+   "outStart": 13.1,
+   "outEnd": 15.0,
+   "srcStart": 15.53,
+   "srcEnd": 17.44,
+   "chars": 16
+  },
+  {
+   "text": "生え際を軽くしてしまうと",
+   "outStart": 15.07,
+   "outEnd": 17.87,
+   "srcStart": 17.5,
+   "srcEnd": 20.31,
+   "chars": 12
+  },
+  {
+   "text": "アレンジしにくくなります",
+   "outStart": 18.4,
+   "outEnd": 21.53,
+   "srcStart": 21.03,
+   "srcEnd": 24.41,
+   "chars": 12
+  },
+  {
+   "text": "伸びてきた時",
+   "outStart": 22.27,
+   "outEnd": 23.2,
+   "srcStart": 25.13,
+   "srcEnd": 26.07,
+   "chars": 6
+  },
+  {
+   "text": "肩に当たって跳ねますよね",
+   "outStart": 23.2,
+   "outEnd": 24.6,
+   "srcStart": 26.07,
+   "srcEnd": 27.47,
+   "chars": 12
+  },
+  {
+   "text": "とにかく落ち着かない",
+   "outStart": 25.97,
+   "outEnd": 28.13,
+   "srcStart": 28.83,
+   "srcEnd": 31.01,
+   "chars": 10
+  },
+  {
+   "text": "まとまりが悪くなっちゃいます",
+   "outStart": 28.2,
+   "outEnd": 30.43,
+   "srcStart": 31.07,
+   "srcEnd": 33.31,
+   "chars": 14
+  },
+  {
+   "text": "伸ばしていくのであれば",
+   "outStart": 32.9,
+   "outEnd": 34.87,
+   "srcStart": 36.2,
+   "srcEnd": 38.17,
+   "chars": 11
+  },
+  {
+   "text": "中の方、軽くするようにやっていきましょうう",
+   "outStart": 34.87,
+   "outEnd": 37.83,
+   "srcStart": 38.17,
+   "srcEnd": 41.41,
+   "chars": 20
+  },
+  {
+   "text": "後ろ髪の中です",
+   "outStart": 38.03,
+   "outEnd": 39.67,
+   "srcStart": 41.6,
+   "srcEnd": 43.24,
+   "chars": 7
+  },
+  {
+   "text": "軽くしていくようにやってみてください",
+   "outStart": 41.2,
+   "outEnd": 44.47,
+   "srcStart": 45.03,
+   "srcEnd": 48.31,
+   "chars": 18
+  }
+ ],
+ "spoken": [
+  {
+   "start": 1.28,
+   "end": 10.4,
+   "text": "セルフカットで伸びて重くなったボブを軽くしていく際今後伸ばしていくならこの場所は軽くしないようにしておきましょう",
+   "retake": false
+  },
+  {
+   "start": 9.75,
+   "end": 11.82,
+   "text": "それはどこなるのか",
+   "retake": false
+  },
+  {
+   "start": 11.96,
+   "end": 13.7,
+   "text": "生え際です",
+   "retake": false
+  },
+  {
+   "start": 13.11,
+   "end": 18.11,
+   "text": "特に横の生え際は軽くしないようにしておきましょう",
+   "retake": false
+  },
+  {
+   "start": 16.91,
+   "end": 20.55,
+   "text": "もし生え際を軽くしてしまうと",
+   "retake": false
+  },
+  {
+   "start": 20.9,
+   "end": 23.85,
+   "text": "アレンジしにくくなります",
+   "retake": false
+  },
+  {
+   "start": 23.76,
+   "end": 27.5,
+   "text": "あと伸びてきた時に肩に当たって跳ねますよね",
+   "retake": false
+  },
+  {
+   "start": 27.8,
+   "end": 32.8,
+   "text": "それがとにかく落ち着かないまとまりがね悪くなっちゃいそ",
+   "retake": false
+  },
+  {
+   "start": 33.05,
+   "end": 42.01,
+   "text": "そうならないために伸ばしていくのであれば中の方のみ軽くするようにやっていきましょう",
+   "retake": false
+  },
+  {
+   "start": 40.81,
+   "end": 43.15,
+   "text": "特に後ろ髪の中です",
+   "retake": false
+  },
+  {
+   "start": 43.34,
+   "end": 48.44,
+   "text": "それをね考えて軽くしていくようにやってみてください",
+   "retake": false
+  }
+ ]
+}
