@@ -28,10 +28,13 @@ test('IMG_5992: 数は算用数字で、数えた所は「1回、2回、3回、4
   assert.ok(c?.doubts?.some(d => /123度/.test(d)), '数の聞き間違いの要確認');
 });
 
-test('IMG_5992: 字幕AIの聞き取りを音声で確かめた結果（「ベタ」→「ベター」・「持先」→「毛先」・「ましょ小」→「ましょう」）', () => {
+test('IMG_5992: 字幕AIの聞き取りを音声で確かめた結果（「ベタ」→「ベター」か要確認・「持先」→「毛先」・「ましょ小」→「ましょう」・「ではどうやって」）', () => {
   const all = texts.join('');
-  for (const w of ['ベターなのか', '毛先に向かって', 'やっていきましょう', '入れていきます']) assert.ok(all.includes(w), w);
-  assert.ok(!all.includes('ベタな') && !all.includes('持先') && !all.includes('ましょ小') && !all.includes('いきでは'));
+  for (const w of ['毛先に向かって', 'やっていきましょう', '入れていきます', 'どうやって軽くするのが']) assert.ok(all.includes(w), w);
+  assert.ok(!all.includes('持先') && !all.includes('ましょ小') && !all.includes('いきでは'));
+  // 「ベタ」は、音声の点数がはっきりしないときは直さずに要確認（「ベター」の可能性）として知らせる
+  const beta = analysis.chunks.find(c => c.text.includes('ベタ'));
+  assert.ok(all.includes('ベターなのか') || beta?.suggest?.some(g => g.to === 'ベター'), 'ベター');
 });
 
 test('IMG_5992: 字幕は1行・短い意味のまとまりで、どの字幕も読み取れる時間（0.8秒以上）出る', () => {

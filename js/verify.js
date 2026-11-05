@@ -509,7 +509,13 @@ export async function verifySegment(model, eo, T, D, offset, seg, symbols, { wor
   }
   const chosen = chooseEdits(scored);
   const res = applyEdits(base, chosen, seg.end);
-  const suggest = chosen.suggest.map(e => ({ from: base.slice(e.i, e.j).map(k => k.s).join(''), to: e.to.join(''), t0: base[e.i].t, score: +e.score.toFixed(2) }));
+  // 文字を足すだけの候補（「ベタ」＋「ー」）は、前の言葉（カタカナ・漢字の続き）も含めて知らせる
+  const suggest = chosen.suggest.map(e => {
+    let i = e.i;
+    if (e.i === e.j) while (i > 0 && !base[i - 1].ctx && /[ァ-ヶー一-鿿々]/.test(base[i - 1].s) && e.i - i < 8) i--;
+    const head = base.slice(i, e.i).map(k => k.s).join('');
+    return { from: head + base.slice(e.i, e.j).map(k => k.s).join(''), to: head + e.to.join(''), t0: base[i]?.t ?? base[base.length - 1].t, score: +e.score.toFixed(2) };
+  });
   // 文脈として入れたとなりの文字は、結果に含めない（そのまとまりの結果に入る）
   return { ...res, tokens: res.tokens.filter(k => !k.ctx), suggest, tried: scored.length, scored };
 }
