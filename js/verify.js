@@ -33,7 +33,7 @@ export const VERIFY = {
   confuseMin: 1, // 聞き分けにくい美容の言葉の組: 音声の方が合うとき（偏りを差し引いた点数）
   confuseSure: 2.5,
   confuseNear: -1, // これより上で入れ替えなかったときは「要確認」
-  soundMin: 2, // カタカナの言葉の最後の「ー」（「ベタ」→「ベター」 +2.8）
+  soundMin: 2, soundNear: -1.5, // カタカナの言葉の最後の「ー」（「ベタ」→「ベター」 +2.8）
   firstMin: Math.log(4e-4), // 入力した言葉の最初の文字が、その位置で出てくる確からしさの下限（候補を絞る）
   domainFirstMin: Math.log(5e-3), // 美容の用語（入力していない言葉）のとき
   pad: 0.3,
@@ -435,7 +435,9 @@ export function chooseEdits(scored, opt = VERIFY) {
   // 入力した言葉も、直す決まりの少し下（−6まで）なら要確認として知らせる（「部分」は「ボブ」の可能性。点数は −2.8〜−4.6 でゆれる）
   const near = scored.filter(e => Number.isFinite(e.score) && ((e.kind === 'term' && !e.extend && e.ac >= opt.termAcMin
     && (e.domain ? e.score >= opt.termMin && e.score < opt.domainMin : e.score >= opt.termNear && e.score < opt.termMin))
-    || (e.kind === 'confuse' && e.score >= opt.confuseNear && !(e.score >= opt.confuseMin && e.ac >= 0)))).sort((a, b) => b.score - a.score);
+    || (e.kind === 'confuse' && e.score >= opt.confuseNear && !(e.score >= opt.confuseMin && e.ac >= 0))
+    // カタカナ語の最後の「ー」（「ベタ」→「ベター」）: 直すほどの差がなくても、言葉として不自然なので要確認として知らせる
+    || (e.kind === 'sound' && e.score >= opt.soundNear && !(e.score >= opt.soundMin && e.ac >= 0)))).sort((a, b) => b.score - a.score);
   const suggest = [];
   for (const e of near) {
     const lo = e.i, hi = e.j;
