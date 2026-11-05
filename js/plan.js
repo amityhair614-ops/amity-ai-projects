@@ -348,8 +348,16 @@ export function transcriptionWindows(regions, maxLen = 28) {
 //   C: はっきりした間（0.5秒以上）で分けた話のまとまりごと（無音の後の話を落とさないように）
 // 手動編集の実際の音声2本・疑似素材2本で、まとまりごとに読む方法（誤り率 15〜18%）より少ない（3〜11%）
 export const ASR_WINDOW = 30;
-export function asrWindows(regions, rmsDb, L = ASR_WINDOW) {
+// 複数の動画をつないだときは（lay: sources.js の layout）、動画ごとに窓を作る。動画と動画の間の無音・
+// 映像の切れ目をまたいで読むと、字幕AIが前後の言葉をまとめて落とすことがあるため（1本で読んだときと同じ読み方に近づける）
+// 窓には、頭・終わりが話の途中で切れているか（headCut・tailCut）を付ける（30秒ごとの区切り・話し始めてすぐの動画の始まりなど）
+export function asrWindows(regions, rmsDb, L = ASR_WINDOW, lay = null, bounds = null) {
+  if (lay && lay.length > 1) {
+    const per = lay.map(s => asrWindows(regions.filter(r => r.end > s.offset && r.start < s.end).map(r => ({ start: Math.max(r.start, s.offset), end: Math.min(r.end, s.end) })), rmsDb, L, null, s));
+    return ['A', 'B', 'C'].flatMap(p => per.flatMap(ws => ws.filter(w => w.pass === p)));
+  }
   if (!regions.length) return [];
+  const srcStart = bounds ? bounds.offset : 0, srcEnd = bounds ? bounds.end : rmsDb ? rmsDb.length * FRAME_SEC : Infinity;
   // 0.3秒より短い間（言葉の中の「ッ」や息つぎ）では区切らない
   const merged = [];
   for (const r of regions) {
@@ -375,7 +383,7 @@ export function asrWindows(regions, rmsDb, L = ASR_WINDOW) {
       const a = cuts[i], b = cuts[i + 1];
       if (b - a < 0.3) continue;
       // 窓の頭は区切りの所から読む（前の窓の言葉を読まない）。終わりは少し先まで読む
-      out.push({ start: a, end: b, padStart: 0.05, padEnd: 0.3, lo: a - 0.06, hi: b, speech: speechIn(a, b), pass });
+      out.push({ start: a, end: b, padStart: 0.05, padEnd: 0.3, lo: a - 0.06, hi: b, speech: speechIn(a, b), pass, headCut: i > 0 || a - srcStart < 0.3, tailCut: i + 2 < cuts.length || srcEnd - b < 0.3 });
     }
     return out;
   };
@@ -399,35 +407,60 @@ export function asrWindows(regions, rmsDb, L = ASR_WINDOW) {
   };
   const C = groups.flatMap(cutLongest).map(rs => {
     const a = rs[0].start, b = rs[rs.length - 1].end;
-    return { start: a, end: b, padStart: 0.3, padEnd: 0.3, lo: a - 0.35, hi: b + 0.3, speech: speechIn(a, b), pass: 'C', parts: rs.map(r => ({ ...r })) };
+    return { start: a, end: b, padStart: 0.3, padEnd: 0.3, lo: a - 0.35, hi: b + 0.3, speech: speechIn(a, b), pass: 'C', parts: rs.map(r => ({ ...r })), headCut: a - srcStart < 0.3, tailCut: srcEnd - b < 0.3 };
   });
   return [...grid(0, 'A'), ...grid(L / 2, 'B'), ...C];
 }
 
-// 文字の並び a・b を照らし合わせる（編集距離）。返り値は [種類, a の番号, b の番号] の並び
-function alignChars(a, b) {
-  const n = a.length, m = b.length, D = Array.from({ length: n + 1 }, (_, i) => new Int32Array(m + 1).fill(0).map((_, j) => (i ? (j ? 0 : i) : j)));
-  for (let i = 1; i <= n; i++) for (let j = 1; j <= m; j++) D[i][j] = Math.min(D[i - 1][j] + 1, D[i][j - 1] + 1, D[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+// 文字の並び a・b（{ s, t }）を照らし合わせる（編集距離）。返り値は [種類, a の番号, b の番号] の並び。
+// 時刻が tol 秒（違う文字どうしはその半分）より離れた文字は対応させない（別の所の言葉と取り違えないように）
+function alignChars(a, b, tol = 1.5) {
+  const n = a.length, m = b.length, BIG = 1e6;
+  // 同じ点数の対応のしかたが複数あるときは、時刻の近い文字どうしを対応させる（0.01 × 時刻の差）
+  const sub = (i, j) => { const d = Math.abs(a[i].t - b[j].t), same = a[i].s === b[j].s; return d > (same ? tol : tol / 2) ? BIG : (same ? 0 : 1) + (Number.isFinite(d) ? 0.01 * Math.min(d, 10) : 0); };
+  const D = Array.from({ length: n + 1 }, (_, i) => new Float64Array(m + 1).fill(0).map((_, j) => (i ? (j ? 0 : i) : j)));
+  for (let i = 1; i <= n; i++) for (let j = 1; j <= m; j++) D[i][j] = Math.min(D[i - 1][j] + 1, D[i][j - 1] + 1, D[i - 1][j - 1] + sub(i - 1, j - 1));
   const ops = [];
   let i = n, j = m;
   while (i > 0 || j > 0) {
-    if (i > 0 && j > 0 && D[i][j] === D[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1)) ops.push(['m', --i, --j]);
+    if (i > 0 && j > 0 && D[i][j] === D[i - 1][j - 1] + sub(i - 1, j - 1)) ops.push(['m', --i, --j]);
     else if (j > 0 && D[i][j] === D[i][j - 1] + 1) ops.push(['ins', null, --j]);
     else ops.push(['del', --i, null]);
   }
   return ops.reverse();
 }
 
-// base（文字の列）に、other にだけある文字の並び（minRun 文字以上）を差し込む。違う文字の所は base のまま
-export function fillDeletions(base, other, minRun = 2) {
-  const ops = alignChars(base.map(k => k.s), other.map(k => k.s));
+// base（文字の列）に、other にだけある文字の並び（minRun 文字以上）を差し込む。違う文字の所は base のまま。
+// 差し込む言葉の途中（other では続けて話している所）に base にだけある文字があるときは、窓の切れ目などで
+// 出た余分な文字として除く。差し込んだ所は時刻の順に並べる
+// edges: 窓の切れ目（話の途中）のすぐそばの文字（Set）。そこで base と other の文字が違うときは、other を使う
+// 読み方によって、時刻が少しずれることがある（窓の頭の読み始めの違い・最大0.8秒ほど。所によってずれ方も変わる）。
+// まず時刻を見ずに照らし合わせ、近く（前後2秒）の同じ文字どうしの時刻の差（中央値）だけ other をずらしてから、時刻も合わせて照らし合わせる
+export function fillDeletions(base, other, minRun = 2, edges = new Set()) {
+  const med = xs => { const v = xs.slice().sort((x, y) => x - y); return v.length ? v[v.length >> 1] : 0; };
+  const m0 = alignChars(base, other, Infinity).filter(([op, i, j]) => op === 'm' && base[i].s === other[j].s).map(([, i, j]) => ({ t: base[i].t, d: other[j].t - base[i].t }));
+  const glob = med(m0.map(x => x.d));
+  other = other.map(k => { const x = { ...k, t: +(k.t - glob).toFixed(3) }; if (edges.has(k)) edges.add(x); return x; });
+  const isEdge = k => edges.has(k);
+  const ops = alignChars(base, other);
   const out = [];
-  let run = [];
-  const flush = () => { if (run.length >= minRun) out.push(...run); run = []; };
+  let dels = [], ins = [];
+  // 窓の切れ目のそばの文字で、もう一方の読み方ではその前後を続けて読んでいる（前にも後にも0.6秒以内に文字がある）のに
+  // 無い文字は、言葉の切れ端から出た誤り
+  const near = (list, k) => list.some(x => x.t <= k.t && k.t - x.t <= 0.6) && list.some(x => x.t >= k.t && x.t - k.t <= 0.6);
+  const flush = () => {
+    const ds = dels.filter(d => !(isEdge(d) && near(other, d)));
+    const is = ins.filter(x => !(isEdge(x) && near(base, x)));
+    if (is.length >= minRun) {
+      const inside = d => is.some((x, k) => k + 1 < is.length && x.t <= d.t && d.t <= is[k + 1].t && is[k + 1].t - x.t <= 0.6);
+      out.push(...[...ds.filter(d => !inside(d)), ...is].sort((x, y) => x.t - y.t));
+    } else out.push(...ds);
+    dels = []; ins = [];
+  };
   for (const [op, i, j] of ops) {
-    if (op === 'ins') { run.push(other[j]); continue; }
-    flush();
-    out.push(base[i]);
+    if (op === 'ins') ins.push(other[j]);
+    else if (op === 'del') dels.push(base[i]);
+    else { flush(); out.push(base[i].s !== other[j].s && isEdge(base[i]) && !isEdge(other[j]) ? other[j] : base[i]); }
   }
   flush();
   return out;
@@ -443,12 +476,28 @@ export function mergeAsrPasses(windows, results) {
   if (!windows.some(w => w.pass)) return windows.flatMap((_, k) => results[k] || []);
   const tokensOf = pass => windows.flatMap((w, k) => w.pass === pass ? (results[k] || []).flatMap(c => c.tokens || []) : []).sort((x, y) => x.t - y.t);
   const P = { A: tokensOf('A'), B: tokensOf('B'), C: tokensOf('C') };
+  // 話の途中で切れた窓の端（30秒ごとの区切り・動画の始まりと終わり）の前後0.3秒の文字は、言葉の切れ端から出た誤りが多い
+  const edges = new Set();
+  windows.forEach((w, k) => {
+    for (const c of results[k] || []) for (const t of c.tokens || []) if ((w.headCut && t.t < w.start + 0.3) || (w.tailCut && t.t > w.end - 0.3)) edges.add(t);
+  });
   const segs = windows.filter(w => w.pass === 'C');
+  // まとまりとまとまりの区切り: C の文字は、読んだまとまりのもの。A・B の文字は、間の近くで A・B の文字が無い一番長い所で分ける
+  // （読み方によって時刻が少しずれるので、間の真ん中で分けると、同じ言葉が区切りの前後に分かれて2回入ることがある）
+  const ab = [...P.A, ...P.B, ...P.C].map(k => k.t).sort((x, y) => x - y);
+  const cuts = segs.slice(1).map((g, k) => {
+    const a = segs[k].end, b = g.start;
+    const ts = [a - 0.3, ...ab.filter(t => t > a - 0.3 && t < b + 0.3), b + 0.3];
+    let best = (a + b) / 2, len = -1;
+    for (let i = 1; i < ts.length; i++) if (ts[i] - ts[i - 1] > len) { len = ts[i] - ts[i - 1]; best = (ts[i] + ts[i - 1]) / 2; }
+    return best;
+  });
+  const cTokens = segs.map(g => { const k = windows.indexOf(g); return (results[k] || []).flatMap(c => c.tokens || []); });
   const out = [];
   segs.forEach((g, j) => {
-    const lo = j ? (segs[j - 1].end + g.start) / 2 : -Infinity, hi = j + 1 < segs.length ? (g.end + segs[j + 1].start) / 2 : Infinity;
+    const lo = j ? cuts[j - 1] : -Infinity, hi = j + 1 < segs.length ? cuts[j] : Infinity;
     const pick = p => P[p].filter(k => k.t >= lo && k.t < hi);
-    const filled = fillDeletions(fillDeletions(pick('A'), pick('B')), pick('C'));
+    const filled = fillDeletions(fillDeletions(pick('A'), pick('B'), 2, edges), cTokens[j], 2, edges);
     if (!filled.length) return;
     // 差し込んだ文字は別の読み方の時刻なので、前後と順番が逆になることがある。文字の順に時刻をそろえる
     const tokens = [];
@@ -1218,6 +1267,8 @@ function grammarScore(text, i, inside, prev, next) {
   // 助詞の後（「…を」「…に」）。ただし「の」は名詞のつながりが多いので低め
   // 区切りの強さ: 文の境目（4）> 節の境目（〜て・〜後に・〜ので・〜と: 3〜3.5）> 助詞の後（は・も: 3、を・が・に・で・と・へ: 2.5）。
   // 「重さを／感じやすい」のように、目的語と述語を分けるより、節の境目で分ける方が意味のまとまりになる
+  // 「細かな／短い髪」「大事な／ポイント」: 「〜な」で後ろの言葉を説明している所は、ひとまとまり（「いいかな」「〜よな」の言い切りは除く。「細かな」「静かな」は説明）
+  if (prev === 'な' && (b === 'kanji' || b === 'kata') && !/(?:[うくすつぬむるいただ]かな|よな|ないな|だな)$/.test(before)) return 0;
   if (PARTICLES.includes(prev) && b !== 'hira') return prev === 'の' ? 1.5 : 'はも'.includes(prev) ? 3 : 2.5;
   // 「の」のあとのひらがな（「アホ毛のような」「切ることのため」）は、ひとまとまりの言葉なので分けない
   if (prev === 'の' && b === 'hira') return -1.5;
@@ -1307,12 +1358,16 @@ function linePages(text, maxChars, pauseAt) {
   }
   const cost = new Array(L + 1).fill(Infinity), from = new Array(L + 1).fill(-1);
   cost[0] = 0;
+  const BS = Array.from({ length: L + 1 }, (_, k) => (k > 0 && k < L ? breakScore(text, k, inside, pauseAt ? pauseAt(k) : 0) : 0));
   for (let j = 1; j <= L; j++) {
-    const bs = j < L ? breakScore(text, j, inside, pauseAt ? pauseAt(j) : 0) : 0;
+    const bs = BS[j];
     if (bs === -Infinity) continue;
     for (let i = Math.max(0, j - maxChars); i <= j - 1; i++) {
       if (cost[i] === Infinity) continue;
-      const mixed = ends.some(k => k > i && k < j) ? 8 : 0;
+      let strong = -Infinity; // ページの中にある、一番はっきりした切れ目（息継ぎのある文の区切りなど）
+      for (let k = i + 1; k < j; k++) strong = Math.max(strong, BS[k]);
+      // 文の境目をまたぐページ・はっきりした切れ目（息継ぎのある問いかけの終わり「〜なのか／」など）を中に含むページは避ける
+      const mixed = (ends.some(k => k > i && k < j) ? 8 : 0) + 0.5 * Math.max(0, strong - 6);
       // 話す時間が短すぎるページ（0.9秒未満で消える）は読みにくいので避ける（1文字ごとの時刻がわかるとき）。
       // 「セルフで」のような短いまとまりは、0.9秒あれば読める
       const sec = pauseAt?.span ? pauseAt.span(i, j) : null;

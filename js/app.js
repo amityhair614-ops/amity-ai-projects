@@ -856,7 +856,7 @@ async function runAnalysis(job) {
       try {
         const engine = job.asrEngine || 'whisper';
         // ReazonSpeech: 区切り方の違う3通りで読み、どれかが落とした言葉をほかの結果で補う（asrWindows・mergeAsrPasses）
-        const windows = A.asr?.windows || (engine === 'reazon' ? asrWindows(state.speech.regions, state.rmsDb) : transcriptionWindows(state.speech.regions, ENGINES[engine].window));
+        const windows = A.asr?.windows || (engine === 'reazon' ? asrWindows(state.speech.regions, state.rmsDb, undefined, state.lay) : transcriptionWindows(state.speech.regions, ENGINES[engine].window));
         A.asr = { windows, results: A.asr?.results || {}, started: A.asr?.started || {}, verify: A.asr?.verify, done: false };
         const savedN = Object.keys(A.asr.results).length;
         if (savedN) log(`保存済みの文字起こしの区間を再利用: ${savedN}/${windows.length}`);
@@ -887,7 +887,7 @@ async function runAnalysis(job) {
               onResult: async (i, r) => { A.asr.verify[i] = r; await persistJob(job); },
             });
             checked = verifiedRaw(results);
-            state.asrVerify = { units, fixes: results.flatMap(r => r.fixes || []), suggest: checked.suggest || [] }; // 動作確認用（tests/e2e/run.mjs が保存する）
+            state.asrVerify = { units, fixes: results.flatMap(r => r.fixes || []), suggest: checked.suggest || [], windows, passes: raw.passes }; // 動作確認用（tests/e2e/run.mjs が保存する）
             audioFixes = checked.fixes || [];
             checked.passes = raw.passes;
             log('字幕AIの聞き取りを音声で確かめました', { units: units.length, tried: results.reduce((n, r) => n + (r.tried || 0), 0), fixes: audioFixes.map(f => `${f.from || '（なし）'}→${f.to}（${f.kind}・${f.score}${f.check ? '・要確認' : ''}）`) });

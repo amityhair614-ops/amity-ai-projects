@@ -315,19 +315,29 @@ export function proposeEdits(base, { passes = [], words = [], firstProb = null, 
     edits.push(e);
   };
   // 1. 別の読み方の結果（3通りを合わせたときに、言い直しの所などで文字がまざることがある）
+  const hiraOf = p => p.map(k => toHira(k.s)).join('');
   for (const p of passes) {
     // 書き方だけの違い（ギリギリ・ぎりぎり）は同じ文字とみなして照らし合わせる
     for (const d of diffRegions(text.map(toHira), p.map(k => toHira(k.s)))) {
       if (d.j - d.i > 14 || d.l - d.k > 14) continue;
+      // 3文字以上を消す直しで、ほかの読み方がその言葉をそのまま聞き取っているもの（heard）は、言葉の重みを入れた点数でも
+      // はっきり良いときだけ使う（窓の切れ目で1つの読み方だけが言葉をまとめて落とすことがある。消すと話した言葉が字幕から消える）
+      const heard = d.j - d.i - (d.l - d.k) >= 3 && passes.some(q => q !== p && hiraOf(q).includes(text.slice(d.i, d.j).map(toHira).join('')));
       // まとまりの頭・終わりの文字を消すだけの直しはしない（音声の端は聞き取りにくく、話した言葉を消してしまうことがある）。
       // 文脈として入れたとなりの文字（lockHead・lockTail）を除いた、このまとまりの文字の頭・終わり
       const head = d.i <= lockHead, tail = d.j >= text.length - lockTail;
       if (d.k === d.l && (head || tail)) continue;
       const edge = (head || tail) && d.l - d.k < d.j - d.i;
-      add({ kind: 'pass', i: d.i, j: d.j, to: p.slice(d.k, d.l).map(k => k.s), times: p.slice(d.k, d.l).map(k => k.t), edge });
+      add({ kind: 'pass', i: d.i, j: d.j, to: p.slice(d.k, d.l).map(k => k.s), times: p.slice(d.k, d.l).map(k => k.t), edge, heard });
       // 両方の文字を残した並び（「ボをね」と「ボブを」→「ボブをね」。片方が落とした文字を足すだけの直し）
       const both = supersequence(text.slice(d.i, d.j), p.slice(d.k, d.l).map(k => k.s));
       if (both.length > d.j - d.i && both.length < d.j - d.i + d.l - d.k) add({ kind: 'pass', i: d.i, j: d.j, to: both, edge: false });
+      // 共通の文字が無い短い違い（「では」と「どう」）は、両方を話したこともある（どちらかの読み方が片方を落とした）。前後どちらの順も試す
+      else if (d.j > d.i && d.l > d.k && d.j - d.i + d.l - d.k <= 6) {
+        const mine = text.slice(d.i, d.j), theirs = p.slice(d.k, d.l).map(k => k.s);
+        add({ kind: 'pass', i: d.i, j: d.j, to: [...mine, ...theirs], edge: false });
+        add({ kind: 'pass', i: d.i, j: d.j, to: [...theirs, ...mine], edge: false });
+      }
     }
   }
   // 2. 入力した言葉（話の中に出てきそうな言葉）: その位置で最初の文字が出てきそうなときだけ
@@ -391,7 +401,7 @@ export function chooseEdits(scored, opt = VERIFY) {
   const pass = e => {
     if (e.score == null || !Number.isFinite(e.score)) return false;
     // 別の読み方の結果: 文の頭・終わりの文字を消す直しは、音声の端の影響を受けやすいので、もっとはっきりした差のときだけ
-    if (e.kind === 'pass') return e.ac >= (e.edge ? opt.passEdgeMin : opt.passMin);
+    if (e.kind === 'pass') return e.ac >= (e.edge ? opt.passEdgeMin : opt.passMin) && (!e.heard || e.score >= opt.passMin);
     if (e.kind === 'end') return e.score >= opt.endMin && e.ac >= opt.endAcMin;
     if (e.kind === 'confuse') return e.score >= opt.confuseMin && e.ac >= 0;
     if (e.kind === 'sound') return e.score >= opt.soundMin && e.ac >= 0;

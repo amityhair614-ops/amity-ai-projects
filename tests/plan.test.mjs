@@ -391,11 +391,28 @@ test('字幕AIの3通りの読み方: 区切りの違う窓で読み、落とし
   assert.equal(fillDeletions(base, other).map(k => k.s).join(''), 'それはどこなのかトップの根元付近ですこの場所を');
   // 1文字だけの違い（言い方の違い・聞き間違い）は補わない（もとの結果のまま）
   assert.equal(fillDeletions(tok('かるくしない', 0), tok('かるくしなない', 0)).map(k => k.s).join(''), 'かるくしない');
+  // 時刻の離れた同じ文字（別の所の言葉）とは対応させない。窓の切れ目の余分な文字は、差し込む言葉の途中なら除く
+  // （A は30秒の窓の切れ目で「それが…ない」を落とし、次の窓の頭に「そ」だけを出した）
+  const A2 = [...tok('よね', 28.8), { s: 'そ', t: 31.25, p: 1 }, ...tok('まとまり', 31.6)];
+  const C2 = [...tok('よね', 28.4), ...tok('それがとにかく', 29.0), ...tok('落ち着かない', 30.5), ...tok('まとまり', 31.6)];
+  const f2 = fillDeletions(A2, C2, 2, new Set([A2[2]]));
+  assert.equal(f2.map(k => k.s).join(''), 'よねそれがとにかく落ち着かないまとまり');
+  for (let i = 1; i < f2.length; i++) assert.ok(f2[i].t >= f2[i - 1].t, '時刻は文字の順のまま（差し込んだ文字の時刻がつぶれない）');
+  assert.ok(f2.find(k => k.s === '落').t < 30.6, '差し込んだ文字は、聞き取った時刻のまま');
+  // 読み方によって全体の時刻がずれていても（0.8秒）、同じ言葉を2回入れない
+  const A3 = tok('それがあるので', 38.2), C3 = [...tok('それがあるので', 39.0)];
+  assert.equal(fillDeletions(A3, C3).map(k => k.s).join(''), 'それがあるので');
   // 合わせた結果
   const ws = [{ start: 0, end: 10, pass: 'A' }, { start: 0, end: 10, pass: 'B' }, { start: 0, end: 10, pass: 'C' }];
   const r = mergeAsrPasses(ws, { 0: [{ tokens: tok('根元付近は軽く', 1) }], 1: [{ tokens: tok('根元付近は軽くしない', 1) }], 2: [{ tokens: tok('根元付近は軽く', 1) }] });
   assert.equal(r[0].text, '根元付近は軽くしない');
   for (let i = 1; i < r[0].tokens.length; i++) assert.ok(r[0].tokens[i].t > r[0].tokens[i - 1].t, '時刻は文字の順');
+  // 複数の動画: 窓は動画ごとに作り、動画と動画の間（無音）をまたがない。話の途中で切れた端には印を付ける
+  const lay = [{ index: 0, offset: 0, duration: 40, end: 40 }, { index: 1, offset: 41, duration: 40, end: 81 }];
+  const wm = asrWindows([{ start: 2, end: 39.9 }, { start: 41.1, end: 79 }], null, 30, lay);
+  for (const x of wm) assert.ok(x.end <= 40 || x.start >= 41, JSON.stringify(x));
+  assert.ok(wm.some(x => x.pass === 'A' && x.start === 41.1 && x.headCut), '話し始めてすぐの動画の始まり');
+  assert.ok(wm.some(x => x.pass === 'A' && x.start === 2 && !x.headCut), '無音から始まる動画の始まり');
   // 読み方によって否定の言葉の有無が違う文は、要確認にする
   const passes = { A: tok('うまくカバーできます', 0), B: tok('うまくカバーできません', 0), C: tok('うまくカバーできます', 0) };
   assert.ok(passDoubts({ start: 0, end: 1.2, text: 'うまくカバーできます' }, passes).some(d => d.includes('否定')));

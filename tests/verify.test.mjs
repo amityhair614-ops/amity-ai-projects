@@ -231,6 +231,13 @@ test('verify: 文脈のとなりの文字を除いた、まとまりの文字が
   const pass = mk('ですそれが');
   const ed = proposeEdits(base, { passes: [pass], lockHead: 2, lockTail: 3 }).filter(e => e.kind === 'pass' && !e.to.length);
   assert.equal(ed.length, 0, JSON.stringify(ed));
+  // 1つの読み方だけが言葉をまとめて落としたとき（窓の切れ目）、ほかの読み方がその言葉を聞き取っていれば消さない
+  const said = mk('後伸びてきた時に肩に当たって');
+  const del = proposeEdits(said, { passes: [mk('後に当たって'), mk('伸びてきた時に肩に当たって')] }).filter(e => e.kind === 'pass' && e.j - e.i - e.to.length >= 3);
+  assert.ok(del.length && del.every(e => e.heard), JSON.stringify(del));
+  // 音声の点数（ac）が良くても、言葉の重みを入れた点数が悪ければ使わない。どちらもはっきり良ければ使う（合わせたときの乱れの直し）
+  assert.equal(chooseEdits([{ ...del[0], score: -10, ac: 4 }]).length, 0);
+  assert.equal(chooseEdits([{ ...del[0], score: 20, ac: 31 }]).length, 1);
   const t = proposeEdits(mk('見えやすいです'), { words: ['場所'], firstProb: () => 0 }).filter(e => e.kind === 'term');
   assert.ok(!t.some(e => e.i >= 5), JSON.stringify(t.map(e => [e.i, e.j])));
 });

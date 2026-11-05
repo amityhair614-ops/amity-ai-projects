@@ -26,3 +26,8 @@ for (const [name, subs] of Object.entries(sets)) {
     assert.ok(plain.recall >= 0.55, `句読点なし ${(plain.recall * 100).toFixed(0)}% ${plain.missed.join(' / ')}`);
   });
 }
+
+test('「〜な」で後ろの言葉を説明している所（「細かな／短い髪」）では区切らない', () => {
+  const pages = subtitlePages('生え際辺りに細かな短い髪の毛がたくさんできてしまいます', 5).map(p => p.text || p.lines.join(''));
+  assert.ok(!pages.some(t => t.endsWith('細かな')), pages.join(' / '));
+});
