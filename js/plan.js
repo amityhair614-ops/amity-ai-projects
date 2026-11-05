@@ -2026,9 +2026,18 @@ export function openingPlan(lines, duration = OPENING.duration, firstClip = null
 export function clearOpening(timeline, op) {
   if (!op) return timeline;
   const from = op.end - op.fadeOut;
-  for (const c of timeline) for (const p of c.subtitles || []) {
-    if (p.start >= from || p.end <= op.start) continue;
-    p.start = Math.min(from, p.end - 0.5);
+  for (const c of timeline) {
+    const subs = c.subtitles || [];
+    subs.forEach((p, i) => {
+      if (p.start >= from || p.end <= op.start) return;
+      p.start = Math.min(from, p.end - 0.5);
+      // 短くなって読めないときは、次のページへの切り替えを少し遅らせる（次のページも読める長さを残す）
+      const next = subs[i + 1], need = readTime(p) - (p.end - p.start);
+      if (need > 0 && next && Math.abs(next.start - p.end) < 0.05) {
+        const late = Math.min(need, READ_SEC.late, Math.max(0, (next.end - next.start) - readTime(next)));
+        p.end += late; next.start += late;
+      }
+    });
   }
   return timeline;
 }

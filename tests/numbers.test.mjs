@@ -66,3 +66,13 @@ test('冒頭のテキストが出ている間は字幕を出さない（消え�
   assert.ok(Math.abs(tl[0].subtitles[0].start - (op.end - op.fadeOut)) < 1e-9);
   assert.equal(tl[0].subtitles[1].start, 1.68);
 });
+
+test('冒頭のテキストの後に出す最初の字幕も、読める長さを残す（次のページへの切り替えを少し遅らせる）', async () => {
+  const { clearOpening, openingPlan } = await import('../js/plan.js');
+  const op = openingPlan(['セルフカット'], 1.0);
+  const tl = [{ subtitles: [{ start: 0.69, end: 1.19, lines: ['セルフカットで'] }, { start: 1.19, end: 2.95, lines: ['伸びて重くなったボブを'] }] }];
+  clearOpening(tl, op);
+  const [a, b] = tl[0].subtitles;
+  assert.ok(a.end - a.start >= 0.8, `${(a.end - a.start).toFixed(2)}秒`);
+  assert.ok(Math.abs(b.start - a.end) < 1e-9 && b.end - b.start >= 1.1);
+});
