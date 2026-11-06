@@ -645,7 +645,7 @@ export async function renderSegment(srcs, timeline, seg, stream, { onProgress, r
       await drawFrames(list[source], r.packets, rc, clip, piece, s.f0, s.f1, async t => {
         if (shouldPause?.()) throw new RenderPaused();
         rc.ctx.drawImage(rc.base, 0, 0);
-        drawSubtitle(rc.ctx, clip.subtitles.find(p => t >= p.start && t < p.end), t);
+        drawSubtitle(rc.ctx, pageAt(timeline, s.c, t), t);
         if (overlay?.opening) drawOpening(rc.ctx, overlay.opening, t);
         if (overlay?.total) drawEndFade(rc.ctx, t, overlay.total);
         try {
@@ -665,6 +665,12 @@ export async function renderSegment(srcs, timeline, seg, stream, { onProgress, r
     }
     throw err;
   }
+}
+
+// 時刻 t に出す字幕。次の場面の最初の字幕は、読みやすさのため前の場面の終わりから少し早く出ることがある（plan.readableAcross）
+export function pageAt(timeline, c, t) {
+  const hit = ps => (ps || []).find(p => t >= p.start && t < p.end);
+  return hit(timeline[c].subtitles) || hit(timeline[c + 1]?.subtitles?.slice(0, 1));
 }
 
 let bundledAac = false;

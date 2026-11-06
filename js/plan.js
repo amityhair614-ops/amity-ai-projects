@@ -1201,12 +1201,14 @@ function sentenceBoundary(text, i) {
   if (PLAIN_END_RE.test(before) && SENTENCE_STARTS.some(w => after.startsWith(w))) return true;
   // 名詞で言い切った後に、指示語で次の文を始めた（「重めなスタイル／それを覚えて」「感じやすい理由／それは」）
   if (/[一-鿿々ァ-ヶー]$/.test(before) && /^(?:それは|それを|それが|それも|これは|これを)/.test(after)) return true;
+  // 問いかけで言い切った後（「なぜ…やってはいけないのか／やればやるほど」）。「〜のか分からない」のように、問いを受ける言葉が続くときは除く
+  if (/(?:のか|ですか|ますか)$/.test(before) && /^[ぁ-ゖ]/.test(after) && !/^(?:[がけかよねのとしなわでもにはを]|わか|わから|しら|気に|考え|迷|悩)/.test(after)) return true;
   return STRONG_END_RE.test(before) && (!/^[がけかよねのとしなわでもにはを]/.test(after) || SENTENCE_STARTS.some(w => after.startsWith(w)));
 }
 
 // 次の文の始まりによく使う言葉
 // （特定の動画の言葉ではなく、一般的な接続の言葉・指示の言葉。前の語尾と合わせて判断する）
-const SENTENCE_STARTS = ['なぜかというと', 'なぜなら', 'これによって', 'それによって', 'それは', 'それを', 'それで', 'それが', 'そして', 'しかも', 'また', 'さらに', 'でも', 'しかし', 'ただ', 'なので', 'だから', 'ですので', 'そのため', 'つまり', '例えば', 'まず', '次に', '最後に', 'あとは', 'もし', 'となれば', '下手すれば', '逆に', 'この', 'その', 'こう', 'そう'];
+const SENTENCE_STARTS = ['なぜかというと', 'なぜなら', 'これによって', 'それによって', 'それは', 'それを', 'それで', 'それが', 'そして', 'しかも', 'また', 'さらに', 'でも', 'しかし', 'ただ', 'なので', 'だから', 'ですので', 'そのため', 'つまり', '例えば', 'まず', '次に', '最後に', 'あとは', 'もし', 'となれば', '下手すれば', '逆に', 'この', 'その', 'こう', 'そう', 'そんな', 'こんな'];
 // 区切りやすい語尾（この後で区切ると、意味のまとまりで分かれる）
 const GOOD_ENDINGS = ['際', '後に', 'あとに', 'ように', 'ために', 'ので', 'から', 'けど', 'けれど', 'ても', 'たら', 'れば', 'なら', 'ながら', 'まで', 'より', 'など', 'とき', 'ときに', '際に', '時に', '場合は', '場合', 'なのか', 'ます', 'です', 'ました', 'でした', 'ません', 'ください'];
 // 助詞のあとにひらがなが続いても、ひとまとまりの言葉になる組み合わせ（「には」「でも」「です」「できる」など）
@@ -2025,6 +2027,7 @@ function timedPages(clip, text) {
     lines: p.lines,
     start: Math.max(clip.outStart, srcToOut(clip, src[i].start) - SUB_LEAD),
     end: Math.min(clipEnd, srcToOut(clip, src[i].end) + SUB_LINGER),
+    srcStart: src[i].start, srcEnd: src[i].end, // 元の動画の時刻（修正指示の位置を探すため）
   }));
   for (let i = 0; i < out.length; i++) {
     const limit = i + 1 < out.length ? out[i + 1].start : clipEnd;
@@ -2033,7 +2036,7 @@ function timedPages(clip, text) {
     if (out[i].end - out[i].start < 0.5) out[i].end = Math.min(limit, out[i].start + 0.5);
   }
   readable(out, clip.outStart, clipEnd);
-  const shown = markIncomplete(toDisplay(out));
+  const shown = applyPageEdits(markIncomplete(toDisplay(out)), clip.pageEdits, clip.outStart, clipEnd);
   // 字幕で省いた言葉（文の中の「ね」「という」と、ページの頭の「なので」など）。確認・診断情報に出す
   shown.omitted = [...inline, ...shown.flatMap(p => p.omitted || [])];
   return shown;
@@ -2058,6 +2061,24 @@ function readable(pages, clipStart, clipEnd = Infinity) {
       const late = Math.min(need, READ_SEC.late, Math.max(0, (next.end - next.start) - Math.max(READ_SEC.min, readTime(next) - READ_SEC.give)));
       p.end += late; next.start += late;
     } else if (need > 0 && !next) p.end = Math.min(clipEnd, p.end + need); // 場面の最後の字幕は、場面の終わりまで延ばしてよい
+  }
+  return pages;
+}
+
+// 完成後の修正指示（fixes.js の applyFixes が clip.pageEdits に入れる）: 元の動画の時刻 srcAt を含むページの文字を変える・ずらす
+function applyPageEdits(pages, edits, clipStart, clipEnd) {
+  for (const e of edits || []) {
+    let best = null, bd = Infinity;
+    for (const p of pages) {
+      const d = e.srcAt < p.srcStart ? p.srcStart - e.srcAt : e.srcAt > p.srcEnd ? e.srcAt - p.srcEnd : 0;
+      if (d < bd) { bd = d; best = p; }
+    }
+    if (!best || bd > 0.6) continue;
+    if (e.text != null) { best.lines = [e.text]; best.edited = true; delete best.doubt; }
+    if (e.shift) {
+      const d = Math.max(clipStart - best.start, Math.min(clipEnd - best.end, e.shift));
+      best.start += d; best.end += d; best.edited = true;
+    }
   }
   return pages;
 }

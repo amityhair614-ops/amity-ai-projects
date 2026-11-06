@@ -213,6 +213,28 @@ export function analyzeContent(chunks) {
     }
   }
 
+  // 5b. 文の終わりに、指示する言葉だけを言いかけてやめ（「…見てもらう、これ」）、次の文（または次の次）で同じ「こ・そ・あ」の
+  //     言葉から言い直した（「この選択を…」）。言い切りの後に残った2文字だけを取り除く
+  for (let i = 0; i + 1 < chunks.length; i++) {
+    if (out[i]?.drop || out[i]?.trim) continue;
+    const t = text[i].replace(/[、。,.\s]+$/, '');
+    const m = t.match(/^(.*[うくすつぬむるたいだね][、,]?)(これ|この|それ|その|あれ|あの)$/);
+    if (!m || m[1].replace(/[、,\s]/g, "").length < 4) continue;
+    const head = m[2][0];
+    const later = [i + 1, i + 2].filter(j => j < chunks.length && near(i, j, 4)).map(j => text[j].replace(/^[、,\s]+/, ''));
+    if (later.some(n => n.length >= 2 && n[0] === head && /^(?:これ|この|それ|その|あれ|あの)/.test(n))) {
+      set(i, { trim: { tail: m[1].replace(/[、,]$/, '').length, reason: `言いかけてやめた「${m[2]}」（次で言い直し）`, high: true } });
+    }
+  }
+
+  // 5c. 「〜てから」で終わった直後の「それから」（「伸びてから、それから修正…」）: 同じことを2回言っているので、あとの「それから」を取り除く
+  for (let i = 0; i + 1 < chunks.length; i++) {
+    if (out[i + 1]?.drop || out[i + 1]?.trim || !near(i, i + 1, 2)) continue;
+    if (!/てから[、,]?$/.test(text[i].replace(/[。.\s]+$/, ''))) continue;
+    const n = text[i + 1].match(/^(それから)[、,]?/);
+    if (n && text[i + 1].length - n[0].length >= 4) set(i + 1, { trim: { cut: n[0].length, reason: '前の文の「〜てから」のくり返し「それから」', high: true } });
+  }
+
   // 6. 同じ説明のくり返し（あとの発言を採用）。用語が違うものは別の説明として残す
   for (let i = 0; i < chunks.length; i++) {
     if (out[i]?.drop) continue;

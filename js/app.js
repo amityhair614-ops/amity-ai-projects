@@ -8,10 +8,10 @@ import {
   saveJob, loadJob, listJobs, deleteJob, getWriteMode,
 } from './jobstore.js';
 import {
-  planSegments, renderBytes, spaceCheck, formatBytes, describeJob, jobIdFor, sameSource, MB,
+  planSegments, segmentKey, renderBytes, spaceCheck, formatBytes, describeJob, jobIdFor, sameSource, MB,
 } from './resume.js';
 import {
-  detectSpeech, transcriptionWindows, asrWindows, asrRetryWindows, mergeAsrPasses, passDoubts, buildUnits, selectUnits, buildTimeline, formatTime, FRAME_SEC, trimUnit, untrimUnit,
+  detectSpeech, transcriptionWindows, asrWindows, asrRetryWindows, mergeAsrPasses, passDoubts, buildUnits, selectUnits, buildTimeline, formatTime, FRAME_SEC, FPS, trimUnit, untrimUnit,
   cleanSubtitle, alignSentences, refineSubtitleTiming, fineSpeech, setBreakTerms, openingLines, openingText, openingPlan,
   END_FADE, END_HOLD, extendEnding, outputLength, OPENING_DURATIONS, BEAUTY_TERMS, clearOpening,
 } from './plan.js';
@@ -21,6 +21,7 @@ import { findRestarts } from './acoustic.js';
 import {
   previousJob, log, setEnv, jobStart, jobStage, jobProgress, jobEnd, report, clearLogs, errorText,
 } from './diag.js';
+import { parseInstruction, resolveFix, applyFixes, findGapRange, describeFix, srcToOut } from './fixes.js';
 import { STEP, videoKey, nudge, collectEdits, applyEdits, resetEdits, shifted, formatClock } from './subedit.js';
 import {
   FORMATS, EMPTY_BRIEF, normalizeBrief, hasText, briefPlan, applyBrief, applyStyle, briefDecisions, targetRange, fitReport, fmt,
@@ -749,8 +750,10 @@ $('btnAnalyze').addEventListener('click', async () => {
   if (old) {
     for (const f of await listFiles(id)) if (!(keepSource && f.name.startsWith(SOURCE_NAME))) await removeFile(id, f.name);
   }
+  state.fixes = [];
+  state.fixBatches = [];
   const job = {
-    id, version: 1, createdAt: Date.now(), stage: 'analyze',
+    id, version: 1, createdAt: Date.now(), stage: 'analyze', fixes: [],
     file: multi ? { name: `${files[0].name} ほか${files.length - 1}本`, size: key.size, type: files[0].type } : { name: state.file.name, size: state.file.size, type: state.file.type },
     ...(multi ? { files: files.map((f, k) => ({ name: f.name, size: f.size, type: f.type, duration: state.lay[k].duration })) } : {}),
     duration: src.duration,
@@ -1665,21 +1668,15 @@ function saveReview() {
   }, 300);
 }
 
-// 「この内容でMP4を書き出す」: 書き出す内容（タイムライン）を決めて保存し、区間ごとに書き出す
-$('btnRender').addEventListener('click', async () => {
-  const clips = state.units.filter(u => state.selected.has(u.id));
-  if (!clips.length || !state.job) return;
-  const useSubs = !!state.chunks && $('optSubs').checked;
-  // 意味が変わるおそれのある字幕を確認しないまま書き出すときは、はっきり知らせる（完成した字幕とはみなさない）
-  const doubtful = useSubs ? clips.filter(u => openDoubts(u).length) : [];
-  if (doubtful.length && !confirm(`字幕のうち${doubtful.length}場面は、まだ確認されていません（否定の言葉・文の終わり・用語の聞き落としの可能性）。\n${doubtful.slice(0, 5).map(u => `・${formatTime(u.start)}「${u.text.slice(0, 20)}」`).join('\n')}\nこのまま書き出しますか？`)) return;
-  state.doubtfulAtRender = doubtful.map(u => ({ t: u.start, text: u.text, doubts: openDoubts(u) }));
-  const useZoom = $('optZoom').checked;
+// 書き出す内容（タイムライン）を作る。完成後の修正指示（fixes）があれば、元の動画の時刻で反映する（js/fixes.js）。
+// 解析はやり直さない（構成・字幕のページ・時刻を作り直すだけ）
+function renderTimeline(clips, { useSubs, useZoom, fixes = [] }) {
   setBreakTerms(briefPlan(readBrief()).items);
   // 最後の場面は、話し終わりの後を少し延ばしてからフェードアウトする（声にフェードがかからないように）
   let shaped = extendEnding(clips.map(u => ({ ...u, text: state.chunks ? u.text : '', ...shifted(u, state.subOffset) })), state.speech?.voice, state.src.duration);
   // 複数の動画: 場面の使う範囲を、それぞれの動画の中に収める（動画と動画の間の無音・となりの動画にはみ出さない）
   if (state.lay) shaped = shaped.map(u => ({ ...u, pieces: clampPieces(u.pieces, state.lay) })).filter(u => u.pieces.length);
+  shaped = applyFixes(shaped, fixes);
   const tTl = performance.now();
   const timeline = buildTimeline(shaped, {
     srcW: state.src.width, srcH: state.src.height, zoom: useZoom, subtitles: useSubs, style: state.brief?.style,
@@ -1690,6 +1687,20 @@ $('btnRender').addEventListener('click', async () => {
   const lines = $('optOpening').checked ? openingText(state.opening ?? '') : [];
   const overlay = { opening: openingPlan(lines, openingDur(), timeline[0]), total: outSec };
   clearOpening(timeline, overlay.opening);
+  return { timeline, overlay, outSec };
+}
+
+// 「この内容でMP4を書き出す」: 書き出す内容（タイムライン）を決めて保存し、区間ごとに書き出す
+$('btnRender').addEventListener('click', async () => {
+  const clips = state.units.filter(u => state.selected.has(u.id));
+  if (!clips.length || !state.job) return;
+  const useSubs = !!state.chunks && $('optSubs').checked;
+  // 意味が変わるおそれのある字幕を確認しないまま書き出すときは、はっきり知らせる（完成した字幕とはみなさない）
+  const doubtful = useSubs ? clips.filter(u => openDoubts(u).length) : [];
+  if (doubtful.length && !confirm(`字幕のうち${doubtful.length}場面は、まだ確認されていません（否定の言葉・文の終わり・用語の聞き落としの可能性）。\n${doubtful.slice(0, 5).map(u => `・${formatTime(u.start)}「${u.text.slice(0, 20)}」`).join('\n')}\nこのまま書き出しますか？`)) return;
+  state.doubtfulAtRender = doubtful.map(u => ({ t: u.start, text: u.text, doubts: openDoubts(u) }));
+  const useZoom = $('optZoom').checked;
+  const { timeline, overlay, outSec } = renderTimeline(clips, { useSubs, useZoom, fixes: state.fixes });
   // 保存できる容量を確かめる（区間のファイルと完成したMP4が一時的に両方必要）
   const need = renderBytes(outSec).total;
   const sc = spaceCheck(await storageInfo(), need);
@@ -1698,8 +1709,17 @@ $('btnRender').addEventListener('click', async () => {
     return;
   }
   const job = state.job;
-  for (const f of await listFiles(job.id)) if (/^seg-|^output/.test(f.name)) await removeFile(job.id, f.name);
   const segments = planSegments(timeline);
+  // 前回の書き出しと中身が同じ区間（修正の指示が関係しない場面）は、保存してある区間のファイルをそのまま使う
+  const kept = job.keptSegs || {};
+  const gen = Date.now().toString(36);
+  for (const sg of segments) {
+    sg.key = segmentKey(timeline, sg, overlay, END_FADE, END_HOLD);
+    sg.file = kept[sg.key] || `seg-${gen}-${sg.index}.mp4`;
+  }
+  const using = new Set(segments.map(sg => sg.file));
+  for (const f of await listFiles(job.id)) if (/^seg-|^output/.test(f.name) && !using.has(f.name)) await removeFile(job.id, f.name);
+  job.keptSegs = {};
   job.stage = 'render';
   job.review = { selected: [...state.selected], brief: readBrief(), trims: { ...state.trims }, opening: state.opening, openingOn: $('optOpening').checked, openingDur: openingDur(), doubtOk: [...state.doubtOk] };
   // BGM（選んだときだけ）: 曲のファイルも端末内に保存して、途中から再開しても同じ曲を使う
@@ -1716,7 +1736,7 @@ $('btnRender').addEventListener('click', async () => {
   }
   job.render = {
     lay: state.lay || null, bgm,
-    timeline, segments, done: segments.map(() => false), gainDb: computeGainDb(clips), overlay, endFade: END_FADE, endHold: END_HOLD,
+    timeline, segments, done: segments.map(sg => !!kept[sg.key]), gainDb: computeGainDb(clips), overlay, endFade: END_FADE, endHold: END_HOLD,
     styleNote: styleSummary(timeline, useSubs, useZoom, overlay) + (state.doubtfulAtRender?.length ? ` / 字幕の要確認（未確認のまま書き出し）: ${state.doubtfulAtRender.map(d => `${formatTime(d.t)}「${d.text.slice(0, 16)}」`).join('、')}` : ''), outSec, startedAt: Date.now(), elapsed: 0, sessions: 0,
   };
   job.output = null;
@@ -1725,6 +1745,9 @@ $('btnRender').addEventListener('click', async () => {
   await persistJob(job);
   await runRender(job);
 });
+
+// 区間のファイルの名前（前のバージョンで保存した途中の編集は seg-番号.mp4）
+const segName = seg => seg.file || `seg-${seg.index}.mp4`;
 
 // 区間ごとの書き出しと仕上げ。保存済みの区間はやり直さない
 async function runRender(job) {
@@ -1749,7 +1772,7 @@ async function runRender(job) {
   // 保存済みのはずの区間が消えていないか確かめる（消えていたら、その区間だけ書き出し直す）
   for (const seg of R.segments) {
     if (!R.done[seg.index]) continue;
-    const f = await readFile(job.id, `seg-${seg.index}.mp4`);
+    const f = await readFile(job.id, segName(seg));
     if (!f || !f.size) { R.done[seg.index] = false; log(`保存した区間 ${seg.index + 1} が見つからないため書き出し直します`); }
   }
   const total = R.segments.reduce((s, x) => s + x.frames, 0);
@@ -1778,7 +1801,7 @@ async function runRender(job) {
     R.failures = R.failures || [];
     for (const seg of R.segments) {
       if (R.done[seg.index]) continue;
-      const name = `seg-${seg.index}.mp4`;
+      const name = segName(seg);
       for (let attempt = 0; ; ) {
         await waitVisible(); // 画面に出ていない間は始めない（iPhone は裏でデコーダーを止める）
         const hiddenBefore = state.hiddenCount;
@@ -1843,7 +1866,7 @@ async function runRender(job) {
         const colorNotes = [rc.painter, ...(rc.painters?.values() || [])].map(x => x.colorNote).filter(Boolean);
         if (colorNotes.length) log('色', colorNotes);
         markTiming('assemble', 'active');
-        await assembleOutput(state.srcs || state.src, R.timeline, R.segments, i => readFile(job.id, `seg-${i}.mp4`), w.stream, {
+        await assembleOutput(state.srcs || state.src, R.timeline, R.segments, i => readFile(job.id, segName(R.segments[i])), w.stream, {
           gainDb: R.gainDb, endFade: R.endFade || 0, endHold: R.endHold || 0, lay: R.lay, bgm,
           onProgress: r => show(0.92 + 0.08 * r, `MP4を仕上げ中… ${Math.round(92 + 8 * r)}%`),
         });
@@ -1865,13 +1888,15 @@ async function runRender(job) {
     }
     markTiming('assemble', 'done');
     const out = await readFile(job.id, OUTPUT_NAME);
-    for (const seg of R.segments) await removeFile(job.id, `seg-${seg.index}.mp4`);
+    // 区間のファイルは残しておき、修正の指示を反映して書き出し直すときに、変わっていない区間を使い回す
+    job.keptSegs = Object.fromEntries(R.segments.filter(sg => sg.key).map(sg => [sg.key, segName(sg)]));
+    for (const seg of R.segments) if (!seg.key) await removeFile(job.id, segName(seg));
     if (R.bgm) log('BGM', R.bgmFailed ? { failed: R.bgmFailed } : { name: R.bgm.name, volume: `${+(R.bgm.volume * 100).toFixed(1)}%` });
     R.elapsed = (R.elapsed || 0) + (performance.now() - t0) / 1000;
     job.stage = 'done';
     job.output = { size: out.size, finishedAt: Date.now() };
     await persistJob(job);
-    show(1, `書き出し完了（${formatSec((performance.now() - t0) / 1000)}${R.sessions > 1 ? `・${R.sessions}回に分けて処理、保存済みの区間 ${reused}個を再利用` : ''}）`);
+    show(1, `書き出し完了（${formatSec((performance.now() - t0) / 1000)}${R.sessions > 1 ? `・${R.sessions}回に分けて処理` : ''}${reused ? `・変わっていない区間 ${reused}/${R.segments.length}個を再利用` : ''}）`);
     jobEnd('done');
     // 完成動画1秒あたりの処理時間（iPhone の速さの目安）と、実際のビットレート
     log('書き出し完了', { sizeMB: +(out.size / 1e6).toFixed(1), sec: Math.round((performance.now() - t0) / 1000), sessions: R.sessions, reused, secPerOutSec: +(R.elapsed / Math.max(1, R.outSec)).toFixed(2), mbps: +(out.size * 8 / Math.max(1, R.outSec) / 1e6).toFixed(1) });
@@ -1885,7 +1910,7 @@ async function runRender(job) {
     } else if (err.name === 'SegmentMismatch') {
       // 区間ごとの映像の形式が違う端末では、区間に分けずに書き出し直す（途中から再開はできない）
       log('区間をつなげないため、区間に分けずに書き出し直します', errorText(err));
-      for (const seg of R.segments) await removeFile(job.id, `seg-${seg.index}.mp4`);
+      for (const seg of R.segments) await removeFile(job.id, segName(seg));
       R.segments = planSegments(R.timeline, Infinity);
       R.done = R.segments.map(() => false);
       R.single = true;
@@ -1933,6 +1958,12 @@ function showResult(file, timeline) {
   $('btnDownload').download = state.outName;
   $('stepResult').hidden = false;
   $('stepResult').scrollIntoView({ behavior: 'smooth' });
+  // 修正の指示: 構成（場面）がこの画面にあるときだけ使える（途中から再開したときは保存した指示を戻す）
+  state.fixes = state.job?.fixes || state.fixes || [];
+  state.fixBatches = state.job?.fixBatches || state.fixBatches || [];
+  $('fixPanel').hidden = !state.units?.length;
+  renderFixList();
+  refreshFixPreview();
 }
 
 $('btnSave').addEventListener('click', async () => {
@@ -2188,4 +2219,194 @@ $('btnCleanup').addEventListener('click', async () => {
   $('stepResult').hidden = true;
   showNotice('端末内の保存データを削除しました。');
   refreshJobs();
+});
+
+// ---------- 6. 完成後の修正の指示（js/fixes.js） ----------
+// 完成動画を止めた時刻で指示を入れ、元の動画の時刻に直して保存する。「まとめて適用」で構成に反映し（解析はやり直さない）、
+// 元の動画を場面の順に再生して、修正前・修正後をすぐに確かめられる。MP4の書き出しは最後に1回だけ
+state.fixes = state.fixes || [];
+state.fixBatches = state.fixBatches || [];
+const FIX_LABEL = { pending: '未適用', applied: '適用済み', check: '要確認', confirm: '確認してください' };
+
+function fixBaseTimeline() { return state.job?.render?.timeline || null; }
+function saveFixes() {
+  if (!state.job) return;
+  state.job.fixes = state.fixes;
+  state.job.fixBatches = state.fixBatches;
+  persistJob(state.job).catch(err => log('修正の指示を保存できませんでした', errorText(err)));
+}
+
+function showFixKind() {
+  const k = $('fixKind').value;
+  $('fixTextRow').hidden = k !== 'subtitle';
+  $('fixShiftRow').hidden = k !== 'timing';
+  $('fixToRow').hidden = k !== 'cut';
+  $('fixNoteRow').hidden = k !== 'note';
+}
+$('fixKind').addEventListener('change', showFixKind);
+showFixKind();
+// 動画を止めた時刻を自動で入れる
+$('outVideo').addEventListener('pause', () => { $('fixAt').value = $('outVideo').currentTime.toFixed(1); });
+$('fixAtMinus').addEventListener('click', () => { $('fixAt').value = Math.max(0, (+$('fixAt').value || 0) - 0.1).toFixed(1); });
+$('fixAtPlus').addEventListener('click', () => { $('fixAt').value = ((+$('fixAt').value || 0) + 0.1).toFixed(1); });
+$('fixToNow').addEventListener('click', () => { $('fixTo').value = $('outVideo').currentTime.toFixed(1); });
+
+let editingFix = null;
+$('fixAdd').addEventListener('click', () => {
+  const base = fixBaseTimeline();
+  if (!base) { $('fixStatus').textContent = '書き出した動画の構成が見つかりません。'; return; }
+  const at = +$('fixAt').value;
+  if (!Number.isFinite(at)) { $('fixStatus').textContent = '時刻を入れてください（動画を止めると入ります）。'; return; }
+  const kind = $('fixKind').value;
+  let f = { id: editingFix?.id ?? Date.now(), kind, at, status: 'pending' };
+  if (kind === 'subtitle') f.text = $('fixText').value.trim();
+  if (kind === 'timing') f.shift = +$('fixShift').value || 0;
+  if (kind === 'cut') f.to = +$('fixTo').value;
+  if (kind === 'note') {
+    f.note = $('fixNote').value.trim();
+    const p = parseInstruction(f.note);
+    // 自由に書いた指示は、読み取れた内容を見せて確かめてもらう（勝手に変えない）
+    f = p ? { ...f, ...p, status: 'confirm' } : { ...f, status: 'check', reason: '内容を読み取れませんでした。種類を選んで入力し直してください（例:「25〜27秒の言い間違いを削除」）' };
+  }
+  if (kind === 'subtitle' && !f.text) { $('fixStatus').textContent = '新しい字幕を入れてください。'; return; }
+  if (f.kind !== 'note') {
+    const r = resolveFix(f, base);
+    f = r.status === 'check' ? { ...r, reason: r.note } : { ...r, status: f.status };
+  }
+  state.fixes = [...state.fixes.filter(x => x.id !== f.id), f].sort((a, b) => a.at - b.at);
+  editingFix = null;
+  $('fixAdd').textContent = '指示を追加';
+  saveFixes();
+  renderFixList();
+});
+
+function renderFixList() {
+  const ul = $('fixList');
+  ul.textContent = '';
+  for (const f of state.fixes) {
+    const li = document.createElement('li');
+    const t = document.createElement('span');
+    t.textContent = (f.kind === 'note' ? `${(+f.at).toFixed(1)}秒: ${f.note}` : describeFix(f)) + (f.was && f.kind === 'subtitle' ? `（今: 「${f.was}」）` : '');
+    const st = document.createElement('span');
+    st.className = 'st ' + f.status;
+    st.textContent = FIX_LABEL[f.status] + (f.reason ? `: ${f.reason}` : '') + (f.status === 'confirm' ? `: 「${f.note}」を「${describeFix(f)}」と読みました` : '');
+    li.append(t, st, document.createElement('br'));
+    const btn = (label, fn) => { const b = document.createElement('button'); b.type = 'button'; b.className = 'link-btn'; b.textContent = label; b.addEventListener('click', fn); li.append(b, ' '); };
+    if (f.status === 'confirm') btn('この内容で使う', () => { const r = resolveFix(f, fixBaseTimeline()); Object.assign(f, r.status === 'check' ? { ...r, reason: r.note } : { ...r, status: 'pending' }); saveFixes(); renderFixList(); });
+    if (f.status !== 'applied') btn('編集', () => {
+      editingFix = f;
+      $('fixAt').value = f.at; $('fixKind').value = f.kind === 'note' ? 'note' : f.kind; showFixKind();
+      $('fixText').value = f.text || ''; $('fixShift').value = f.shift ?? -0.3; $('fixTo').value = f.to ?? ''; $('fixNote').value = f.note || '';
+      $('fixAdd').textContent = '指示を更新';
+    });
+    btn('削除', () => { state.fixes = state.fixes.filter(x => x !== f); saveFixes(); renderFixList(); refreshFixPreview(); });
+    ul.appendChild(li);
+  }
+  const pending = state.fixes.filter(f => f.status === 'pending').length;
+  $('fixApply').disabled = !pending;
+  $('fixUndo').disabled = !state.fixBatches.length;
+}
+
+$('fixApply').addEventListener('click', () => {
+  const fine = state.rmsDb && state.speech ? fineSpeech(state.rmsDb, state.speech.threshold) : [];
+  const batch = [];
+  for (const f of state.fixes) {
+    if (f.status !== 'pending') continue;
+    if (f.kind === 'gap') {
+      const r = findGapRange(fine, f.srcAt);
+      if (!r) { f.status = 'check'; f.reason = '近くに詰められる話の間が見つかりません（範囲のカットで指定してください）'; continue; }
+      f.gapRange = { ...r, unitId: f.unitId };
+    }
+    f.status = 'applied';
+    batch.push(f.id);
+  }
+  if (batch.length) state.fixBatches.push(batch);
+  saveFixes();
+  renderFixList();
+  refreshFixPreview();
+});
+
+$('fixUndo').addEventListener('click', () => {
+  const ids = state.fixBatches.pop() || [];
+  for (const f of state.fixes) if (ids.includes(f.id)) { f.status = 'pending'; delete f.gapRange; }
+  saveFixes();
+  renderFixList();
+  refreshFixPreview();
+});
+
+// 修正を反映した構成（書き出さずに作るだけ）
+function fixedTimeline() {
+  const clips = (state.units || []).filter(u => state.selected?.has(u.id));
+  if (!clips.length) return null;
+  return renderTimeline(clips, { useSubs: !!state.chunks && $('optSubs').checked, useZoom: $('optZoom').checked, fixes: state.fixes });
+}
+
+function refreshFixPreview() {
+  const base = fixBaseTimeline();
+  const applied = state.fixes.filter(f => f.status === 'applied');
+  const after = applied.length ? fixedTimeline() : null;
+  state.fixAfter = after?.timeline || null;
+  $('fixPreviewBox').hidden = !applied.length;
+  $('fixRender').disabled = !applied.length || !state.units;
+  const len = tl => tl ? tl.reduce((s, c) => s + c.outDuration, 0) : 0;
+  $('fixStatus').textContent = applied.length && base && after
+    ? `適用した修正 ${applied.length}件。長さ ${formatSec(len(base))} → ${formatSec(len(after.timeline))}。プレビューで確かめてから「修正を反映して書き出す」を押してください。`
+    : '';
+}
+
+// プレビュー: 元の動画を、構成の場面の順に再生し、字幕を重ねる（MP4を作り直さずに確かめる）
+let previewRun = 0;
+async function playTimeline(tl, from, sec) {
+  const run = ++previewRun;
+  const v = $('fixPreview'), sub = $('fixPreviewSub');
+  v.muted = false;
+  const pieces = tl.flatMap(c => c.pieces.map(p => ({ ...p, dur: p.frames / FPS })));
+  const pages = tl.flatMap(c => c.subtitles || []);
+  const end = from + sec;
+  for (const p of pieces) {
+    if (run !== previewRun) return;
+    if (p.outStart + p.dur <= from || p.outStart >= end) continue;
+    let k = 0, local = p.srcStart;
+    if (state.lay) { const s = sourceAt(state.lay, p.srcStart + 0.02); k = s.index; local = p.srcStart - s.offset; }
+    const url = state.urls ? state.urls[k] : state.url;
+    if (v.dataset.url !== url) { v.src = url; v.dataset.url = url; await new Promise(r => v.addEventListener('loadedmetadata', r, { once: true })); }
+    const skip = Math.max(0, from - p.outStart);
+    v.currentTime = local + skip;
+    await new Promise(r => v.addEventListener('seeked', r, { once: true }));
+    await v.play().catch(() => {});
+    const stopAt = local + Math.min(p.dur, end - p.outStart);
+    await new Promise(r => {
+      const tick = () => {
+        if (run !== previewRun) return r();
+        const out = p.outStart + (v.currentTime - local);
+        const pg = pages.find(x => out >= x.start && out < x.end);
+        sub.textContent = pg ? pg.lines.join('') : '';
+        if (v.currentTime >= stopAt - 0.02 || v.ended) return r();
+        requestAnimationFrame(tick);
+      };
+      tick();
+    });
+  }
+  if (run === previewRun) { v.pause(); sub.textContent = ''; }
+}
+const lastApplied = () => [...state.fixes].reverse().find(f => f.status === 'applied');
+$('fixPlayBefore').addEventListener('click', () => {
+  const f = lastApplied(), base = fixBaseTimeline();
+  if (!f || !base) return;
+  $('fixPreviewNote').textContent = `修正前: ${(+f.at).toFixed(1)}秒の前後`;
+  playTimeline(base, Math.max(0, f.at - 2), 5);
+});
+$('fixPlayAfter').addEventListener('click', () => {
+  const f = lastApplied();
+  if (!f || !state.fixAfter) return;
+  const at = srcToOut(state.fixAfter, f.srcAt) ?? f.at;
+  $('fixPreviewNote').textContent = `修正後: ${at.toFixed(1)}秒の前後`;
+  playTimeline(state.fixAfter, Math.max(0, at - 2), 5);
+});
+// 修正を反映して書き出す（解析はやり直さない。構成から作り直して書き出すだけ）
+$('fixRender').addEventListener('click', () => {
+  previewRun++;
+  $('fixPreview').pause();
+  log('修正を反映して書き出し', { fixes: state.fixes.filter(f => f.status === 'applied').map(describeFix) });
+  $('btnRender').click();
 });

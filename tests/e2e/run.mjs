@@ -11,6 +11,7 @@
 //     --target=秒     完成動画の長さ（30/45/60 はボタン、それ以外は自由入力）
 //     --style=tempo   編集スタイル
 //     --cut=tight     カットの強さ（テンポ重視）
+//     --fixes=FILE    書き出した後に、完成後の修正の指示を入れて書き出し直す（JSON）
 //     --brief         タイトル・内容・伝えたいこと・流れ・必ず残したい場面を入力する
 //     --title=… / --content=… / --items=…  動画タイトル・動画の説明（内容）・使用アイテムを入力する
 //     --replan=秒     構成の確認画面で長さを変えて「構成し直す」を押す
@@ -45,6 +46,7 @@ const arg = name => (process.argv.find(a => a.startsWith(`--${name}=`)) || '').s
 const target = arg('target');
 const style = arg('style');
 const cutArg = arg('cut');
+const fixesArg = (process.argv.find(a => a.startsWith('--fixes=')) || '').slice('--fixes='.length);
 const withBrief = process.argv.includes('--brief');
 const replan = arg('replan');
 // 複数の動画は「,」でつなぐ（a.mov,b.mov）。上から順に1本の動画にまとめる
@@ -439,6 +441,9 @@ try {
   console.log('演出: ' + (await page.$eval('#outStyle', el => el.textContent)));
   const tl = await page.evaluate(() => window.amityDebug.timeline.map(c => ({ outStart: +c.outStart.toFixed(2), dur: +c.outDuration.toFixed(2), pos: c.subPos, zoom: c.zoom && { z: c.zoom.z, rect: c.zoom.rect }, crop: c.crop, inCrop: c.inCrop, text: c.text, pieces: c.pieces.map(p => ({ srcStart: p.srcStart, frames: p.frames, outStart: p.outStart })), subs: c.subtitles.map(p => p.lines.join('／')), pages: c.subtitles.map(p => ({ s: +p.start.toFixed(2), e: +p.end.toFixed(2), t: p.lines.join('') })) })));
   fs.writeFileSync(path.join(dir, `timeline-${tag}.json`), JSON.stringify(tl, null, 1));
+  // --fixes=FILE: 完成後の修正の指示を画面から入れ、適用・プレビューして、書き出し直す
+  // （JSON: [{ kind, at | atText, text, shift, to | toText, note }]。atText はその字幕が出ている時刻、cut の toText はその字幕の終わり）
+  if (fixesArg) await runFixes();
 } catch (err) {
   if (err.message !== 'RELOAD_CHECK_DONE') throw err;
 } finally {
@@ -448,4 +453,52 @@ try {
   const errs = logs.filter(l => /error|pageerror/i.test(l));
   if (errs.length) console.log('ブラウザのエラー:\n' + errs.join('\n'));
   await browser.close();
+}
+
+// 完成後の修正の指示（--fixes）
+async function runFixes() {
+  const fixes = JSON.parse(fs.readFileSync(fixesArg, 'utf8'));
+  const pageTime = async (t, which) => page.evaluate(([t, which]) => {
+    const pages = window.amityDebug.job.render.timeline.flatMap(c => c.subtitles || []);
+    const p = pages.find(x => x.lines.join('') === t);
+    if (!p) return null;
+    return which === 'start' ? p.start + 0.05 : which === 'end' ? p.end - 0.05 : (p.start + p.end) / 2;
+  }, [t, which]);
+  for (const f of fixes) {
+    const at = f.at ?? await pageTime(f.atText, f.kind === 'cut' ? 'start' : 'mid');
+    if (at == null) { console.log('修正の時刻が見つからない:', JSON.stringify(f)); continue; }
+    await page.fill('#fixAt', at.toFixed(2));
+    await page.selectOption('#fixKind', f.kind);
+    if (f.kind === 'subtitle') await page.fill('#fixText', f.text);
+    if (f.kind === 'timing') await page.fill('#fixShift', String(f.shift));
+    if (f.kind === 'cut') await page.fill('#fixTo', String((f.to ?? await pageTime(f.toText, 'end')).toFixed(2)));
+    if (f.kind === 'note') await page.fill('#fixNote', f.note);
+    await page.click('#fixAdd');
+  }
+  for (const b of await page.$$('#fixList button')) if ((await b.textContent()) === 'この内容で使う') await b.click();
+  console.log('修正の指示: ' + (await page.$$eval('#fixList li', els => els.map(e => e.textContent.replace(/編集|削除|この内容で使う/g, '').trim()).join(' / '))));
+  const tFix = Date.now();
+  await page.click('#fixApply');
+  console.log(`修正の適用（構成の作り直し）: ${((Date.now() - tFix) / 1000).toFixed(2)}秒 / ${await page.$eval('#fixStatus', el => el.textContent)}`);
+  console.log('適用後の一覧: ' + (await page.$$eval('#fixList li', els => els.map(e => e.textContent.replace(/編集|削除/g, '').trim()).join(' / '))));
+  await page.click('#fixPlayAfter');
+  await page.waitForTimeout(1500);
+  console.log('修正後のプレビュー: ' + (await page.$eval('#fixPreviewNote', el => el.textContent)) + ' 字幕「' + (await page.$eval('#fixPreviewSub', el => el.textContent)) + '」');
+  await page.screenshot({ path: path.join(dir, `fixes-${tag}.png`), fullPage: true });
+  const t2 = Date.now();
+  await page.evaluate(() => { document.querySelector('#stepResult').hidden = true; });
+  await page.click('#fixRender');
+  await page.waitForSelector('#stepResult:not([hidden]), #renderError:not([hidden])', { timeout: +(process.env.RENDER_TIMEOUT || 600000) });
+  console.log(`修正後の書き出し: ${((Date.now() - t2) / 1000).toFixed(1)}秒`);
+  const b64f = await page.evaluate(async () => {
+    const buf = new Uint8Array(await window.amityDebug.blob.arrayBuffer());
+    let s = '';
+    for (let i = 0; i < buf.length; i += 0x8000) s += String.fromCharCode(...buf.subarray(i, i + 0x8000));
+    return btoa(s);
+  });
+  const fixedFile = path.join(dir, `out-${tag}-fixed.mp4`);
+  fs.writeFileSync(fixedFile, Buffer.from(b64f, 'base64'));
+  console.log('修正後の出力:', fixedFile, execSync(`ffprobe -v error -show_entries format=duration -of csv=p=0 "${fixedFile}"`, { encoding: 'utf8' }).trim());
+  const tl2 = await page.evaluate(() => window.amityDebug.timeline.map(c => ({ outStart: +c.outStart.toFixed(2), dur: +c.outDuration.toFixed(2), text: c.text, pieces: c.pieces.map(p => ({ srcStart: p.srcStart, frames: p.frames, outStart: p.outStart })), pages: c.subtitles.map(p => ({ s: +p.start.toFixed(2), e: +p.end.toFixed(2), t: p.lines.join('') })) })));
+  fs.writeFileSync(path.join(dir, `timeline-${tag}-fixed.json`), JSON.stringify(tl2, null, 1));
 }

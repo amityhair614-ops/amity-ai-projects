@@ -30,7 +30,7 @@ test('書き出しの区間: すべてのコマをちょうど1回ずつ、順�
 });
 
 test('書き出しの区間: 1区間に収まるピースは途中で分けない', () => {
-  const segs = planSegments(tl, 8);
+  const segs = planSegments(tl, 8, { byClip: false });
   // 3秒と2秒のピースは同じ区間、20秒のピースは 8秒ずつに分かれる
   assert.deepEqual(segs[0].slices.map(s => [s.c, s.p, s.f0, s.f1]), [[0, 0, 0, 90], [0, 1, 0, 60], [1, 0, 0, 90]]);
   const split = segs.flatMap(s => s.slices).filter(s => s.c === 1);
@@ -39,6 +39,8 @@ test('書き出しの区間: 1区間に収まるピースは途中で分けな�
   assert.equal(segs.at(-1).slices.at(-1).c, 2);
   // 区間に分けない（端末が区間をつなげない場合）
   assert.equal(planSegments(tl, Infinity).length, 1);
+  // 場面ごとに区間を分ける（初期設定）: どの区間も1つの場面だけ
+  for (const sg of planSegments(tl, 8)) assert.equal(new Set(sg.slices.map(x => x.c)).size, 1);
 });
 
 test('10分の動画も区間に分けられる（1区間は数秒・約75区間）', () => {
