@@ -242,7 +242,7 @@
     <p class="lead">カット解説動画から、字幕付きのYouTube動画を自動で作ります。動画の内容や完成時間を入力すると、それに合わせて場面を選びます。処理はすべてこのiPhoneの中で行い、動画はどこにも送信しません。</p>
   </header>
 
-  <div class="banner"><b>テスト版です（v1.0 候補）。</b> ①分けて撮った動画を3本まで1本にまとめます②字幕はポイントだけ（「このように」「それは」「しかも」などは、意味が変わらない所では字幕に書きません。音声は残します）。1行・短い意味のまとまりで、数は算用数字③ご自身で用意した曲を、やわらかく小さく（初期2%）BGMとして入れます。にぎやかな曲のときはお知らせします。<b>これらは iPhone 実機ではまだ確認できていません。</b>うまく動かない場合は、下の「診断情報」をコピーして送ってください。</div>
+  <div class="banner"><b>テスト版です（v1.0 候補）。</b> ①分けて撮った動画を何本でも（20本まで）1本ずつ解析してから1本にまとめます。色は元の動画のまま（iPhone の HDR 撮影にも対応）②字幕はポイントだけ（「このように」「それは」「しかも」などは、意味が変わらない所では字幕に書きません。音声は残します）。1行・短い意味のまとまりで、数は算用数字③ご自身で用意した曲を、やわらかく小さく（初期2%）BGMとして入れます。にぎやかな曲のときはお知らせします。<b>これらは iPhone 実機ではまだ確認できていません。</b>うまく動かない場合は、下の「診断情報」をコピーして送ってください。</div>
 
   <div class="recover" id="recover" role="alert" hidden>
     <b>前回の処理が途中で止まりました</b>
@@ -288,11 +288,11 @@
     <label class="picker">
       <input type="file" id="file" accept="video/*" multiple>
       <span class="btn">動画を選択</span>
-      <small>iPhoneの写真アプリやファイルから選べます。分けて撮った動画は3本まで選べ、1本の動画にまとめます</small>
+      <small>iPhoneの写真アプリやファイルから選べます。分けて撮った動画は20本まで選べ、1本ずつ解析してから1本の動画にまとめます</small>
     </label>
     <div id="fileListBox" hidden>
       <ol id="fileList" class="file-list"></ol>
-      <label class="link-btn" id="fileAddLabel"><input type="file" id="fileAdd" accept="video/*" multiple hidden>＋ 動画を追加（3本まで）</label>
+      <label class="link-btn" id="fileAddLabel"><input type="file" id="fileAdd" accept="video/*" multiple hidden>＋ 動画を追加（20本まで）</label>
       <p class="note">上から順につなぎます。動画ごとに無音・言い直しを切ってから、つなぎ目に余分な無音を作らずに1本にします。字幕・冒頭のテキスト・BGMは1本の動画として入ります</p>
     </div>
     <div id="fileInfo" hidden>
@@ -432,7 +432,7 @@
   <section class="card" id="stepResult" aria-labelledby="result-title" hidden>
     <h2 id="result-title"><span class="step-no">5</span>完成・保存</h2>
     <video id="outVideo" class="result-video" controls playsinline></video>
-    <dl><dt>長さ</dt><dd id="outDuration">-</dd><dt>サイズ</dt><dd id="outSize">-</dd><dt>形式</dt><dd>MP4（H.264）1080×1920</dd><dt>演出</dt><dd id="outStyle">-</dd></dl>
+    <dl><dt>長さ</dt><dd id="outDuration">-</dd><dt>サイズ</dt><dd id="outSize">-</dd><dt>形式</dt><dd>MP4（H.264）1080×1920</dd><dt>演出</dt><dd id="outStyle">-</dd><dt>処理時間</dt><dd id="outTimings">-</dd></dl>
     <button class="btn block" id="btnSave">iPhoneに保存</button>
     <a class="btn block secondary" id="btnDownload" style="text-align:center;text-decoration:none" download>ファイルとしてダウンロード</a>
     <p class="note">完成した動画は、このiPhoneの中（Safariの保存領域）にも残しています。消えることがあるので、早めに「iPhoneに保存」してください。保存が済んだら、下のボタンで端末内の保存データを削除できます。</p>

@@ -309,7 +309,7 @@ function sameSources(job, files, duration) {
   return files.length === job.files.length && files.every((f, k) => f.size === job.files[k].size) && Math.abs((job.duration ?? 0) - duration) < 0.5;
 }
 
-// 動画を追加する（3本まで）
+// 動画を追加する（MAX_SOURCES 本まで）
 $('fileAdd').addEventListener('change', async () => {
   const add = [...($('fileAdd').files || [])];
   $('fileAdd').value = '';
@@ -353,7 +353,7 @@ function renderFileList() {
   $('fileAddLabel').hidden = files.length >= MAX_SOURCES || busy;
 }
 
-// 複数の動画を開く。1本なら今までどおり。2〜3本なら、1本目で入力画面を出してから残りを開き、
+// 複数の動画を開く。1本なら今までどおり。2本以上なら、1本目で入力画面を出してから残りを開き、
 // 向き・比率がそろっているかを確かめて、つないだ時刻（sources.js の layout）を作る
 async function loadSources(files, opts = {}) {
   if (!files.length) return;
@@ -506,6 +506,22 @@ const charCount = chunks => chunks.reduce((n, c) => n + (c.raw || c.text || '').
 // saved: 前回までに文字起こしした区間の結果（{ 区間の番号: chunks }）。onResult(i, chunks) で区間ごとに保存する
 // started: 読み始めた長い窓（{ 番号: true }）。onStart(i) で長い窓を読み始める前に保存する。
 // 長い窓はメモリを多く使うため、読んでいる途中でページが落ちた場合は、次はその窓を読まずにまとまりごとの結果だけを使う
+// 字幕AIのワーカー（モデルを読み込んだもの）を、文字起こし・確かめ・複数の動画の間で使い回す（読み込みは1回だけ）。
+// 解析が終わったら手放す（書き出しのためにメモリを空ける）
+const workerPool = new Map();
+function takeWorker(script) {
+  let w = workerPool.get(script);
+  if (!w) { w = { worker: new Worker(script, { type: 'module' }), loaded: false }; workerPool.set(script, w); }
+  return w;
+}
+function dropWorker(script) {
+  const w = workerPool.get(script);
+  if (w) { w.worker.terminate(); workerPool.delete(script); }
+}
+function releaseWorkers() {
+  for (const s of [...workerPool.keys()]) dropWorker(s);
+}
+
 function transcribe(pcm, windows, terms = [], { saved = {}, onResult, onStart, started = {}, engine = 'whisper' } = {}) {
   saved = { ...saved };
   windows.forEach((w, k) => {
@@ -514,7 +530,8 @@ function transcribe(pcm, windows, terms = [], { saved = {}, onResult, onStart, s
   if (windows.every((_, k) => saved[k])) return Promise.resolve(windows.map((_, k) => saved[k]));
   const E = ENGINES[engine] || ENGINES.whisper;
   return new Promise((resolve, reject) => {
-    const worker = new Worker(E.worker, { type: 'module' });
+    const slot = takeWorker(E.worker);
+    const worker = slot.worker;
     const files = new Map();
     const results = { ...saved };
     let i = 0, attempt = 0, best = null, split = null, triedSplit = false;
@@ -551,7 +568,8 @@ function transcribe(pcm, windows, terms = [], { saved = {}, onResult, onStart, s
     const finish = (fn, v) => {
       if (finished) return;
       finished = true;
-      worker.terminate();
+      worker.onmessage = worker.onerror = null;
+      if (fn !== resolve) dropWorker(E.worker); // 失敗・スキップしたときだけ手放す（読み込んだモデルは次の動画でも使う）
       $('btnSkipAsr').hidden = true;
       fn(v);
     };
@@ -582,6 +600,7 @@ function transcribe(pcm, windows, terms = [], { saved = {}, onResult, onStart, s
           setProgress(loaded / total, `AIモデルをダウンロード中… ${Math.round(loaded / 1e6)} / ${Math.round(total / 1e6)} MB`);
         }
       } else if (m.type === 'loaded') {
+        slot.loaded = true;
         state.asrDevice = m.device;
         log('文字起こしモデル準備完了', { device: m.device, sessions: m.sessions });
         setEnv('文字起こしモデル', `${E.label}（${m.device}）${m.sessions}`);
@@ -652,6 +671,7 @@ function transcribe(pcm, windows, terms = [], { saved = {}, onResult, onStart, s
       }
     };
     worker.onerror = e => finish(reject, new Error(e.message || '文字起こしの準備に失敗しました（ネットワークを確認してください）'));
+    if (slot.loaded && engine === 'reazon') { setTimeout(next, 0); return; }
     setProgress(0, 'AIモデルを準備中…');
     worker.postMessage({ type: 'load', model: ASR_MODEL, terms });
   });
@@ -663,9 +683,10 @@ function verifyTranscript(pcm, units, words, { saved = {}, onResult } = {}) {
   const results = { ...saved };
   if (units.every((_, k) => results[k])) return Promise.resolve(units.map((_, k) => results[k]));
   return new Promise((resolve, reject) => {
-    const worker = new Worker(ENGINES.reazon.worker, { type: 'module' });
+    const slot = takeWorker(ENGINES.reazon.worker);
+    const worker = slot.worker;
     let i = 0, finished = false;
-    const finish = (fn, v) => { if (finished) return; finished = true; worker.terminate(); $('btnSkipAsr').hidden = true; fn(v); };
+    const finish = (fn, v) => { if (finished) return; finished = true; worker.onmessage = worker.onerror = null; if (fn !== resolve) dropWorker(ENGINES.reazon.worker); $('btnSkipAsr').hidden = true; fn(v); };
     $('btnSkipAsr').hidden = false;
     $('btnSkipAsr').onclick = () => { log('字幕AIの確かめをスキップ'); finish(reject, new Error('スキップしました')); };
     const next = () => {
@@ -679,7 +700,7 @@ function verifyTranscript(pcm, units, words, { saved = {}, onResult } = {}) {
     };
     worker.onmessage = e => {
       const m = e.data;
-      if (m.type === 'loaded') next();
+      if (m.type === 'loaded') { slot.loaded = true; next(); }
       else if (m.type === 'verified') {
         results[m.id] = { tokens: m.tokens, fixes: m.fixes, suggest: m.suggest || [], tried: m.tried };
         Promise.resolve(onResult?.(m.id, results[m.id])).catch(err => log('確かめた結果を保存できませんでした', errorText(err))).then(() => { i++; next(); });
@@ -696,6 +717,7 @@ function verifyTranscript(pcm, units, words, { saved = {}, onResult } = {}) {
       }
     };
     worker.onerror = e => finish(reject, new Error(e.message || '字幕AIの準備に失敗しました'));
+    if (slot.loaded) { setTimeout(next, 0); return; }
     setProgress(0, '字幕AIを準備中…');
     worker.postMessage({ type: 'load', model: ASR_MODEL });
   });
@@ -1063,6 +1085,7 @@ async function runAnalysis(job) {
     jobEnd('error', err);
     showError($('analyzeError'), err);
   } finally {
+    releaseWorkers();
     $('btnAnalyze').disabled = false;
     $('file').disabled = false;
     $('fileListBox').inert = false;
@@ -1863,6 +1886,11 @@ function showResult(file, timeline) {
   $('outDuration').textContent = formatSec(last.outStart + last.outDuration);
   $('outSize').textContent = formatSize(file.size);
   $('outStyle').textContent = state.styleNote || '-';
+  // 段階ごとにかかった時間（この端末での実際の速さ。遅い所を確かめるため）
+  const T = timings, sec = v => (v ? `${Math.round(v)}秒` : null);
+  const parts = [['動画の保存', T.store], ['音声', T.audio], ['文字起こし', T.asr], ['手元の動き', T.motion], ['構成', T.plan], ['書き出し', T.render], ['仕上げ', T.assemble]].filter(([, v]) => v >= 0.5);
+  const total = parts.reduce((a, [, v]) => a + v, 0);
+  $('outTimings').textContent = parts.length ? `合計 約${formatSec(total)}（${parts.map(([k, v]) => `${k} ${sec(v)}`).join('・')}）。途中から再開した段階は、その回の分だけです` : '-';
   $('btnDownload').href = state.outUrl;
   $('btnDownload').download = state.outName;
   $('stepResult').hidden = false;
