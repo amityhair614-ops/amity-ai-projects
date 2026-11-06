@@ -525,7 +525,12 @@ export function mergeAsrPasses(windows, results) {
     if (!filled.length) return;
     // 差し込んだ文字は別の読み方の時刻なので、前後と順番が逆になることがある。文字の順に時刻をそろえる
     const tokens = [];
-    for (const k of filled) tokens.push({ ...k, t: tokens.length ? Math.max(k.t, tokens[tokens.length - 1].t + 0.02) : k.t });
+    for (const k of filled) {
+      // 同じ漢字が2つ続く（「低低いもの」「次次」）のは、読み方を合わせたときの重なり（同じ漢字のくり返しは「々」で書く）
+      const prev = tokens[tokens.length - 1] || out[out.length - 1]?.tokens.at(-1);
+      if (prev && prev.s === k.s && /^[一-鿿]$/.test(k.s) && Math.abs(k.t - prev.t) < 0.6) continue;
+      tokens.push({ ...k, t: tokens.length ? Math.max(k.t, tokens[tokens.length - 1].t + 0.02) : k.t });
+    }
     const text = tokens.map(k => k.s).join('');
     out.push({ start: g.start, end: g.end, text, raw: text, timed: true, tokens });
   });
