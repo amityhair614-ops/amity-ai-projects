@@ -16,7 +16,7 @@ export const STYLES = {
 
 export const EMPTY_BRIEF = {
   title: '', content: '', message: '', flow: '', mustKeep: '', items: '', script: '',
-  format: 'short', targetSec: 60, style: 'simple',
+  format: 'short', targetSec: 60, style: 'simple', cut: 'natural',
 };
 // 文章で入力する項目（items: 使用アイテム・専門用語 / script: 話す内容の原稿）
 export const TEXT_KEYS = ['title', 'content', 'message', 'flow', 'mustKeep', 'items', 'script'];
@@ -30,6 +30,7 @@ export function normalizeBrief(b) {
   }
   if (FORMATS[b.format]) o.format = b.format;
   if (STYLES[b.style]) o.style = b.style;
+  if (b.cut === 'natural' || b.cut === 'tight') o.cut = b.cut;
   const f = FORMATS[o.format];
   const sec = Number(b.targetSec);
   o.targetSec = Number.isFinite(sec) && sec > 0 ? Math.round(Math.min(f.max, Math.max(f.min, sec))) : f.defaultSec;

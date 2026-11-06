@@ -242,6 +242,9 @@ export function detectSpeech(rmsDb, opts = {}) {
 export const PACES = {
   natural: { lead: 0.1, tail: 0.18, keepGap: 0.24, minGap: 0.18, maxGap: 0.28 },
   tempo: { lead: 0.08, tail: 0.15, keepGap: 0.22, minGap: 0.16, maxGap: 0.24 },
+  // カットの強さ「テンポ重視」: 声の前後の余白を、手動編集の余白の中央くらいまで詰める（細かい声の区間の端から
+  // 頭 0.08秒・語尾 0.13秒。固定テスト素材9本の手動編集: 頭 0.07〜0.13秒・語尾 0.08〜0.22秒）。声のある所は切らない
+  tight: { lead: 0.03, tail: 0.06, keepGap: 0.2, minGap: 0.14, maxGap: 0.2 },
 };
 
 // 声の区間 segs を、その中の息継ぎの間（細かい声の区間 fine のすき間が minGap 以上）で分ける。

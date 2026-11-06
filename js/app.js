@@ -193,6 +193,7 @@ function readBrief() {
   for (const [k, id] of Object.entries(TEXT_FIELDS)) b[k] = $(id).value;
   b.format = document.querySelector('input[name=format]:checked')?.value;
   b.style = document.querySelector('input[name=style]:checked')?.value;
+  b.cut = document.querySelector('input[name=cut]:checked')?.value;
   const preset = document.querySelector('input[name=dur]:checked')?.value;
   const f = FORMATS[b.format] || FORMATS.short;
   if (preset === 'custom') {
@@ -240,6 +241,7 @@ function writeBrief(b) {
   for (const [k, id] of Object.entries(TEXT_FIELDS)) $(id).value = b[k] || '';
   for (const el of document.querySelectorAll('input[name=format]')) el.checked = el.value === b.format;
   for (const el of document.querySelectorAll('input[name=style]')) el.checked = el.value === b.style;
+  for (const el of document.querySelectorAll('input[name=cut]')) el.checked = el.value === (b.cut || 'natural');
   renderPresets(b.format, b.targetSec);
 }
 
@@ -249,7 +251,7 @@ function briefChanged() {
   briefTimer = setTimeout(() => {
     const b = readBrief();
     try {
-      localStorage.setItem(PREFS_KEY, JSON.stringify({ format: b.format, targetSec: b.targetSec, style: b.style }));
+      localStorage.setItem(PREFS_KEY, JSON.stringify({ format: b.format, targetSec: b.targetSec, style: b.style, cut: b.cut }));
       const key = briefKey();
       if (key) {
         const text = {};
@@ -961,7 +963,7 @@ async function runAnalysis(job) {
   ]);
   jobStart('解析', {
     file: job.file.name, sizeMB: +(job.file.size / 1e6).toFixed(1), asr: job.useAsr, engine: job.useAsr ? (job.asrEngine || 'whisper') : null, video: src.info,
-    brief: { format: brief.format, targetSec: brief.targetSec, style: brief.style, text: hasText(brief), must: bp.mustItems.length, asrTerms: bp.asrTerms.length },
+    brief: { format: brief.format, targetSec: brief.targetSec, style: brief.style, cut: brief.cut, text: hasText(brief), must: bp.mustItems.length, asrTerms: bp.asrTerms.length },
     resume: !!(A.audio || A.motion),
   });
   const lock = await keepAwake();
@@ -1243,7 +1245,7 @@ function makePlan(brief) {
   state.brief = bp.brief;
   state.units = buildUnits({
     duration: src.duration, rmsDb: state.rmsDb, speech: state.speech, chunks: state.chunks, motion: state.motion, restarts: state.restarts,
-    pace: bp.brief.style === 'tempo' ? 'tempo' : 'natural',
+    pace: bp.brief.cut === 'tight' ? 'tight' : bp.brief.style === 'tempo' ? 'tempo' : 'natural',
   });
   state.trims = {};
   state.doubtOk = new Set();

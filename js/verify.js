@@ -27,7 +27,7 @@ export const VERIFY = {
   termAcMin: -10, // 偏りを差し引く前の差がこれより大きく負なら、音声に合っていないとみなす
   passMin: 3, // 別の読み方の結果への直し（偏りを差し引かない、音声だけの差）
   passEdgeMin: 6,
-  endMin: 1.5, // 文の終わりの聞き落とし（「結べなく」→「結べなくなります」）
+  endMin: 1.5, endNear: -2, // 文の終わりの聞き落とし（「結べなく」→「結べなくなります」）
   endAcMin: 0,
   endSure: 2.5,
   confuseMin: 1, // 聞き分けにくい美容の言葉の組: 音声の方が合うとき（偏りを差し引いた点数）
@@ -464,7 +464,9 @@ export function chooseEdits(scored, opt = VERIFY) {
     || (e.kind === 'confuse' && e.score >= opt.confuseNear && !(e.score >= opt.confuseMin && e.ac >= 0))
     // カタカナ語の最後の「ー」（「ベタ」→「ベター」）: 直すほどの差がなくても、言葉として不自然なので要確認として知らせる
     || (e.kind === 'sound' && e.score >= opt.soundNear && !(e.score >= opt.soundMin && e.ac >= 0))
-    || (scriptSwap(e) && pass(e)))).sort((a, b) => b.score - a.score);
+    || (scriptSwap(e) && pass(e))
+    // 文の終わりの聞き落とし（「できてき」の後に声があるのに文字がない）: 補うほどの差がなくても要確認として知らせる
+    || (e.kind === 'end' && e.score >= opt.endNear && e.ac >= opt.endNear - 1 && !pass(e)))).sort((a, b) => b.score - a.score);
   const suggest = [];
   for (const e of near) {
     const lo = e.i, hi = e.j;
@@ -539,7 +541,7 @@ export async function verifySegment(model, eo, T, D, offset, seg, symbols, { wor
   // 文字を足すだけの候補（「ベタ」＋「ー」）は、前の言葉（カタカナ・漢字の続き）も含めて知らせる
   const suggest = chosen.suggest.map(e => {
     let i = e.i;
-    if (e.i === e.j) while (i > 0 && !base[i - 1].ctx && /[ァ-ヶー一-鿿々]/.test(base[i - 1].s) && e.i - i < 8) i--;
+    if (e.i === e.j) while (i > 0 && !base[i - 1].ctx && (e.kind === 'end' ? e.i - i < 4 : /[ァ-ヶー一-鿿々]/.test(base[i - 1].s)) && e.i - i < 8) i--;
     const head = base.slice(i, e.i).map(k => k.s).join('');
     return { from: head + base.slice(e.i, e.j).map(k => k.s).join(''), to: head + e.to.join(''), t0: base[i]?.t ?? base[base.length - 1].t, score: +e.score.toFixed(2) };
   });

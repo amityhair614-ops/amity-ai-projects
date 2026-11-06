@@ -10,6 +10,7 @@
 //     --zoom / --no-zoom / --no-subs  書き出し時の設定
 //     --target=秒     完成動画の長さ（30/45/60 はボタン、それ以外は自由入力）
 //     --style=tempo   編集スタイル
+//     --cut=tight     カットの強さ（テンポ重視）
 //     --brief         タイトル・内容・伝えたいこと・流れ・必ず残したい場面を入力する
 //     --title=… / --content=… / --items=…  動画タイトル・動画の説明（内容）・使用アイテムを入力する
 //     --replan=秒     構成の確認画面で長さを変えて「構成し直す」を押す
@@ -43,6 +44,7 @@ const noSubs = process.argv.includes('--no-subs');
 const arg = name => (process.argv.find(a => a.startsWith(`--${name}=`)) || '').split('=')[1];
 const target = arg('target');
 const style = arg('style');
+const cutArg = arg('cut');
 const withBrief = process.argv.includes('--brief');
 const replan = arg('replan');
 // 複数の動画は「,」でつなぐ（a.mov,b.mov）。上から順に1本の動画にまとめる
@@ -55,7 +57,7 @@ const tFile = fs.existsSync(path.join(dir, `${base}-transcript.json`)) ? `${base
 const transcript = JSON.parse(fs.readFileSync(path.join(dir, tFile), 'utf8'));
 const tag = base + (noAsr ? '-noasr' : '') + (failAsr ? '-failasr' : '') + (webaudio ? '-webaudio' : '') + (realAsr ? '-realasr' : '') + (reazon ? '-reazon' : '') + (scriptArg ? '-script' : '') + (process.env.TAG || '')
   + (zoom === true ? '-zoom' : zoom === false ? '-nozoom' : '') + (noSubs ? '-nosubs' : '')
-  + (target ? '-t' + target : '') + (style ? '-' + style : '') + (withBrief ? '-brief' : '') + (replan ? '-replan' + replan : '');
+  + (target ? '-t' + target : '') + (style ? '-' + style : '') + (cutArg ? '-' + cutArg : '') + (withBrief ? '-brief' : '') + (replan ? '-replan' + replan : '');
 
 // ブラウザのプロセスごとのメモリ（RSS）を0.5秒ごとに測り、段階ごとのピークを記録する
 const mem = { stage: '開始', peaks: {} };
@@ -290,6 +292,7 @@ try {
   await page.waitForSelector('#stepBrief:not([hidden])');
   await setTarget(target);
   if (style) await page.click(`input[name=style][value=${style}] + span`);
+  if (cutArg) await page.click(`input[name=cut][value=${cutArg}] + span`);
   // 偽の文字起こし（Whisper の形の結果）は Whisper の区切り方で返す
   if (await page.$('#optEngine')) await page.selectOption('#optEngine', reazon ? 'reazon' : 'whisper');
   if (titleArg) await page.fill('#bTitle', titleArg);

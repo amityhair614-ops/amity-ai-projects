@@ -23,12 +23,12 @@ export function rebuildChunks(analysis) {
 }
 
 // アプリの makePlan と書き出しのタイムラインを、入力なし（目標 targetSec）で作る
-export function planFixture(analysis, targetSec = 45) {
+export function planFixture(analysis, targetSec = 45, { pace } = {}) {
   targetSec ??= 45;
   const { duration, rmsDb, speech, motion } = analysis;
   const chunks = rebuildChunks(analysis);
   setBreakTerms([]);
-  const units = buildUnits({ duration, rmsDb, speech, chunks, motion, restarts: analysis.restarts || [] });
+  const units = buildUnits({ duration, rmsDb, speech, chunks, motion, pace, restarts: analysis.restarts || [] });
   const { target, max } = targetRange(targetSec);
   const sel = selectUnits(units, duration, target, max);
   let shaped = extendEnding(sel, speech.voice, duration);
