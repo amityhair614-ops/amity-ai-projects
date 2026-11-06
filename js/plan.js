@@ -1685,7 +1685,23 @@ export function buildTimeline(clips, opts = {}) {
     }
   }
   if (zoom && !zoomCount && lowRes) tl.zoomSkipped = 'resolution';
+  readableAcross(tl);
   return tl;
+}
+
+// 場面の最初の字幕が短すぎて読めない（「やってしまうと」0.42秒）: 前の場面の字幕が消えた後の間に、最大 READ_SEC.shift 秒
+// 早く出す（その場面の話し始めまでの間は無音なので、少し早く出ても声とずれない）
+function readableAcross(tl) {
+  let prevEnd = -Infinity;
+  for (const c of tl) {
+    const ps = c.subtitles || [];
+    const p = ps[0];
+    if (p && !p.cont) {
+      const need = readTime(p) - (p.end - p.start);
+      if (need > 0) p.start -= Math.max(0, Math.min(need, READ_SEC.shift, p.start - prevEnd - 0.05));
+    }
+    if (ps.length) prevEnd = ps[ps.length - 1].end;
+  }
 }
 
 // 動いた範囲 b（切り抜き枠 crop の中の割合）が、寄った後の枠 rect に余白（8%）をつけて収まるか
@@ -2026,7 +2042,7 @@ function timedPages(clip, text) {
 // 読み取れる表示時間（文字数に合わせる）。短く速く話した所の字幕（「グラデーションのように」0.56秒）は、
 // 前のページとの間のすき間から少し早く出し始め（最大0.3秒）、まだ足りなければ次のページへの切り替えを少し遅らせる
 // （次のページも読める長さを残す。最大0.5秒）。声とのずれは早め0.3秒・遅め0.5秒以内にとどめる
-export const READ_SEC = { base: 0.3, perChar: 0.08, min: 0.8, shift: 0.3, late: 0.5 };
+export const READ_SEC = { base: 0.3, perChar: 0.08, min: 0.8, shift: 0.3, late: 0.5, give: 0.3 };
 const readTime = p => Math.max(READ_SEC.min, READ_SEC.base + READ_SEC.perChar * p.lines.join('').length);
 function readable(pages, clipStart, clipEnd = Infinity) {
   for (let i = 0; i < pages.length; i++) {
@@ -2038,7 +2054,8 @@ function readable(pages, clipStart, clipEnd = Infinity) {
     p.start -= early; need -= early;
     const next = pages[i + 1];
     if (need > 0 && next && next.start <= p.end + 1e-6) {
-      const late = Math.min(need, READ_SEC.late, Math.max(0, (next.end - next.start) - readTime(next)));
+      // 次のページが読むのにちょうどの長さでも、少し（READ_SEC.give 秒・ただし最短 READ_SEC.min 秒は残す）分けてもらう
+      const late = Math.min(need, READ_SEC.late, Math.max(0, (next.end - next.start) - Math.max(READ_SEC.min, readTime(next) - READ_SEC.give)));
       p.end += late; next.start += late;
     } else if (need > 0 && !next) p.end = Math.min(clipEnd, p.end + need); // 場面の最後の字幕は、場面の終わりまで延ばしてよい
   }
@@ -2123,7 +2140,8 @@ export function clearOpening(timeline, op) {
       // 短くなって読めないときは、次のページへの切り替えを少し遅らせる（次のページも読める長さを残す）
       const next = subs[i + 1], need = readTime(p) - (p.end - p.start);
       if (need > 0 && next && Math.abs(next.start - p.end) < 0.05) {
-        const late = Math.min(need, READ_SEC.late, Math.max(0, (next.end - next.start) - readTime(next)));
+        // 次のページが読むのにちょうどの長さでも、少し（READ_SEC.give 秒・ただし最短 READ_SEC.min 秒は残す）分けてもらう
+      const late = Math.min(need, READ_SEC.late, Math.max(0, (next.end - next.start) - Math.max(READ_SEC.min, readTime(next) - READ_SEC.give)));
         p.end += late; next.start += late;
       }
     });

@@ -359,6 +359,8 @@ function renderFileList() {
 // 向き・比率がそろっているかを確かめて、つないだ時刻（sources.js の layout）を作る
 async function loadSources(files, opts = {}) {
   if (!files.length) return;
+  state.tSelected = Date.now(); // 動画を選んだ時刻（完成までの全体の時間を測る）
+  for (const k of Object.keys(timings)) delete timings[k];
   await loadSource(files[0], opts);
   state.files = files.slice(0, 1);
   if (files.length > 1 && state.src) {
@@ -385,7 +387,8 @@ async function loadSources(files, opts = {}) {
     const total = totalDuration(state.lay);
     // 解析・構成の計算は「つないだ1本の動画」として行う（映像の大きさ・向きは1本目のもの）
     state.src = { ...srcs[0], duration: total, audio: srcs.find(v => v.audio)?.audio || null, info: { ...srcs[0].info, files: files.length, duration: +total.toFixed(2) } };
-    log('複数の動画を選択', { files: files.map((f, k) => ({ name: f.name, sizeMB: +(f.size / 1e6).toFixed(1), duration: +state.lay[k].duration.toFixed(2) })) });
+    log('複数の動画を選択', { files: files.map((f, k) => ({ name: f.name, sizeMB: +(f.size / 1e6).toFixed(1), duration: +state.lay[k].duration.toFixed(2), color: srcs[k].info?.color, hdr: !!srcs[k].hdr })) });
+    $('hdrNote').hidden = !srcs.some(v => v.hdr);
     $('name').textContent = files.map(f => f.name).join(' ＋ ');
     $('size').textContent = formatSize(files.reduce((a, f) => a + f.size, 0));
     const sum = state.lay.reduce((a, x) => a + x.duration, 0);
@@ -434,7 +437,7 @@ async function loadSource(file, { preview = true } = {}) {
     $('dims').textContent = `${width}×${height}（${width >= height ? '横向き' : '縦向き'}）${audio ? '' : '・音声なし'}`;
     $('codec').textContent = info.video;
     // HDR の動画（iPhone の初期設定）: ブラウザでの変換の色の出方は iPhone 実機でまだ確かめていない
-    $('hdrNote').hidden = !state.src.hdr;
+    $('hdrNote').hidden = !(state.srcs || [state.src]).some(v => v?.hdr);
     initBrief();
     $('stepBrief').hidden = false;
     $('stepAnalyze').hidden = false;
@@ -474,7 +477,12 @@ if (typeof window !== 'undefined') window.__amityTimings = timings; // 通しテ
 const stepStart = {};
 function markTiming(key, status) {
   if (status === 'active') { if (stepStart[key] == null) stepStart[key] = performance.now(); return; }
-  if (stepStart[key] != null) { timings[key] = +(((timings[key] || 0) * 1000 + performance.now() - stepStart[key]) / 1000).toFixed(1); delete stepStart[key]; log('かかった時間', { [STAGE_LABELS[key] || key]: timings[key] + '秒' }); }
+  if (stepStart[key] != null) {
+    timings[key] = +(((timings[key] || 0) * 1000 + performance.now() - stepStart[key]) / 1000).toFixed(1);
+    delete stepStart[key];
+    log('かかった時間', { [STAGE_LABELS[key] || key]: timings[key] + '秒' });
+    if (state.job) state.job.timings = { ...timings }; // 途中から再開しても、それまでの時間を足せるように保存する
+  }
 }
 
 function setStep(key, status, note) {
@@ -603,6 +611,7 @@ function transcribe(pcm, windows, terms = [], { saved = {}, onResult, onStart, s
         }
       } else if (m.type === 'loaded') {
         slot.loaded = true;
+        timings.asrLoad = +(((timings.asrLoad || 0) * 1000 + performance.now() - tLoad) / 1000).toFixed(1);
         state.asrDevice = m.device;
         log('文字起こしモデル準備完了', { device: m.device, sessions: m.sessions });
         setEnv('文字起こしモデル', `${E.label}（${m.device}）${m.sessions}`);
@@ -674,6 +683,7 @@ function transcribe(pcm, windows, terms = [], { saved = {}, onResult, onStart, s
     };
     worker.onerror = e => finish(reject, new Error(e.message || '文字起こしの準備に失敗しました（ネットワークを確認してください）'));
     if (slot.loaded && engine === 'reazon') { setTimeout(next, 0); return; }
+    const tLoad = performance.now();
     setProgress(0, 'AIモデルを準備中…');
     worker.postMessage({ type: 'load', model: ASR_MODEL, terms });
   });
@@ -836,10 +846,12 @@ async function transcribeAudio(pcm, rmsDb, speech, bp, engine, store, persist, w
       const b = bp.brief;
       const words = [...briefWords([b.title, b.content, b.message, b.flow, b.mustKeep], [...bp.items, ...bp.asrTerms]), ...domainWords(BEAUTY_TERMS)];
       store.verify = store.verify || {};
+      const tV = performance.now();
       const results = await verifyTranscript(pcm, units, words, {
         saved: store.verify,
         onResult: async (i, r) => { store.verify[i] = r; await persist(); },
       });
+      timings.verify = +(((timings.verify || 0) * 1000 + performance.now() - tV) / 1000).toFixed(1); // 音声での確かめ（文字起こしの中）
       checked = verifiedRaw(results);
       asrVerify = { units, fixes: results.flatMap(r => r.fixes || []), suggest: checked.suggest || [], windows, passes: raw.passes }; // 動作確認用（tests/e2e/run.mjs が保存する）
       audioFixes = checked.fixes || [];
@@ -1668,9 +1680,11 @@ $('btnRender').addEventListener('click', async () => {
   let shaped = extendEnding(clips.map(u => ({ ...u, text: state.chunks ? u.text : '', ...shifted(u, state.subOffset) })), state.speech?.voice, state.src.duration);
   // 複数の動画: 場面の使う範囲を、それぞれの動画の中に収める（動画と動画の間の無音・となりの動画にはみ出さない）
   if (state.lay) shaped = shaped.map(u => ({ ...u, pieces: clampPieces(u.pieces, state.lay) })).filter(u => u.pieces.length);
+  const tTl = performance.now();
   const timeline = buildTimeline(shaped, {
     srcW: state.src.width, srcH: state.src.height, zoom: useZoom, subtitles: useSubs, style: state.brief?.style,
   });
+  timings.subtitles = +((performance.now() - tTl) / 1000).toFixed(2); // 構成から字幕・ページ・時刻を作る時間
   const outSec = timeline.reduce((s, c) => s + c.outDuration, 0);
   // 冒頭のテキスト（標準1秒・選べる）と最後のフェードアウト（0.9秒＋黒い画面0.2秒）
   const lines = $('optOpening').checked ? openingText(state.opening ?? '') : [];
@@ -1906,10 +1920,15 @@ function showResult(file, timeline) {
   $('outSize').textContent = formatSize(file.size);
   $('outStyle').textContent = state.styleNote || '-';
   // 段階ごとにかかった時間（この端末での実際の速さ。遅い所を確かめるため）
-  const T = timings, sec = v => (v ? `${Math.round(v)}秒` : null);
-  const parts = [['動画の保存', T.store], ['音声', T.audio], ['文字起こし', T.asr], ['手元の動き', T.motion], ['構成', T.plan], ['書き出し', T.render], ['仕上げ', T.assemble]].filter(([, v]) => v >= 0.5);
+  const T = timings, sec = v => (v ? `${v < 10 ? v.toFixed(1) : Math.round(v)}秒` : null);
+  const parts = [['動画の保存', T.store], ['音声', T.audio], ['文字起こし', T.asr], ['手元の動き', T.motion], ['構成（カット）', T.plan], ['字幕', T.subtitles], ['書き出し（エンコード）', T.render], ['仕上げ', T.assemble]].filter(([, v]) => v >= 0.05);
   const total = parts.reduce((a, [, v]) => a + v, 0);
-  $('outTimings').textContent = parts.length ? `合計 約${formatSec(total)}（${parts.map(([k, v]) => `${k} ${sec(v)}`).join('・')}）。途中から再開した段階は、その回の分だけです` : '-';
+  const sub = [T.asrLoad && `モデルの準備 ${sec(T.asrLoad)}`, T.verify && `聞き取りの確かめ ${sec(T.verify)}`].filter(Boolean);
+  // 動画を選んでから完成までの全体の時間 = 処理を待った時間 + 操作の時間（入力・確認・字幕の手直しなど）
+  const wall = state.tSelected ? (Date.now() - state.tSelected) / 1000 : null;
+  const whole = wall && wall >= total ? `。動画を選んでから完成まで ${formatSec(wall)}（処理の待ち ${formatSec(total)}・操作など ${formatSec(wall - total)}）` : '';
+  $('outTimings').textContent = parts.length ? `処理 約${formatSec(total)}（${parts.map(([k, v]) => `${k} ${sec(v)}`).join('・')}${sub.length ? `。文字起こしのうち ${sub.join('・')}` : ''}）${whole}` : '-';
+  log('処理時間', { ...timings, wallSec: wall && Math.round(wall), processingSec: Math.round(total) });
   $('btnDownload').href = state.outUrl;
   $('btnDownload').download = state.outName;
   $('stepResult').hidden = false;
@@ -1945,6 +1964,9 @@ function showNotice(msg) {
 // 保存してある作業の続きをする。reselected: 元の動画を選び直してもらった（すでに開いてある）
 async function continueJob(job, { reselected = false } = {}) {
   state.pendingResume = null;
+  // 前回までにかかった時間（段階ごと）を引き継ぐ
+  for (const k of Object.keys(timings)) delete timings[k];
+  Object.assign(timings, job.timings || {});
   $('resumeNeedFile').hidden = true;
   if (!reselected && job.files?.length > 1) {
     // 複数の動画: 保存したコピーをすべて開く（1本でも欠けていたら、同じ動画を同じ順番で選び直してもらう）
