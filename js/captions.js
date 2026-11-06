@@ -18,7 +18,7 @@
 // 「でも」「もし」「ただ」「だから」など、省くと意味が変わる言葉は省かない。「それは」「それも」のように、
 // 文の中で何かを指している指示語も省かない。否定の言葉・用語・数字・注意の言葉を含む部分は、省く対象にならない
 const FILLER_RE = /^(?:えー+と?|えっと|ええと|あのー?|あの[、,]|まあ|まぁ|うーん|んー)[、,\s]*/;
-const HEAD_CONNECTIVE_RE = /^(?:なので|ですので|それで|そして|それから|しかも|そうなると|そうならないために|そうしないために|なぜかというと|で[、,]|じゃあ)[、,\s]*/;
+const HEAD_CONNECTIVE_RE = /^(?:なので|ですので|それで|そして|それから|しかも|そうなると|そ?うならないために|そ?うしないために|なぜかというと|で[、,]|じゃあ)[、,\s]*/;
 // 調子をとる「ね」: 漢字・カタカナの言葉＋助詞の後、「分」の後、指示語＋助詞の後。後ろに言葉が続くときだけ
 const INTERJECTION_NE_RE = /((?:[一-鿿々ァ-ヶー]|それ|これ|あれ|(?<![でま]す)[ぁ-ゖ]{2}(?=[がをはにでも]))[がをはにでもとの]|分|[一-鿿][ぁ-ゖ]?な|あまり|かなり|すごく|ちょっと|やっぱり|本当に|ほんとに|結構|けっこう)ね(?=[^、。\s]{2})/g;
 // 形容詞（〜い）・「〜ない」の後の「という」＋名詞
@@ -51,7 +51,7 @@ function sentenceHeads(t) {
 
 // 文の頭で省く言葉（意味が変わらないとき）: [正規表現, 残りの文の条件, 記録する言葉]
 const HEAD_WORDS = [
-  [/^(?:そして|それから|しかも|それで|なので|ですので|そうならないために|そうしないために)[、,]?/, null, '接続の言葉'],
+  [/^(?:そして|それから|しかも|それで|なので|ですので|そ?うならないために|そ?うしないために)[、,]?/, null, '接続の言葉'],
   [/^あと[、,]?(?![0-9０-９一二三四五六七八九十何少はでから])/, null, 'あと'],
   [/^それ[がを][、,]?/, r => /^[一-鿿々ァ-ヶぁ-ゖ]/.test(r) && !/^(?:何|どこ|どう|なぜ)/.test(r), 'それが・それを'],
   [/^それは[、,]?/, r => !/^(?:何|どこ|どう|なぜ|いつ)/.test(r), 'それは'],
@@ -64,7 +64,8 @@ const HEAD_WORDS = [
 // 1段目（字幕のページに分ける前）: 文の中の、調子をとる「ね」・「という」・つなぎ言葉を省く。
 // 1文字ごとの時刻 times があれば、同じ文字を省いた時刻の並びも返す（ページの切り替えを話した時刻に合わせるため）。
 // 返り値: { text, times, omitted }
-export function cleanForDisplay(text, times = null) {
+// headIsSentence: false のときは、文字の最初を文の頭とみなさない（ページの頭が文の途中のとき。「必ず｜それを守って」の「それを」は省かない）
+export function cleanForDisplay(text, times = null, { headIsSentence = true } = {}) {
   const t = text || '';
   const drop = new Uint8Array(t.length);
   const omitted = [];
@@ -84,6 +85,7 @@ export function cleanForDisplay(text, times = null) {
   // 文の頭の、字幕に書かなくてよい言葉（「あと」「それが」「特に」「もし」…）。時刻も一緒に外すので、その言葉を話している間は
   // 次の字幕を出さず、残った言葉を話し始めた時に字幕が出る（省いた所に前の字幕を残さない）
   for (const p of sentenceHeads(t)) {
+    if (p === 0 && !headIsSentence) continue;
     const rest = t.slice(p);
     const end = (rest.search(/(?:ます|です|ました|でした|ません|ください|しょう)(?![がけかよねのとし])/) + 1 || rest.length + 1) + 2;
     const sentence = rest.slice(0, end);
@@ -105,8 +107,8 @@ export function cleanForDisplay(text, times = null) {
 
 // 2段目（ページに分けた後）: ページの頭の、字幕に書かなくてよい言葉（つなぎ言葉・「なので」など）を省く。
 // 返り値: { text, omitted: [省いた言葉] }
-export function displayText(text) {
-  const c = cleanForDisplay((text || '').trim());
+export function displayText(text, { headIsSentence = true } = {}) {
+  const c = cleanForDisplay((text || '').trim(), null, { headIsSentence });
   let t = c.text;
   const omitted = [...c.omitted];
   // つなぎ言葉・接続の言葉だけのページ（「なので」「そうなると」「えっと」）は、字幕を出さない（音声はそのまま）

@@ -2,7 +2,7 @@ import {
   checkSupport, openVideo, closeVideo, analyzeAudio, analyzeMotion, renderSegment, assembleOutput, getAudioMode, ASR_RATE,
   createRenderContext, RenderPaused, readBgm, analyzeBgm,
 } from './media.js';
-import { MAX_SOURCES, layout, totalDuration, sourceAt, concatFrames, concatPcm, concatMotion, clampPieces, checkCompatible, move } from './sources.js';
+import { MAX_SOURCES, MAX_TOTAL_SEC, layout, totalDuration, sourceAt, concatFrames, concatPcm, concatMotion, clampPieces, checkCompatible, move, sourceKey, shiftChunks, combineAudio, combineRestarts } from './sources.js';
 import {
   openWritable, copyIn, readFile, removeFile, listFiles, storageInfo, requestPersist, isStorageFull,
   saveJob, loadJob, listJobs, deleteJob, getWriteMode,
@@ -55,7 +55,7 @@ window.amityDebug = state; // 動作確認用
 
 const STAGE_LABELS = {
   open: '動画を開く', audio: '音声を読み込み中', asr: '文字起こし中', motion: '手元の動きを解析中',
-  plan: '構成を作成中', render: 'MP4を書き出し中',
+  plan: '構成を作成中', render: 'MP4を書き出し中', store: '元の動画を端末内に保存', assemble: 'MP4を仕上げ',
 };
 
 function showError(el, err) {
@@ -386,7 +386,9 @@ async function loadSources(files, opts = {}) {
     log('複数の動画を選択', { files: files.map((f, k) => ({ name: f.name, sizeMB: +(f.size / 1e6).toFixed(1), duration: +state.lay[k].duration.toFixed(2) })) });
     $('name').textContent = files.map(f => f.name).join(' ＋ ');
     $('size').textContent = formatSize(files.reduce((a, f) => a + f.size, 0));
-    $('duration').textContent = `${formatSec(state.lay.reduce((a, x) => a + x.duration, 0))}（${files.length}本の合計）`;
+    const sum = state.lay.reduce((a, x) => a + x.duration, 0);
+    $('duration').textContent = `${formatSec(sum)}（${files.length}本の合計）`;
+    if (sum > MAX_TOTAL_SEC) showNotice(`動画の合計が${formatSec(sum)}あります。${Math.round(MAX_TOTAL_SEC / 60)}分を超えると、iPhone では解析・書き出しに長い時間がかかったり、端末内の空きが足りなくなることがあります。`);
   }
   renderFileList();
 }
@@ -464,7 +466,17 @@ function setupSteps(list) {
   $('bar').hidden = false;
 }
 
+// 段階ごとにかかった時間（秒）。診断情報と結果の画面に出す（処理の遅い所を実機で確かめるため）
+export const timings = {};
+if (typeof window !== 'undefined') window.__amityTimings = timings; // 通しテスト（tests/e2e/run.mjs）が読む
+const stepStart = {};
+function markTiming(key, status) {
+  if (status === 'active') { if (stepStart[key] == null) stepStart[key] = performance.now(); return; }
+  if (stepStart[key] != null) { timings[key] = +(((timings[key] || 0) * 1000 + performance.now() - stepStart[key]) / 1000).toFixed(1); delete stepStart[key]; log('かかった時間', { [STAGE_LABELS[key] || key]: timings[key] + '秒' }); }
+}
+
 function setStep(key, status, note) {
+  markTiming(key, status);
   const li = $('steps').querySelector(`[data-key="${key}"]`);
   if (!li) return;
   li.className = status;
@@ -752,6 +764,138 @@ async function persistJob(job) {
 }
 
 // 解析: 段階ごとに結果を保存しながら進める。保存済みの段階はやり直さない
+// 1本ぶんの音声（pcm: 16kHz）を文字にして、字幕の文にする。store: 途中経過を保存する所（窓ごとの結果・確かめた結果）。
+// 1本の動画でも、複数の動画を1本ずつ読むときも、同じこの手順を使う（動画と動画の間をまたいで読まない）
+async function transcribeAudio(pcm, rmsDb, speech, bp, engine, store, persist, warnings) {
+  // ReazonSpeech: 区切り方の違う2通り（30秒ごと・話のまとまりごと）で読み、どれかが落とした言葉をほかの結果で補う（asrWindows・mergeAsrPasses）
+  const windows = store.windows || (engine === 'reazon' ? asrWindows(speech.regions, rmsDb) : transcriptionWindows(speech.regions, ENGINES[engine].window));
+  store.windows = windows;
+  store.results = store.results || {};
+  store.started = store.started || {};
+  const savedN = Object.keys(store.results).length;
+  if (savedN) log(`保存済みの文字起こしの区間を再利用: ${savedN}/${windows.length}`);
+  const perWindow = await transcribe(pcm, windows, bp.asrTerms, {
+    engine,
+    saved: store.results,
+    onResult: async (i, chunks) => { store.results[i] = chunks; await persist(); },
+    started: store.started,
+    onStart: async i => { store.started = { ...(store.started || {}), [i]: true }; await persist(); },
+  });
+  const raw = mergeAsrPasses(windows, perWindow);
+  if (raw.passes) log('字幕AIの読み方ごとの文字数', { A: raw.passes.A.length, C: raw.passes.C.length, merged: raw.reduce((n, c) => n + c.tokens.length, 0) });
+  const fine = fineSpeech(rmsDb, speech.threshold);
+  // ReazonSpeech: 1文字ごとの時刻と声の切れ目で文に分け、用語の書き方を直す
+  // Whisper: 文ごとの時刻を、無音の切れ目に合わせて割り当て直す
+  // ReazonSpeech: 聞き取った文字を、同じ音声で確かめて直す（聞き間違い・文の終わりの聞き落とし・合わせたときの乱れ）。
+  // 入力したタイトル・説明・用語の言葉は、音声に合っているときだけ使う（verify.js）
+  let checked = raw, audioFixes = [], asrVerify = null;
+  if (engine === 'reazon' && raw.some(c => c.tokens?.length)) {
+    try {
+      const units = verifyUnits(raw.flatMap(c => c.tokens || []), fine, raw.passes);
+      const b = bp.brief;
+      const words = [...briefWords([b.title, b.content, b.message, b.flow, b.mustKeep], [...bp.items, ...bp.asrTerms]), ...domainWords(BEAUTY_TERMS)];
+      store.verify = store.verify || {};
+      const results = await verifyTranscript(pcm, units, words, {
+        saved: store.verify,
+        onResult: async (i, r) => { store.verify[i] = r; await persist(); },
+      });
+      checked = verifiedRaw(results);
+      asrVerify = { units, fixes: results.flatMap(r => r.fixes || []), suggest: checked.suggest || [], windows, passes: raw.passes }; // 動作確認用（tests/e2e/run.mjs が保存する）
+      audioFixes = checked.fixes || [];
+      checked.passes = raw.passes;
+      log('字幕AIの聞き取りを音声で確かめました', { units: units.length, tried: results.reduce((n, r) => n + (r.tried || 0), 0), fixes: audioFixes.map(f => `${f.from || '（なし）'}→${f.to}（${f.kind}・${f.score}${f.check ? '・要確認' : ''}）`) });
+    } catch (err) {
+      log('字幕AIの聞き取りを音声で確かめられませんでした（確かめる前の文字起こしを使います）', errorText(err));
+      warnings?.push('字幕AIの聞き取りを音声で確かめられなかったため、聞き間違いが残っている可能性があります（' + errorText(err) + '）。');
+    }
+  }
+  const sentences = engine === 'reazon' && checked.some(c => c.tokens)
+    ? attachAudioFixes(tokensToChunks(checked, fine).map(c => fixTerms(c, [...bp.items, ...bp.asrTerms], bp.phrases, { audioChecked: true })), audioFixes, checked.suggest || [])
+    : alignSentences(raw, speech.regions);
+  return { chunks: attachDoubts(refineSubtitleTiming(sentences, fine), raw.passes, [...bp.items, ...bp.asrTerms]), asrVerify };
+}
+
+// 複数の動画: 1本ずつ、音声の読み込み・声の区間・言いかけの検出・文字起こし（音声での確かめも）をして保存する。
+// その結果を、つないだ時刻にずらして並べる（素材の境界をまたいで読まない・つないだ後に読み直さない）。
+// 1本ぶんの結果は、動画（名前・大きさ・長さ）と入力した言葉ごとに端末内に保存し、並べ替え・追加・作り直しのときに使い回す
+const SRC_CACHE = 'source-cache';
+const cacheName = key => 'a-' + [...key].reduce((h, c) => (Math.imul(h, 31) + c.charCodeAt(0)) | 0, 7).toString(36).replace('-', 'm') + '.json';
+async function analyzeEachSource(job, bp) {
+  const A = job.analysis, n = state.srcs.length, files = state.files;
+  const engine = job.asrEngine || 'whisper';
+  const wordsKey = JSON.stringify([engine, job.useAsr, bp.asrTerms, bp.items, bp.brief?.title, bp.brief?.content]);
+  A.src = A.src || [];
+  const parts = [];
+  for (let k = 0; k < n; k++) {
+    const v = state.srcs[k];
+    const key = sourceKey(files[k], state.lay[k].duration) + '|' + wordsKey;
+    let e = A.src.find(x => x?.key === key);
+    if (!e?.done) {
+      try {
+        const f = await readFile(SRC_CACHE, cacheName(key));
+        const c = f && JSON.parse(await f.text());
+        if (c?.key === key && c.done) { e = c; log(`動画 ${k + 1}: 前に解析した結果を使います`); }
+      } catch {}
+    }
+    if (!e?.done) {
+      e = e?.key === key ? e : { key };
+      const label = `動画 ${k + 1}/${n}`;
+      let pcm = null;
+      if (v.audio) {
+        setStep('audio', 'active', label);
+        const a = await analyzeAudio(v, r => setProgress((k + r * 0.3) / n, `${label}: 音声を読み込み中… ${Math.round(r * 100)}%`));
+        markTiming('audio', 'done');
+        pcm = a.pcm;
+        e.rmsDb = Array.from(a.rmsDb, x => +x.toFixed(2));
+        e.mode = getAudioMode();
+      } else e.rmsDb = Array.from(new Float32Array(Math.ceil(v.duration / FRAME_SEC)));
+      const rms = Float32Array.from(e.rmsDb);
+      e.speech = rms.some(x => x !== 0) ? detectSpeech(rms) : { regions: [], voice: [], sounds: [], threshold: 0 };
+      if (pcm && e.speech.threshold) {
+        try { e.restarts = findRestarts(pcm, fineSpeech(rms, e.speech.threshold)); } catch (err) { log('言いかけの音の検出に失敗（使わずに続行）', errorText(err)); e.restarts = []; }
+      } else e.restarts = [];
+      if (job.useAsr && pcm && e.speech.regions.length) {
+        setStep('asr', 'active', label);
+        e.asr = e.asr || {};
+        try {
+          const r = await transcribeAudio(pcm, rms, e.speech, bp, engine, e.asr, () => persistJob(job), A.warnings);
+          markTiming('asr', 'done');
+          e.chunks = r.chunks;
+          e.asrVerify = r.asrVerify;
+        } catch (err) {
+          log(`${label}: 文字起こしに失敗`, errorText(err));
+          A.warnings.push(`${label}の文字起こしができなかったため、その動画は字幕なし・言い直し検出なしで構成しました（${errorText(err)}）。`);
+          e.chunks = null;
+        }
+        delete e.asr; // 途中経過は、終わったら要らない（保存する量を減らす）
+      } else e.chunks = job.useAsr ? [] : null;
+      pcm = null;
+      e.done = true;
+      A.src = [...A.src.filter(x => x && x.key !== key), e];
+      await persistJob(job);
+      try { await copyIn(SRC_CACHE, cacheName(key), new Blob([JSON.stringify({ ...e, asrVerify: undefined })])); } catch (err) { log('動画ごとの解析結果を保存できませんでした（次回は解析し直します）', errorText(err)); }
+    }
+    parts.push(e);
+    setProgress((k + 1) / n, `動画 ${k + 1}/${n} の解析が終わりました`);
+  }
+  // つなぐ（時刻をずらすだけ。解析はしない）
+  const audio = combineAudio(parts.map(e => ({ rmsDb: Float32Array.from(e.rmsDb), speech: e.speech })), state.lay, FRAME_SEC);
+  state.rmsDb = audio.rmsDb;
+  state.speech = audio.speech;
+  state.restarts = combineRestarts(parts.map(e => e.restarts), state.lay);
+  const anyAsr = parts.some(e => e.chunks);
+  state.chunks = anyAsr ? parts.flatMap((e, k) => shiftChunks((e.chunks || []).map(c => ({ ...c, source: k })), state.lay[k].offset)) : null;
+  state.asrVerify = parts.some(e => e.asrVerify) ? { perSource: parts.map(e => e.asrVerify || null) } : null;
+  A.audio = { rmsDb: Array.from(state.rmsDb, x => +x.toFixed(2)), mode: getAudioMode(), pcmSaved: false };
+  A.speech = state.speech;
+  A.restarts = state.restarts;
+  A.asr = anyAsr ? { done: true, chunks: state.chunks } : (job.useAsr ? { failed: true } : undefined);
+  await persistJob(job);
+  setStep('audio', 'done', `${n}本`);
+  setStep('asr', anyAsr ? 'done' : (job.useAsr ? 'warn' : 'skip'), anyAsr ? `${n}本・1本ずつ` : job.useAsr ? '文字にできず' : 'OFF');
+  log('動画ごとの解析をつなぎました', { sources: n, speechRegions: state.speech.regions.length, chunks: state.chunks?.length ?? 0, restarts: state.restarts.length });
+}
+
 async function runAnalysis(job) {
   const src = state.src;
   const brief = normalizeBrief(job.brief);
@@ -791,130 +935,92 @@ async function runAnalysis(job) {
     if (job.sourceSaved) setStep('store', 'done', '保存済み');
     else await storeSource(job);
 
-    // 1. 音声（失敗しても動きだけで続ける）
-    let pcm = null;
-    const needPcm = job.useAsr && !A.asr?.done && !A.asr?.failed;
-    if (A.audio) {
-      setStep('audio', 'done', '保存済みの結果を使用');
-      state.rmsDb = A.audio.rmsDb;
-      if (needPcm && A.audio.pcmSaved) {
-        const f = await readFile(job.id, PCM_NAME);
-        if (f) pcm = new Float32Array(await f.arrayBuffer());
-      }
-    }
-    if ((!A.audio && src.audio) || (needPcm && !pcm && src.audio && A.audio && !A.audio.failed)) {
-      setStep('audio', 'active');
-      try {
-        const a = await analyzeAudioAll(r => setProgress(r, `音声を読み込み中… ${Math.round(r * 100)}%`));
-        pcm = a.pcm;
-        state.rmsDb = a.rmsDb;
-        A.audio = { rmsDb: a.rmsDb, mode: getAudioMode(), pcmSaved: false };
-        // 文字起こし用の音声も保存しておく（文字起こしの途中で止まったとき、音声を読み直さずに済む）
-        if (needPcm) {
-          try {
-            await copyIn(job.id, PCM_NAME, new Blob([pcm.buffer]));
-            A.audio.pcmSaved = true;
-          } catch (err) {
-            log('文字起こし用の音声を保存できませんでした', errorText(err));
-          }
+    // 複数の動画: 1本ずつ、音声・声の区間・文字起こしを解析して保存し、結果を時刻をずらしてつなぐ（つないだ音声は読まない）
+    if (state.srcs) await analyzeEachSource(job, bp);
+    else {
+      // 1. 音声（失敗しても動きだけで続ける）
+      let pcm = null;
+      const needPcm = job.useAsr && !A.asr?.done && !A.asr?.failed;
+      if (A.audio) {
+        setStep('audio', 'done', '保存済みの結果を使用');
+        state.rmsDb = A.audio.rmsDb;
+        if (needPcm && A.audio.pcmSaved) {
+          const f = await readFile(job.id, PCM_NAME);
+          if (f) pcm = new Float32Array(await f.arrayBuffer());
         }
-        await persistJob(job);
-        setStep('audio', 'done');
-      } catch (err) {
-        log('音声の解析に失敗', errorText(err));
-        A.audio = { failed: true, rmsDb: null };
-        A.warnings.push('音声を読み込めなかったため、無音カットなし（手元の動きだけ）で構成しました（' + errorText(err) + '）。');
-        await persistJob(job);
-        setStep('audio', 'warn', '失敗');
       }
-    } else if (!src.audio) {
-      setStep('audio', 'skip', '音声なし');
-    }
-    if (!state.rmsDb) state.rmsDb = new Float32Array(Math.ceil(src.duration / FRAME_SEC));
-    state.speech = state.rmsDb.some(v => v !== 0) ? detectSpeech(state.rmsDb) : { regions: [], voice: [], threshold: 0 };
-    // 音の繰り返しで、文字起こしAIが見落とす言い直しを探す（音声がある間だけ。結果は保存して再開時に使う）
-    if (pcm && state.speech.threshold && !A.restarts) {
-      try {
-        A.restarts = findRestarts(pcm, fineSpeech(state.rmsDb, state.speech.threshold));
-        if (A.restarts.length) log('音の繰り返しで見つけた言いかけ', A.restarts);
-        await persistJob(job);
-      } catch (err) {
-        log('言いかけの音の検出に失敗（使わずに続行）', errorText(err));
-        A.restarts = [];
+      if ((!A.audio && src.audio) || (needPcm && !pcm && src.audio && A.audio && !A.audio.failed)) {
+        setStep('audio', 'active');
+        try {
+          const a = await analyzeAudioAll(r => setProgress(r, `音声を読み込み中… ${Math.round(r * 100)}%`));
+          pcm = a.pcm;
+          state.rmsDb = a.rmsDb;
+          A.audio = { rmsDb: a.rmsDb, mode: getAudioMode(), pcmSaved: false };
+          // 文字起こし用の音声も保存しておく（文字起こしの途中で止まったとき、音声を読み直さずに済む）
+          if (needPcm) {
+            try {
+              await copyIn(job.id, PCM_NAME, new Blob([pcm.buffer]));
+              A.audio.pcmSaved = true;
+            } catch (err) {
+              log('文字起こし用の音声を保存できませんでした', errorText(err));
+            }
+          }
+          await persistJob(job);
+          setStep('audio', 'done');
+        } catch (err) {
+          log('音声の解析に失敗', errorText(err));
+          A.audio = { failed: true, rmsDb: null };
+          A.warnings.push('音声を読み込めなかったため、無音カットなし（手元の動きだけ）で構成しました（' + errorText(err) + '）。');
+          await persistJob(job);
+          setStep('audio', 'warn', '失敗');
+        }
+      } else if (!src.audio) {
+        setStep('audio', 'skip', '音声なし');
       }
-    }
-    state.restarts = A.restarts || [];
-    log('音声の解析完了', { mode: A.audio?.mode ?? getAudioMode(), speechRegions: state.speech.regions.length, sounds: state.speech.sounds?.length ?? 0 });
+      if (!state.rmsDb) state.rmsDb = new Float32Array(Math.ceil(src.duration / FRAME_SEC));
+      state.speech = state.rmsDb.some(v => v !== 0) ? detectSpeech(state.rmsDb) : { regions: [], voice: [], threshold: 0 };
+      // 音の繰り返しで、文字起こしAIが見落とす言い直しを探す（音声がある間だけ。結果は保存して再開時に使う）
+      if (pcm && state.speech.threshold && !A.restarts) {
+        try {
+          A.restarts = findRestarts(pcm, fineSpeech(state.rmsDb, state.speech.threshold));
+          if (A.restarts.length) log('音の繰り返しで見つけた言いかけ', A.restarts);
+          await persistJob(job);
+        } catch (err) {
+          log('言いかけの音の検出に失敗（使わずに続行）', errorText(err));
+          A.restarts = [];
+        }
+      }
+      state.restarts = A.restarts || [];
+      log('音声の解析完了', { mode: A.audio?.mode ?? getAudioMode(), speechRegions: state.speech.regions.length, sounds: state.speech.sounds?.length ?? 0 });
 
-    // 2. 文字起こし（区間ごとに保存。失敗しても続ける）
-    state.chunks = null;
-    if (A.asr?.done) {
-      state.chunks = A.asr.chunks;
-      setStep('asr', 'done', '保存済みの結果を使用');
-    } else if (job.useAsr && !A.asr?.failed && pcm && state.speech.regions.length) {
-      setStep('asr', 'active');
-      try {
-        const engine = job.asrEngine || 'whisper';
-        // ReazonSpeech: 区切り方の違う3通りで読み、どれかが落とした言葉をほかの結果で補う（asrWindows・mergeAsrPasses）
-        const windows = A.asr?.windows || (engine === 'reazon' ? asrWindows(state.speech.regions, state.rmsDb, undefined, state.lay) : transcriptionWindows(state.speech.regions, ENGINES[engine].window));
-        A.asr = { windows, results: A.asr?.results || {}, started: A.asr?.started || {}, verify: A.asr?.verify, done: false };
-        const savedN = Object.keys(A.asr.results).length;
-        if (savedN) log(`保存済みの文字起こしの区間を再利用: ${savedN}/${windows.length}`);
-        const perWindow = await transcribe(pcm, windows, bp.asrTerms, {
-          engine,
-          saved: A.asr.results,
-          onResult: async (i, chunks) => { A.asr.results[i] = chunks; await persistJob(job); },
-          started: A.asr.started || {},
-          onStart: async i => { A.asr.started = { ...(A.asr.started || {}), [i]: true }; await persistJob(job); },
-        });
-        const raw = mergeAsrPasses(windows, perWindow);
-        if (raw.passes) log('字幕AIの3通りの読み方（文字数）', { A: raw.passes.A.length, B: raw.passes.B.length, C: raw.passes.C.length, merged: raw.reduce((n, c) => n + c.tokens.length, 0) });
-        const fine = fineSpeech(state.rmsDb, state.speech.threshold);
-        // ReazonSpeech: 1文字ごとの時刻と声の切れ目で文に分け、用語の書き方を直す
-        // Whisper: 文ごとの時刻を、無音の切れ目に合わせて割り当て直す
-        // どちらも字幕の表示時刻は実際の声の出始め・終わりに合わせる
-        // ReazonSpeech: 聞き取った文字を、同じ音声で確かめて直す（聞き間違い・文の終わりの聞き落とし・3通りを合わせたときの乱れ）。
-        // 入力したタイトル・説明・用語の言葉は、音声に合っているときだけ使う（verify.js）
-        let checked = raw, audioFixes = [];
-        if (engine === 'reazon' && raw.some(c => c.tokens?.length)) {
-          try {
-            const units = verifyUnits(raw.flatMap(c => c.tokens || []), fine, raw.passes);
-            const b = bp.brief;
-            const words = [...briefWords([b.title, b.content, b.message, b.flow, b.mustKeep], [...bp.items, ...bp.asrTerms]), ...domainWords(BEAUTY_TERMS)];
-            A.asr.verify = A.asr.verify || {};
-            const results = await verifyTranscript(pcm, units, words, {
-              saved: A.asr.verify,
-              onResult: async (i, r) => { A.asr.verify[i] = r; await persistJob(job); },
-            });
-            checked = verifiedRaw(results);
-            state.asrVerify = { units, fixes: results.flatMap(r => r.fixes || []), suggest: checked.suggest || [], windows, passes: raw.passes }; // 動作確認用（tests/e2e/run.mjs が保存する）
-            audioFixes = checked.fixes || [];
-            checked.passes = raw.passes;
-            log('字幕AIの聞き取りを音声で確かめました', { units: units.length, tried: results.reduce((n, r) => n + (r.tried || 0), 0), fixes: audioFixes.map(f => `${f.from || '（なし）'}→${f.to}（${f.kind}・${f.score}${f.check ? '・要確認' : ''}）`) });
-          } catch (err) {
-            log('字幕AIの聞き取りを音声で確かめられませんでした（確かめる前の文字起こしを使います）', errorText(err));
-            A.warnings.push('字幕AIの聞き取りを音声で確かめられなかったため、聞き間違いが残っている可能性があります（' + errorText(err) + '）。');
-          }
+      // 2. 文字起こし（区間ごとに保存。失敗しても続ける）
+      state.chunks = null;
+      if (A.asr?.done) {
+        state.chunks = A.asr.chunks;
+        setStep('asr', 'done', '保存済みの結果を使用');
+      } else if (job.useAsr && !A.asr?.failed && pcm && state.speech.regions.length) {
+        setStep('asr', 'active');
+        try {
+          A.asr = { ...(A.asr || {}), done: false };
+          const r = await transcribeAudio(pcm, state.rmsDb, state.speech, bp, job.asrEngine || 'whisper', A.asr, () => persistJob(job), A.warnings);
+          state.asrVerify = r.asrVerify;
+          state.chunks = r.chunks;
+          A.asr = { windows: A.asr.windows, done: true, chunks: state.chunks };
+          await persistJob(job);
+          await removeFile(job.id, PCM_NAME);
+          setStep('asr', 'done');
+        } catch (err) {
+          log('文字起こしに失敗', errorText(err));
+          A.asr = { ...(A.asr || {}), failed: true };
+          A.warnings.push('文字起こしができなかったため、字幕なし・言い直し検出なしで構成しました（' + errorText(err) + '）。');
+          await persistJob(job);
+          setStep('asr', 'warn', '失敗・字幕なしで続行');
         }
-        const sentences = engine === 'reazon' && checked.some(c => c.tokens)
-          ? attachAudioFixes(tokensToChunks(checked, fine).map(c => fixTerms(c, [...bp.items, ...bp.asrTerms], bp.phrases, { audioChecked: true })), audioFixes, checked.suggest || [])
-          : alignSentences(raw, state.speech.regions);
-        state.chunks = attachDoubts(refineSubtitleTiming(sentences, fine), raw.passes, [...bp.items, ...bp.asrTerms]);
-        A.asr = { windows, done: true, chunks: state.chunks };
-        await persistJob(job);
-        await removeFile(job.id, PCM_NAME);
-        setStep('asr', 'done');
-      } catch (err) {
-        log('文字起こしに失敗', errorText(err));
-        A.asr = { ...(A.asr || {}), failed: true };
-        A.warnings.push('文字起こしができなかったため、字幕なし・言い直し検出なしで構成しました（' + errorText(err) + '）。');
-        await persistJob(job);
-        setStep('asr', 'warn', '失敗・字幕なしで続行');
+      } else {
+        setStep('asr', 'skip', A.asr?.failed ? '前回失敗' : job.useAsr ? (pcm ? '話し声なし' : '音声なし') : 'OFF');
       }
-    } else {
-      setStep('asr', 'skip', A.asr?.failed ? '前回失敗' : job.useAsr ? (pcm ? '話し声なし' : '音声なし') : 'OFF');
+      pcm = null; // 文字起こし用の音声はここで手放す
     }
-    pcm = null; // 文字起こし用の音声はここで手放す
 
     // 3. 手元の動き（約30秒ぶんごとに保存。失敗しても音声だけで続ける）
     if (A.motion?.done) {
@@ -1609,6 +1715,7 @@ async function runRender(job) {
   };
   try {
     // 1. 映像を区間ごとに書き出して保存する
+    markTiming('render', 'active');
     const rc = createRenderContext(state.src);
     // 失敗したときのやり直し方（1回目: 同じ設定で作り直したデコーダー、2回目: 低遅延モードなし・1つ前のキーフレームから）
     const DECODE_MODES = [{}, {}, { lowLatency: false, earlierKey: true }];
@@ -1676,6 +1783,10 @@ async function runRender(job) {
         }
       }
       try {
+        markTiming('render', 'done');
+        const colorNotes = [rc.painter, ...(rc.painters?.values() || [])].map(x => x.colorNote).filter(Boolean);
+        if (colorNotes.length) log('色', colorNotes);
+        markTiming('assemble', 'active');
         await assembleOutput(state.srcs || state.src, R.timeline, R.segments, i => readFile(job.id, `seg-${i}.mp4`), w.stream, {
           gainDb: R.gainDb, endFade: R.endFade || 0, endHold: R.endHold || 0, lay: R.lay, bgm,
           onProgress: r => show(0.92 + 0.08 * r, `MP4を仕上げ中… ${Math.round(92 + 8 * r)}%`),
@@ -1696,6 +1807,7 @@ async function runRender(job) {
         throw err;
       }
     }
+    markTiming('assemble', 'done');
     const out = await readFile(job.id, OUTPUT_NAME);
     for (const seg of R.segments) await removeFile(job.id, `seg-${seg.index}.mp4`);
     if (R.bgm) log('BGM', R.bgmFailed ? { failed: R.bgmFailed } : { name: R.bgm.name, volume: `${+(R.bgm.volume * 100).toFixed(1)}%` });
@@ -1828,7 +1940,7 @@ async function continueJob(job, { reselected = false } = {}) {
   const A = job.analysis;
   state.rmsDb = A.audio?.rmsDb || new Float32Array(Math.ceil(state.src.duration / FRAME_SEC));
   state.restarts = A.restarts || [];
-  state.speech = A.audio?.rmsDb ? detectSpeech(state.rmsDb) : { regions: [], voice: [], threshold: 0 };
+  state.speech = A.speech || (A.audio?.rmsDb ? detectSpeech(state.rmsDb) : { regions: [], voice: [], threshold: 0 });
   state.chunks = A.asr?.done ? A.asr.chunks : null;
   state.motion = A.motion?.data || null;
   state.warnings = A.warnings || [];

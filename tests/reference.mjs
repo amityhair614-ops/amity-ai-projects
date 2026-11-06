@@ -4,6 +4,7 @@
 // manual.json: 手動編集のお手本（残した範囲・削った範囲・字幕。時刻は元の動画の秒）
 import fs from 'node:fs';
 import path from 'node:path';
+import { clampPieces } from '../js/sources.js';
 import { fileURLToPath } from 'node:url';
 import { buildUnits, selectUnits, buildTimeline, extendEnding, setBreakTerms, fineSpeech, refineSubtitleTiming, normalizeText, FRAME_SEC, FPS } from '../js/plan.js';
 import { tokensToChunks, fixTerms } from '../js/asrtext.js';
@@ -30,7 +31,10 @@ export function planFixture(analysis, targetSec = 45) {
   const units = buildUnits({ duration, rmsDb, speech, chunks, motion, restarts: analysis.restarts || [] });
   const { target, max } = targetRange(targetSec);
   const sel = selectUnits(units, duration, target, max);
-  const timeline = buildTimeline(extendEnding(sel, speech.voice, duration), { subtitles: true });
+  let shaped = extendEnding(sel, speech.voice, duration);
+  // 複数の動画（analysis.lay）: アプリと同じく、場面の範囲をそれぞれ1本の動画の中に収める
+  if (analysis.lay) shaped = shaped.map(u => ({ ...u, pieces: clampPieces(u.pieces, analysis.lay) })).filter(u => u.pieces.length);
+  const timeline = buildTimeline(shaped, { subtitles: true });
   return { chunks, units, sel, timeline };
 }
 

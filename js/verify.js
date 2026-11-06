@@ -220,6 +220,18 @@ const KANJI = /^[一-鿿々]$/, KATA = /^[ァ-ヶー]$/;
 // 位置 k が、漢字どうし・カタカナどうしの間（言葉の途中）か
 const inWord = (chars, k) => k > 0 && k < chars.length && ((KANJI.test(chars[k - 1]) && KANJI.test(chars[k])) || (KATA.test(chars[k - 1]) && KATA.test(chars[k])));
 
+// かなの並びの編集距離（音の近さ）
+function kanaDistance(a, b) {
+  const A = [...a], B = [...b];
+  let prev = Array.from({ length: B.length + 1 }, (_, j) => j);
+  for (let i = 1; i <= A.length; i++) {
+    const cur = [i];
+    for (let j = 1; j <= B.length; j++) cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (A[i - 1] === B[j - 1] ? 0 : 1));
+    prev = cur;
+  }
+  return prev[B.length];
+}
+
 // 文字の並び a・b の違う所（[a の i, j), [b の k, l)）。編集距離で照らし合わせる
 export function diffRegions(a, b) {
   const n = a.length, m = b.length;
@@ -312,7 +324,7 @@ export function proposeEdits(base, { passes = [], words = [], firstProb = null, 
     // 文脈として入れたとなりの文字（ctx）は直さない（すぐ前・すぐ後への差し込みはよい）
     if (e.i < lockHead || (e.j > e.i ? e.j > base.length - lockTail : e.i > base.length - lockTail)) return;
     seen.add(key);
-    edits.push(e);
+    edits.push({ ...e, from: text.slice(e.i, e.j).join('') });
   };
   // 1. 別の読み方の結果（3通りを合わせたときに、言い直しの所などで文字がまざることがある）
   const hiraOf = p => p.map(k => toHira(k.s)).join('');
@@ -323,6 +335,11 @@ export function proposeEdits(base, { passes = [], words = [], firstProb = null, 
       // 3文字以上を消す直しで、ほかの読み方がその言葉をそのまま聞き取っているもの（heard）は、言葉の重みを入れた点数でも
       // はっきり良いときだけ使う（窓の切れ目で1つの読み方だけが言葉をまとめて落とすことがある。消すと話した言葉が字幕から消える）
       const heard = d.j - d.i - (d.l - d.k) >= 3 && passes.some(q => q !== p && hiraOf(q).includes(text.slice(d.i, d.j).map(toHira).join('')));
+      // その読み方自身が、消す言葉の時刻に何も聞き取っていない（ただ聞き落とした）ときは、消さない（「そうならないために」が消えた）
+      if (heard) {
+        const t0 = base[d.i].t - 0.3, t1 = base[d.j - 1].t + 0.3;
+        if (p.filter(k => k.t >= t0 && k.t <= t1).length < (d.j - d.i) / 2) continue;
+      }
       // まとまりの頭・終わりの文字を消すだけの直しはしない（音声の端は聞き取りにくく、話した言葉を消してしまうことがある）。
       // 文脈として入れたとなりの文字（lockHead・lockTail）を除いた、このまとまりの文字の頭・終わり
       const head = d.i <= lockHead, tail = d.j >= text.length - lockTail;
@@ -356,6 +373,9 @@ export function proposeEdits(base, { passes = [], words = [], firstProb = null, 
           if (Math.abs(dur - need) > Math.max(0.3, 0.5 * need)) continue;
           if (isPunct(from) || /^[ぁ-ゖ]$/.test(from)) continue; // 助詞1文字（「を」「ね」）を言葉に置き換えない
           if (toHira(from) === toHira(w)) continue; // 書き方だけの違い（「ばさみ」→「バサミ」）は用語の直し（fixTerms）にまかせる
+          // 前後の1〜2文字を含めると、もうその言葉になっている（「セルフカットで｜すきばさみ」の「きばさみ」）: 直さない
+          const around = k => toHira(text.slice(Math.max(0, u - k), u).join('') + from + text.slice(u + n, u + n + k).join(''));
+          if (around(1).includes(toHira(w)) || around(2).includes(toHira(w))) continue;
           // ひらがなのない言葉（「場所」「ボブ」）で、ひらがなを含む所（「です」「方を」）を置き換えない（助詞・語尾を言葉にしない）
           if (!/[ぁ-ゖ]/.test(w) && /[ぁ-ゖ]/.test(from)) continue;
           // 否定の言葉を消したり足したりしない（後ろの文字も含めて見る。「つきませ｜ん」）
@@ -363,6 +383,9 @@ export function proposeEdits(base, { passes = [], words = [], firstProb = null, 
           if (NEG_RE.test(from + tail) !== NEG_RE.test(w + tail)) continue;
           // 漢字・カタカナの言葉の途中で区切らない（「部分」の「部」だけを置き換えない）
           if (inWord(text, u) || inWord(text, u + n)) continue;
+          // どちらも読みのわかる言葉（ひらがな・カタカナ）なら、音が半分以上同じときだけ（「きばさみ」→「すきバサミ」はよい。
+          // 「こってし」→「もみあげ」のように音の違う言葉には、音声の点数が良くても置き換えない）
+          if (/^[ぁ-ゖァ-ヶー]+$/.test(from) && /^[ぁ-ゖァ-ヶー]+$/.test(w) && kanaDistance(toHira(from), toHira(w)) > Math.max(toHira(from).length, toHira(w).length) / 2) continue;
           add({ kind: 'term', i: u, j: u + n, to: chars, word: w, domain, fp, extend: w.startsWith(from) || w.endsWith(from) });
         }
       }
@@ -409,7 +432,10 @@ export function chooseEdits(scored, opt = VERIFY) {
     if (e.extend) return e.ac >= opt.endAcMin && e.score >= opt.endMin;
     return e.score >= (e.domain ? opt.domainMin : opt.termMin) && e.ac >= opt.termAcMin;
   };
-  const ok = scored.filter(pass);
+  // 別の読み方の結果で、漢字の言葉をカタカナの言葉に（その逆も）置き換える直しは、音の区切りの取り違えが多い
+  // （「する際｜根元」→「サイン｜根元」: 「根」の音を「ン」に使っていた）。直さずに要確認として知らせる
+  const scriptSwap = e => e.kind === 'pass' && e.from && /^[一-鿿々]+$/.test(e.from) !== /^[一-鿿々]+$/.test(e.to.join('')) && (/^[ァ-ヶー]+$/.test(e.from) || /^[ァ-ヶー]+$/.test(e.to.join('')));
+  const ok = scored.filter(e => pass(e) && !scriptSwap(e));
   // 同じ所の候補どうしは、音声の点数に「話に出てきやすさ」（入力した言葉・美容の用語）を足して比べる
   const prior = e => (e.kind === 'term' && !e.extend ? -(e.domain ? opt.domainMin : opt.termMin) : 0);
   ok.forEach(e => { e.rank = e.score + prior(e); });
@@ -437,7 +463,8 @@ export function chooseEdits(scored, opt = VERIFY) {
     && (e.domain ? e.score >= opt.termMin && e.score < opt.domainMin : e.score >= opt.termNear && e.score < opt.termMin))
     || (e.kind === 'confuse' && e.score >= opt.confuseNear && !(e.score >= opt.confuseMin && e.ac >= 0))
     // カタカナ語の最後の「ー」（「ベタ」→「ベター」）: 直すほどの差がなくても、言葉として不自然なので要確認として知らせる
-    || (e.kind === 'sound' && e.score >= opt.soundNear && !(e.score >= opt.soundMin && e.ac >= 0)))).sort((a, b) => b.score - a.score);
+    || (e.kind === 'sound' && e.score >= opt.soundNear && !(e.score >= opt.soundMin && e.ac >= 0))
+    || (scriptSwap(e) && pass(e)))).sort((a, b) => b.score - a.score);
   const suggest = [];
   for (const e of near) {
     const lo = e.i, hi = e.j;

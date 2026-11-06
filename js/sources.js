@@ -5,7 +5,10 @@
 // 最後のフェードは、今までと同じ計算（plan.js）をそのまま使える。
 // 動画と動画の間の無音は、ほかの長い間と同じように「話していない所」として切られるので、完成動画には入らない。
 // 書き出すときだけ、つないだ時刻を「何本目の動画の何秒」に戻して読む。
-export const MAX_SOURCES = 3;
+// 動画の本数の上限。解析は1本ずつ（音声も1本ぶんずつ読む）・書き出しも区間ごとなので、本数ではなく合計の長さで時間とメモリが決まる。
+// 合計の長さの目安は MAX_TOTAL_SEC（それより長いと、iPhone で書き出しに長い時間がかかる・端末内の空きが足りなくなることがある）
+export const MAX_SOURCES = 20;
+export const MAX_TOTAL_SEC = 15 * 60;
 export const GAP = 1.0; // 動画と動画の間にはさむ無音（秒）。場面の前後の余白（最大0.4秒）より長くする
 
 // sources: [{ duration }] → [{ index, offset, duration, end }]（offset: つないだ時刻での始まり）
@@ -104,4 +107,58 @@ export function move(list, i, d) {
   const out = list.slice();
   [out[i], out[j]] = [out[j], out[i]];
   return out;
+}
+
+// ---- 1本ずつ解析した結果を、つないだ時刻に並べる（結合のときに解析をやり直さない） ----
+
+// 動画の見分け（名前・大きさ・長さ）。解析の結果を、並べ替え・追加の後も使い回すための鍵
+export function sourceKey(file, duration) {
+  return `${file.name}|${file.size}|${(+duration).toFixed(2)}`;
+}
+
+// 時刻 t（秒）の項目をずらす（文・ページ・ピースなどの { start, end, ... }）
+const TIME_KEYS = ['start', 'end', 'subStart', 'subEnd', 'next', 't', 't0', 't1'];
+function shiftObj(o, off) {
+  const out = { ...o };
+  for (const k of TIME_KEYS) if (typeof out[k] === 'number') out[k] = +(out[k] + off).toFixed(3);
+  return out;
+}
+
+// 1本の動画の字幕の文（tokensToChunks の結果）を、つないだ時刻にする
+export function shiftChunks(chunks, off) {
+  return (chunks || []).map(c => {
+    const out = shiftObj(c, off);
+    if (c.times) out.times = c.times.map(t => +(t + off).toFixed(3));
+    if (c.tokens) out.tokens = c.tokens.map(k => shiftObj(k, off));
+    if (c.fine) out.fine = c.fine.map(r => shiftObj(r, off));
+    out.source = c.source ?? null;
+    return out;
+  });
+}
+
+// 1本ずつの音量（dB）と声の区間を、つないだ時刻に並べる。動画ごとに声の大きさ（マイクとの距離）が違うので、
+// それぞれの「声とみなす境目」（threshold）が同じ値（基準）になるよう、音量をずらしてからつなぐ
+// parts: [{ rmsDb, speech: detectSpeech の結果 }]（音声のない動画は null）
+export function combineAudio(parts, lay, frameSec) {
+  const ok = parts.filter(p => p && p.speech && Number.isFinite(p.speech.threshold) && p.speech.regions.length);
+  const ref = ok.length ? ok[0].speech.threshold : 0;
+  const norm = parts.map(p => {
+    if (!p) return null;
+    const d = p.speech && p.speech.regions.length ? ref - p.speech.threshold : 0;
+    return Float32Array.from(p.rmsDb, v => v + d);
+  });
+  const floor = Math.min(...norm.filter(Boolean).map(a => a.reduce((m, x) => Math.min(m, x), Infinity)));
+  const rmsDb = concatFrames(norm, lay, frameSec, Number.isFinite(floor) ? floor : -100);
+  const pick = key => parts.flatMap((p, k) => (p?.speech?.[key] || []).map(r => shiftObj(r, lay[k].offset)));
+  const sp = ok[0]?.speech;
+  const speech = {
+    floor: sp ? sp.floor : -100, peak: sp ? sp.peak : -100, threshold: ref, low: sp ? sp.low + (ref - sp.threshold) : ref,
+    regions: pick('regions'), voice: pick('voice'), sounds: pick('sounds'),
+  };
+  return { rmsDb, speech };
+}
+
+// 言いかけ（音の繰り返し）の検出結果をつなぐ
+export function combineRestarts(list, lay) {
+  return list.flatMap((rs, k) => (rs || []).map(r => shiftObj(r, lay[k].offset)));
 }

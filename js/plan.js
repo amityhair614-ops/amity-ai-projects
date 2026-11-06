@@ -344,7 +344,7 @@ export function transcriptionWindows(regions, maxLen = 28) {
 // （同じ音声でも、区切り方しだいで文字の誤り率 3%〜35%）。とくに、文の途中で区切った窓や、長い無音をはさむ窓で落としやすい。
 // そこで、区切り方の違う3通りで読み、どれかが落とした言葉を、ほかの読み方の結果で補う（文字の並びを照らし合わせて差し込む）。
 //   A: 30秒ごとの窓（区切りは近くの一番静かな所）
-//   B: A と15秒ずらした窓（A の区切りの所が、B では窓の真ん中になる）
+//   （B: A と15秒ずらした窓。速さのため使わない。下の asrWindows を参照）
 //   C: はっきりした間（0.5秒以上）で分けた話のまとまりごと（無音の後の話を落とさないように）
 // 手動編集の実際の音声2本・疑似素材2本で、まとまりごとに読む方法（誤り率 15〜18%）より少ない（3〜11%）
 export const ASR_WINDOW = 30;
@@ -409,15 +409,17 @@ export function asrWindows(regions, rmsDb, L = ASR_WINDOW, lay = null, bounds = 
     const a = rs[0].start, b = rs[rs.length - 1].end;
     return { start: a, end: b, padStart: 0.3, padEnd: 0.3, lo: a - 0.35, hi: b + 0.3, speech: speechIn(a, b), pass: 'C', parts: rs.map(r => ({ ...r })), headCut: a - srcStart < 0.3, tailCut: srcEnd - b < 0.3 };
   });
-  return [...grid(0, 'A'), ...grid(L / 2, 'B'), ...C];
+  // B（A と15秒ずらした窓）は読まない: 固定テスト素材7本で、A と C だけでも3通りと同じ文字になり（違い0〜2文字）、
+  // 文字起こしの時間が約3分の2になる（1106: 200秒ぶん → 131秒ぶん）
+  return [...grid(0, 'A'), ...C];
 }
 
 // 文字の並び a・b（{ s, t }）を照らし合わせる（編集距離）。返り値は [種類, a の番号, b の番号] の並び。
-// 時刻が tol 秒（違う文字どうしはその半分）より離れた文字は対応させない（別の所の言葉と取り違えないように）
+// 時刻が tol 秒（違う文字どうしは0.4秒）より離れた文字は対応させない（別の所の言葉と取り違えないように）
 function alignChars(a, b, tol = 1.5) {
   const n = a.length, m = b.length, BIG = 1e6;
   // 同じ点数の対応のしかたが複数あるときは、時刻の近い文字どうしを対応させる（0.01 × 時刻の差）
-  const sub = (i, j) => { const d = Math.abs(a[i].t - b[j].t), same = a[i].s === b[j].s; return d > (same ? tol : tol / 2) ? BIG : (same ? 0 : 1) + (Number.isFinite(d) ? 0.01 * Math.min(d, 10) : 0); };
+  const sub = (i, j) => { const d = Math.abs(a[i].t - b[j].t), same = a[i].s === b[j].s; return d > (same ? tol : Math.min(tol, 0.4)) ? BIG : (same ? 0 : 1) + (Number.isFinite(d) ? 0.01 * Math.min(d, 10) : 0); };
   const D = Array.from({ length: n + 1 }, (_, i) => new Float64Array(m + 1).fill(0).map((_, j) => (i ? (j ? 0 : i) : j)));
   for (let i = 1; i <= n; i++) for (let j = 1; j <= m; j++) D[i][j] = Math.min(D[i - 1][j] + 1, D[i][j - 1] + 1, D[i - 1][j - 1] + sub(i - 1, j - 1));
   const ops = [];
@@ -439,7 +441,8 @@ function alignChars(a, b, tol = 1.5) {
 export function fillDeletions(base, other, minRun = 2, edges = new Set()) {
   const med = xs => { const v = xs.slice().sort((x, y) => x - y); return v.length ? v[v.length >> 1] : 0; };
   const m0 = alignChars(base, other, Infinity).filter(([op, i, j]) => op === 'm' && base[i].s === other[j].s).map(([, i, j]) => ({ t: base[i].t, d: other[j].t - base[i].t }));
-  const glob = med(m0.map(x => x.d));
+  // 片方に文がまるごと無いと、時刻を見ない照らし合わせは別の文の同じ文字を対応させる（数秒ずれる）。1秒以内の対応だけで見積もる
+  const glob = med(m0.map(x => x.d).filter(d => Math.abs(d) <= 1));
   other = other.map(k => { const x = { ...k, t: +(k.t - glob).toFixed(3) }; if (edges.has(k)) edges.add(x); return x; });
   const isEdge = k => edges.has(k);
   const ops = alignChars(base, other);
@@ -451,7 +454,9 @@ export function fillDeletions(base, other, minRun = 2, edges = new Set()) {
   const flush = () => {
     const ds = dels.filter(d => !(isEdge(d) && near(other, d)));
     const is = ins.filter(x => !(isEdge(x) && near(base, x)));
-    if (is.length >= minRun) {
+    // 1文字だけでも補う: 窓の切れ目の誤った文字を外した所（その代わりの文字）・まとまりの頭と終わり（「そ｜うならないために」）
+    const one = (ds.length < dels.length && is.length === dels.length - ds.length) || (!out.length && is.length === 1 && !isEdge(is[0]) && base.length && base[0].t - is[0].t <= 0.5 && base[0].t - is[0].t > 0);
+    if (is.length >= (one ? 1 : minRun)) {
       const inside = d => is.some((x, k) => k + 1 < is.length && x.t <= d.t && d.t <= is[k + 1].t && is[k + 1].t - x.t <= 0.6);
       out.push(...[...ds.filter(d => !inside(d)), ...is].sort((x, y) => x.t - y.t));
     } else out.push(...ds);
@@ -460,7 +465,15 @@ export function fillDeletions(base, other, minRun = 2, edges = new Set()) {
   for (const [op, i, j] of ops) {
     if (op === 'ins') ins.push(other[j]);
     else if (op === 'del') dels.push(base[i]);
-    else { flush(); out.push(base[i].s !== other[j].s && isEdge(base[i]) && !isEdge(other[j]) ? other[j] : base[i]); }
+    else {
+      flush();
+      let k = base[i].s !== other[j].s && isEdge(base[i]) && !isEdge(other[j]) ? other[j] : base[i];
+      // 同じ文字でも時刻が大きく違う（0.4秒以上）ときは、前の文字に近い方の時刻にする（「ないで30.1｜す31.5」の「す」が
+      // 次の文の頭に入らないように。窓の終わり近くでは、字幕AIが文字を遅れて出すことがある）
+      const prev = out[out.length - 1];
+      if (k === base[i] && base[i].s === other[j].s && Math.abs(base[i].t - other[j].t) > 0.4 && prev && other[j].t > prev.t && other[j].t - prev.t < base[i].t - prev.t) k = { ...base[i], t: other[j].t };
+      out.push(k);
+    }
   }
   flush();
   return out;
@@ -487,6 +500,8 @@ export function mergeAsrPasses(windows, results) {
   const ab = [...P.A, ...P.B, ...P.C].map(k => k.t).sort((x, y) => x - y);
   const cuts = segs.slice(1).map((g, k) => {
     const a = segs[k].end, b = g.start;
+    // はっきりした間（1秒以上）: 間の真ん中で分ける（その間の近くに出た文字は、時刻が遅れて出たもののことが多い）
+    if (b - a >= 1) return (a + b) / 2;
     const ts = [a - 0.3, ...ab.filter(t => t > a - 0.3 && t < b + 0.3), b + 0.3];
     let best = (a + b) / 2, len = -1;
     for (let i = 1; i < ts.length; i++) if (ts[i] - ts[i - 1] > len) { len = ts[i] - ts[i - 1]; best = (ts[i] + ts[i - 1]) / 2; }
@@ -1174,7 +1189,7 @@ function sentenceBoundary(text, i) {
 
 // 次の文の始まりによく使う言葉
 // （特定の動画の言葉ではなく、一般的な接続の言葉・指示の言葉。前の語尾と合わせて判断する）
-const SENTENCE_STARTS = ['なぜかというと', 'なぜなら', 'それは', 'それを', 'それで', 'それが', 'そして', 'しかも', 'また', 'さらに', 'でも', 'しかし', 'ただ', 'なので', 'だから', 'ですので', 'そのため', 'つまり', '例えば', 'まず', '次に', '最後に', 'あとは', 'もし', 'となれば', '下手すれば', '逆に', 'この', 'その', 'こう', 'そう'];
+const SENTENCE_STARTS = ['なぜかというと', 'なぜなら', 'これによって', 'それによって', 'それは', 'それを', 'それで', 'それが', 'そして', 'しかも', 'また', 'さらに', 'でも', 'しかし', 'ただ', 'なので', 'だから', 'ですので', 'そのため', 'つまり', '例えば', 'まず', '次に', '最後に', 'あとは', 'もし', 'となれば', '下手すれば', '逆に', 'この', 'その', 'こう', 'そう'];
 // 区切りやすい語尾（この後で区切ると、意味のまとまりで分かれる）
 const GOOD_ENDINGS = ['際', '後に', 'あとに', 'ように', 'ために', 'ので', 'から', 'けど', 'けれど', 'ても', 'たら', 'れば', 'なら', 'ながら', 'まで', 'より', 'など', 'とき', 'ときに', '際に', '時に', '場合は', '場合', 'なのか', 'ます', 'です', 'ました', 'でした', 'ません', 'ください'];
 // 助詞のあとにひらがなが続いても、ひとまとまりの言葉になる組み合わせ（「には」「でも」「です」「できる」など）
@@ -2030,10 +2045,12 @@ function markIncomplete(pages) {
 
 // 表示用の字幕にする: 各ページの文字から、字幕に書かなくても意味が伝わる言葉を省く（captions.js）。
 // 表示の時刻は、話した文字の時刻で決めた後なので変わらない。省いた言葉は page.omitted に残す（確認・計測用）
+// ページの頭が文の途中（前のページが文の終わりでない）なら、文の頭の言葉（「それを」など）は省かない
 function toDisplay(pages) {
-  return pages.map(p => {
+  return pages.map((p, i) => {
     const spoken = p.lines.join('');
-    const d = displayText(spoken);
+    const prev = i ? (pages[i - 1].spoken || pages[i - 1].lines.join('')) : '';
+    const d = displayText(spoken, { headIsSentence: !i || /(?:ます|です|ました|でした|ません|ください|しょう|よね|のか|か)[、。]?$/.test(prev) });
     return d.text !== spoken ? { ...p, lines: [d.text], omitted: d.omitted, spoken } : p;
   }).filter(p => p.lines.join('').trim());
 }

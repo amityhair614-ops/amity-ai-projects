@@ -372,7 +372,7 @@ try {
   if (dumpPath) {
     const a = await page.evaluate(() => {
       const s = window.amityDebug;
-      return { duration: s.src.duration, rmsDb: Array.from(s.rmsDb, v => +v.toFixed(1)), speech: s.speech, chunks: s.chunks, motion: s.motion, restarts: s.restarts || [], ...(s.asrVerify ? { verify: s.asrVerify } : {}) };
+      return { duration: s.src.duration, rmsDb: Array.from(s.rmsDb, v => +v.toFixed(1)), speech: s.speech, chunks: s.chunks, motion: s.motion, restarts: s.restarts || [], ...(s.lay ? { lay: s.lay } : {}), ...(s.asrVerify ? { verify: s.asrVerify } : {}) };
     });
     fs.writeFileSync(dumpPath, JSON.stringify(a));
     console.log('解析の結果を保存: ' + dumpPath);
@@ -411,6 +411,7 @@ try {
   const renderErr = await page.$eval('#renderError', el => (el.hidden ? null : el.textContent));
   if (renderErr) throw new Error('書き出しエラー: ' + renderErr);
   console.log(`書き出し: ${((Date.now() - t1) / 1000).toFixed(1)}秒`);
+  console.log('段階ごとの時間（秒）: ' + JSON.stringify(await page.evaluate(() => window.__amityTimings || {})));
   const b64 = await page.evaluate(async () => {
     const buf = new Uint8Array(await window.amityDebug.blob.arrayBuffer());
     let s = '';

@@ -10,6 +10,7 @@ import {
   Output, Mp4OutputFormat, BufferTarget, StreamTarget, CanvasSource, AudioBufferSource, EncodedVideoPacketSource,
   canEncodeAudio, canEncodeVideo,
 } from 'mediabunny';
+import { hdrKind, ToneMapper, drawsHdrRaw, outputColorSpace } from './color.js';
 import { registerAacEncoder } from '@mediabunny/aac-encoder';
 import { FRAME_SEC, FPS, OUT_W, OUT_H, SUB_ZONES, cropAt, subtitleAlpha, openingAlpha, endFadeAlpha } from './plan.js';
 import { log } from './diag.js';
@@ -141,10 +142,14 @@ function hq(ctx) {
 }
 
 class FramePainter {
-  constructor(rotation, outW, outH) {
+  // color: 元の動画の色の情報（decoderConfig.colorSpace）。HDR なら、描いた後に SDR へ変換する（color.js）
+  constructor(rotation, outW, outH, color = null) {
     this.rotation = rotation;
     this.outW = outW;
     this.outH = outH;
+    this.hdr = hdrKind(color);
+    this.mapper = null;
+    this.checked = !this.hdr;
     if (rotation) {
       const side = rotation === 180;
       this.tmp = new OffscreenCanvas(side ? outW : outH, side ? outH : outW);
@@ -152,7 +157,23 @@ class FramePainter {
     }
   }
 
+  // 最初のコマで、ブラウザが HDR の値のまま描くかを確かめる（そのときだけ変換する）
+  async check(frame) {
+    if (this.checked) return;
+    this.checked = true;
+    const kind = hdrKind(frame.colorSpace) || this.hdr;
+    if (!kind) return;
+    const r = await drawsHdrRaw(frame);
+    this.colorNote = `HDR（${kind}）: ${r.raw ? 'SDR に変換して描く' : 'ブラウザが変換済み'}（${r.how}）`;
+    if (r.raw) this.mapper = new ToneMapper(this.outW, this.outH, kind);
+  }
+
   draw(ctx, frame, crop) {
+    this.paint(ctx, frame, crop);
+    if (this.mapper) this.mapper.apply(ctx);
+  }
+
+  paint(ctx, frame, crop) {
     const r = codedRect(crop, this.rotation, frame.displayWidth, frame.displayHeight);
     const { outW, outH } = this;
     if (!this.rotation) {
@@ -504,8 +525,16 @@ export function createRenderContext(src) {
   const base = new OffscreenCanvas(OUT_W, OUT_H); // 字幕を載せる前のコマ
   return {
     canvas, ctx: hq(canvas.getContext('2d')), base, bctx: hq(base.getContext('2d')),
-    painter: new FramePainter(src.rotation, OUT_W, OUT_H),
+    painter: new FramePainter(src.rotation, OUT_W, OUT_H, src.decoderConfig?.colorSpace),
   };
+}
+
+// 2本目以降の動画のコマの描き方（回転・HDR の色が同じ動画どうしは使い回す。canvas を増やしすぎない）
+function painterFor(rc, v) {
+  const key = `${v.rotation}|${hdrKind(v.decoderConfig?.colorSpace) || 'sdr'}`;
+  rc.painters = rc.painters || new Map();
+  if (!rc.painters.has(key)) rc.painters.set(key, new FramePainter(v.rotation, OUT_W, OUT_H, v.decoderConfig?.colorSpace));
+  return rc.painters.get(key);
 }
 
 // デコーダーの失敗を、原因を調べられるよう詳しく記録した例外にする
@@ -536,6 +565,7 @@ async function drawFrames(src, packets, rc, clip, piece, f0, f1, emit, opts = {}
     if (k < n) {
       try {
         const r = cropAt(clip, piece.outStart + f0 / FPS + Math.max(0, ts - from));
+        if (!painter.checked) await painter.check(frame);
         painter.draw(rc.bctx, frame, scale === 1 ? r : { left: r.left * scale, top: r.top * scale, width: r.width * scale, height: r.height * scale });
       }
       catch (err) { throw Object.assign(err, { stage: 'draw' }); }
@@ -600,7 +630,7 @@ export async function renderSegment(srcs, timeline, seg, stream, { onProgress, r
   const reader = k => {
     if (!sinks.has(k)) {
       const v = list[k];
-      sinks.set(k, { packets: new EncodedPacketSink(v.video), painter: v.rotation === src.rotation ? rc.painter : new FramePainter(v.rotation, OUT_W, OUT_H), scale: v.width / src.width });
+      sinks.set(k, { packets: new EncodedPacketSink(v.video), painter: v === src ? rc.painter : painterFor(rc, v), scale: v.width / src.width });
     }
     return sinks.get(k);
   };
@@ -723,7 +753,8 @@ export async function assembleOutput(srcs, timeline, segments, getSegment, strea
         const sink = new EncodedPacketSink(track);
         let first = seg === segments[0];
         for (let p = await sink.getFirstPacket(); p; p = await sink.getNextPacket(p)) {
-          await videoSource.add(p.clone({ timestamp: p.timestamp + seg.outStart }), first ? { decoderConfig: config } : undefined);
+          // 色の印は元の動画（BT.709）と同じにする（canvas から書き出すと sRGB の印になり、iPhone で暗く見える。color.js）
+          await videoSource.add(p.clone({ timestamp: p.timestamp + seg.outStart }), first ? { decoderConfig: { ...config, colorSpace: outputColorSpace } } : undefined);
           first = false;
         }
       } finally {
