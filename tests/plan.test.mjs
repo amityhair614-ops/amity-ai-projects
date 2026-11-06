@@ -379,8 +379,8 @@ test('字幕AIの3通りの読み方: 区切りの違う窓で読み、落とし
   const regions = [{ start: 0, end: 10 }, { start: 10.1, end: 25 }, { start: 26, end: 70 }];
   const w = asrWindows(regions, null, 30);
   const A = w.filter(x => x.pass === 'A'), B = w.filter(x => x.pass === 'B'), C = w.filter(x => x.pass === 'C');
-  assert.ok(A.length >= 3 && C.length >= 3);
-  assert.equal(B.length, 0, '速さのため B（15秒ずらした窓）は読まない');
+  assert.ok(A.length >= 3 && B.length >= 3 && C.length >= 3);
+  assert.ok(Math.abs(B[0].end - 15) < 1e-6, 'B は15秒ずれる');
   assert.equal(A[0].start, 0);
   assert.ok(C.every(x => x.end - x.start <= 30), JSON.stringify(C));
   assert.ok(!C.some(x => Math.abs(x.start - 10.1) < 1e-6), '0.1秒の間では分けない');

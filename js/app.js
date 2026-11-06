@@ -11,7 +11,7 @@ import {
   planSegments, renderBytes, spaceCheck, formatBytes, describeJob, jobIdFor, sameSource, MB,
 } from './resume.js';
 import {
-  detectSpeech, transcriptionWindows, asrWindows, mergeAsrPasses, passDoubts, buildUnits, selectUnits, buildTimeline, formatTime, FRAME_SEC, trimUnit, untrimUnit,
+  detectSpeech, transcriptionWindows, asrWindows, asrRetryWindows, mergeAsrPasses, passDoubts, buildUnits, selectUnits, buildTimeline, formatTime, FRAME_SEC, trimUnit, untrimUnit,
   cleanSubtitle, alignSentences, refineSubtitleTiming, fineSpeech, setBreakTerms, openingLines, openingText, openingPlan,
   END_FADE, END_HOLD, extendEnding, outputLength, OPENING_DURATIONS, BEAUTY_TERMS, clearOpening,
 } from './plan.js';
@@ -803,8 +803,25 @@ async function transcribeAudio(pcm, rmsDb, speech, bp, engine, store, persist, w
     started: store.started,
     onStart: async i => { store.started = { ...(store.started || {}), [i]: true }; await persist(); },
   });
-  const raw = mergeAsrPasses(windows, perWindow);
-  if (raw.passes) log('字幕AIの読み方ごとの文字数', { A: raw.passes.A.length, C: raw.passes.C.length, merged: raw.reduce((n, c) => n + c.tokens.length, 0) });
+  let raw = mergeAsrPasses(windows, perWindow);
+  // 文字が少ないまとまりがあるときだけ、そこを区切り方の違う窓（B）でもう一度読む
+  if (engine === 'reazon' && raw.passes && !windows.some(w => w.pass === 'B')) {
+    const retry = store.windowsB || asrRetryWindows(speech.regions, rmsDb, windows, raw);
+    store.windowsB = retry;
+    if (retry.length) {
+      log('文字が少ないまとまりを読み直します', { windows: retry.length, sec: +retry.reduce((a, w) => a + w.end - w.start, 0).toFixed(1) });
+      store.resultsB = store.resultsB || {};
+      const perB = await transcribe(pcm, retry, bp.asrTerms, {
+        engine,
+        saved: store.resultsB,
+        onResult: async (i, chunks) => { store.resultsB[i] = chunks; await persist(); },
+        started: store.startedB || {},
+        onStart: async i => { store.startedB = { ...(store.startedB || {}), [i]: true }; await persist(); },
+      });
+      raw = mergeAsrPasses([...windows, ...retry], [...perWindow, ...perB]);
+    }
+  }
+  if (raw.passes) log('字幕AIの読み方ごとの文字数', { A: raw.passes.A.length, B: raw.passes.B.length, C: raw.passes.C.length, merged: raw.reduce((n, c) => n + c.tokens.length, 0) });
   const fine = fineSpeech(rmsDb, speech.threshold);
   // ReazonSpeech: 1文字ごとの時刻と声の切れ目で文に分け、用語の書き方を直す
   // Whisper: 文ごとの時刻を、無音の切れ目に合わせて割り当て直す

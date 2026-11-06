@@ -351,7 +351,7 @@ export const ASR_WINDOW = 30;
 // 複数の動画をつないだときは（lay: sources.js の layout）、動画ごとに窓を作る。動画と動画の間の無音・
 // 映像の切れ目をまたいで読むと、字幕AIが前後の言葉をまとめて落とすことがあるため（1本で読んだときと同じ読み方に近づける）
 // 窓には、頭・終わりが話の途中で切れているか（headCut・tailCut）を付ける（30秒ごとの区切り・話し始めてすぐの動画の始まりなど）
-export function asrWindows(regions, rmsDb, L = ASR_WINDOW, lay = null, bounds = null) {
+export function asrWindows(regions, rmsDb, L = ASR_WINDOW, lay = null, bounds = null, withB = true) {
   if (lay && lay.length > 1) {
     const per = lay.map(s => asrWindows(regions.filter(r => r.end > s.offset && r.start < s.end).map(r => ({ start: Math.max(r.start, s.offset), end: Math.min(r.end, s.end) })), rmsDb, L, null, s));
     return ['A', 'B', 'C'].flatMap(p => per.flatMap(ws => ws.filter(w => w.pass === p)));
@@ -409,9 +409,18 @@ export function asrWindows(regions, rmsDb, L = ASR_WINDOW, lay = null, bounds = 
     const a = rs[0].start, b = rs[rs.length - 1].end;
     return { start: a, end: b, padStart: 0.3, padEnd: 0.3, lo: a - 0.35, hi: b + 0.3, speech: speechIn(a, b), pass: 'C', parts: rs.map(r => ({ ...r })), headCut: a - srcStart < 0.3, tailCut: srcEnd - b < 0.3 };
   });
-  // B（A と15秒ずらした窓）は読まない: 固定テスト素材7本で、A と C だけでも3通りと同じ文字になり（違い0〜2文字）、
-  // 文字起こしの時間が約3分の2になる（1106: 200秒ぶん → 131秒ぶん）
-  return [...grid(0, 'A'), ...C];
+  // B（A と15秒ずらした窓）も読む。A と C だけにすると約3分の2の時間になるが、固定テスト素材で文がまるごと消えたり
+  // （IMG_6052「すき量15%のものを使ってください」2か所）、語尾を落としたり（IMG_6289「悪くなっちゃいます」）した。
+  // 速さは、モデルを1回だけ読み込むこと・1本ずつ解析して結果を使い回すことで補う
+  return [...grid(0, 'A'), ...(withB ? grid(L / 2, 'B') : []), ...C];
+}
+
+// A と C で読んだ結果（merged）で、話した長さに比べて文字が少ない（1秒あたり rate 文字未満）まとまりにかかる B の窓
+export function asrRetryWindows(regions, rmsDb, windows, merged, rate = 4.5) {
+  const toks = merged.flatMap(c => c.tokens || []);
+  const low = windows.filter(w => w.pass === 'C').filter(w => toks.filter(t => t.t >= w.start - 0.3 && t.t < w.end + 0.3).length / Math.max(0.5, w.speech) < rate);
+  if (!low.length) return [];
+  return asrWindows(regions, rmsDb, ASR_WINDOW, null, null, true).filter(w => w.pass === 'B' && low.some(g => w.start < g.end && w.end > g.start));
 }
 
 // 文字の並び a・b（{ s, t }）を照らし合わせる（編集距離）。返り値は [種類, a の番号, b の番号] の並び。
@@ -438,7 +447,7 @@ function alignChars(a, b, tol = 1.5) {
 // edges: 窓の切れ目（話の途中）のすぐそばの文字（Set）。そこで base と other の文字が違うときは、other を使う
 // 読み方によって、時刻が少しずれることがある（窓の頭の読み始めの違い・最大0.8秒ほど。所によってずれ方も変わる）。
 // まず時刻を見ずに照らし合わせ、近く（前後2秒）の同じ文字どうしの時刻の差（中央値）だけ other をずらしてから、時刻も合わせて照らし合わせる
-export function fillDeletions(base, other, minRun = 2, edges = new Set()) {
+export function fillDeletions(base, other, minRun = 2, edges = new Set(), startOne = true) {
   const med = xs => { const v = xs.slice().sort((x, y) => x - y); return v.length ? v[v.length >> 1] : 0; };
   const m0 = alignChars(base, other, Infinity).filter(([op, i, j]) => op === 'm' && base[i].s === other[j].s).map(([, i, j]) => ({ t: base[i].t, d: other[j].t - base[i].t }));
   // 片方に文がまるごと無いと、時刻を見ない照らし合わせは別の文の同じ文字を対応させる（数秒ずれる）。1秒以内の対応だけで見積もる
@@ -455,7 +464,7 @@ export function fillDeletions(base, other, minRun = 2, edges = new Set()) {
     const ds = dels.filter(d => !(isEdge(d) && near(other, d)));
     const is = ins.filter(x => !(isEdge(x) && near(base, x)));
     // 1文字だけでも補う: 窓の切れ目の誤った文字を外した所（その代わりの文字）・まとまりの頭と終わり（「そ｜うならないために」）
-    const one = (ds.length < dels.length && is.length === dels.length - ds.length) || (!out.length && is.length === 1 && !isEdge(is[0]) && base.length && base[0].t - is[0].t <= 0.5 && base[0].t - is[0].t > 0);
+    const one = (ds.length < dels.length && is.length === dels.length - ds.length) || (startOne && !out.length && is.length === 1 && !isEdge(is[0]) && base.length && base[0].t - is[0].t <= 0.5 && base[0].t - is[0].t > 0);
     if (is.length >= (one ? 1 : minRun)) {
       const inside = d => is.some((x, k) => k + 1 < is.length && x.t <= d.t && d.t <= is[k + 1].t && is[k + 1].t - x.t <= 0.6);
       out.push(...[...ds.filter(d => !inside(d)), ...is].sort((x, y) => x.t - y.t));
@@ -512,7 +521,7 @@ export function mergeAsrPasses(windows, results) {
   segs.forEach((g, j) => {
     const lo = j ? cuts[j - 1] : -Infinity, hi = j + 1 < segs.length ? cuts[j] : Infinity;
     const pick = p => P[p].filter(k => k.t >= lo && k.t < hi);
-    const filled = fillDeletions(fillDeletions(pick('A'), pick('B'), 2, edges), cTokens[j], 2, edges);
+    const filled = fillDeletions(fillDeletions(pick('A'), pick('B'), 2, edges, false), cTokens[j], 2, edges);
     if (!filled.length) return;
     // 差し込んだ文字は別の読み方の時刻なので、前後と順番が逆になることがある。文字の順に時刻をそろえる
     const tokens = [];
