@@ -1694,15 +1694,17 @@ export function buildTimeline(clips, opts = {}) {
 // 場面の最初の字幕が短すぎて読めない（「やってしまうと」0.42秒）: 前の場面の字幕が消えた後の間に、最大 READ_SEC.shift 秒
 // 早く出す（その場面の話し始めまでの間は無音なので、少し早く出ても声とずれない）
 function readableAcross(tl) {
-  let prevEnd = -Infinity;
+  let prevEnd = -Infinity, prevLast = null;
   for (const c of tl) {
     const ps = c.subtitles || [];
     const p = ps[0];
-    if (p && !p.cont) {
+    if (p && !p.cont && !p.edited) {
       const need = readTime(p) - (p.end - p.start);
       if (need > 0) p.start -= Math.max(0, Math.min(need, READ_SEC.shift, p.start - prevEnd - 0.05));
     }
-    if (ps.length) prevEnd = ps[ps.length - 1].end;
+    // 修正の指示で早めた字幕と重ならないよう、前の場面の最後の字幕を短くする
+    if (p && prevLast && prevLast.end > p.start) prevLast.end = Math.max(prevLast.start + 0.3, p.start);
+    if (ps.length) { prevLast = ps[ps.length - 1]; prevEnd = prevLast.end; }
   }
 }
 
@@ -2076,7 +2078,9 @@ function applyPageEdits(pages, edits, clipStart, clipEnd) {
     if (!best || bd > 0.6) continue;
     if (e.text != null) { best.lines = [e.text]; best.edited = true; delete best.doubt; }
     if (e.shift) {
-      const d = Math.max(clipStart - best.start, Math.min(clipEnd - best.end, e.shift));
+      // 場面の最初の字幕は、前の場面の終わりまで早めてよい（書き出しでは次の場面の最初の字幕も描く。前の字幕は readableAcross で短くする）
+      const lo = best === pages[0] ? clipStart - 1.5 : clipStart;
+      const d = Math.max(lo - best.start, Math.min(clipEnd - best.end, e.shift));
       best.start += d; best.end += d; best.edited = true;
     }
   }

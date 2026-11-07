@@ -125,8 +125,9 @@ export function applyFixes(clips, fixes) {
         const ranges = f.kind === 'cut' ? f.ranges.filter(r => r.unitId === c0.id) : [f.gapRange].filter(Boolean);
         for (const r of ranges) {
           c.pieces = subtract(c.pieces, r);
-          // 取り除いた範囲で話した文字は、字幕からも消す（1文字ごとの時刻があるとき）
-          if (c.times && c.text && c.times.length === c.text.length) {
+          // 取り除いた範囲で話した文字は、字幕からも消す（1文字ごとの時刻があるとき）。
+          // 間を詰めるときは声のない所だけを取り除くので、字幕の文字は消さない（1文字ごとの時刻は少しずれることがあるため）
+          if (f.kind === 'cut' && c.times && c.text && c.times.length === c.text.length) {
             const keep = c.times.map(t => !(t >= r.start - 0.05 && t < r.end - 0.05));
             c.text = [...c.text].filter((_, k) => keep[k]).join('');
             c.times = c.times.filter((_, k) => keep[k]);

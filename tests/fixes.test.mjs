@@ -62,3 +62,25 @@ test('不要な間を詰める: 近くの話の間を見つけて短くする。
   assert.equal(findGapRange(fine, 12.45), null, '0.1秒の間は詰めない');
   assert.equal(describeFix({ kind: 'gap', at: 40 }), '40.0秒付近の不要な間を詰める');
 });
+
+test('間を詰めても字幕の文字は消さない（1文字ごとの時刻がずれていても）', () => {
+  const c = clips0.find(u => u.times && u.text && u.times.length === u.text.length && u.text.length > 6);
+  const t0 = c.times[2];
+  // 話している文字の時刻を含む範囲を「間」として取り除いても、文字はそのまま
+  const f = { id: 5, kind: 'gap', srcAt: t0, unitId: c.id, gapRange: { start: t0 - 0.02, end: t0 + 0.1 }, status: 'applied' };
+  const out = applyFixes(clips0, [f]).find(u => u.id === c.id);
+  assert.equal(out.text, c.text);
+  const cut = applyFixes(clips0, [{ ...f, kind: 'cut', ranges: [{ ...f.gapRange, unitId: c.id }] }]).find(u => u.id === c.id);
+  assert.ok(cut.text.length < c.text.length, 'カットのときは消す');
+});
+
+test('場面の最初の字幕も、前の場面の終わりへ早められる（前の字幕は重ならないよう短くする）', () => {
+  const i = before.findIndex((c, k) => k > 0 && c.subtitles?.length && before[k - 1].subtitles?.length);
+  const p = before[i].subtitles[0], prev = before[i - 1].subtitles.at(-1);
+  const f = resolveFix({ id: 6, kind: 'timing', at: (p.start + p.end) / 2, shift: -0.3, status: 'applied' }, before);
+  const tl = build([f]);
+  const q = tl[i].subtitles[0], pr = tl[i - 1].subtitles.at(-1);
+  assert.ok(Math.abs(q.start - (p.start - 0.3)) < 0.05, `${p.start.toFixed(2)} → ${q.start.toFixed(2)}`);
+  assert.ok(pr.end <= q.start + 1e-6 && pr.end >= pr.start + 0.3 - 1e-6, '前の字幕は重ならない');
+  void prev;
+});
