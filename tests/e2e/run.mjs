@@ -486,9 +486,10 @@ async function runFixes() {
   console.log('修正後のプレビュー: ' + (await page.$eval('#fixPreviewNote', el => el.textContent)) + ' 字幕「' + (await page.$eval('#fixPreviewSub', el => el.textContent)) + '」');
   await page.screenshot({ path: path.join(dir, `fixes-${tag}.png`), fullPage: true });
   const t2 = Date.now();
-  await page.evaluate(() => { document.querySelector('#stepResult').hidden = true; });
   await page.click('#fixRender');
+  await page.waitForSelector('#stepResult[hidden]', { state: 'attached' });
   await page.waitForSelector('#stepResult:not([hidden]), #renderError:not([hidden])', { timeout: +(process.env.RENDER_TIMEOUT || 600000) });
+  console.log('区間の再利用: ' + (await page.$eval('#renderBar', el => el.textContent.trim()).catch(() => '')));
   console.log(`修正後の書き出し: ${((Date.now() - t2) / 1000).toFixed(1)}秒`);
   const b64f = await page.evaluate(async () => {
     const buf = new Uint8Array(await window.amityDebug.blob.arrayBuffer());
