@@ -245,7 +245,7 @@ export const PACES = {
   tempo: { lead: 0.08, tail: 0.15, keepGap: 0.22, minGap: 0.16, maxGap: 0.24 },
   // カットの強さ「テンポ重視」: 声の前後の余白を、手動編集の余白の中央くらいまで詰める（細かい声の区間の端から
   // 頭 0.08秒・語尾 0.13秒。固定テスト素材9本の手動編集: 頭 0.07〜0.13秒・語尾 0.08〜0.22秒）。声のある所は切らない
-  tight: { lead: 0.03, tail: 0.06, keepGap: 0.2, minGap: 0.14, maxGap: 0.2 },
+  tight: { lead: 0.03, tail: 0.06, keepGap: 0.12, minGap: 0.1, maxGap: 0.14 },
 };
 
 // 声の区間 segs を、その中の息継ぎの間（細かい声の区間 fine のすき間が minGap 以上）で分ける。
@@ -509,7 +509,7 @@ export function fillDeletions(base, other, minRun = 2, edges = new Set(), startO
 }
 
 // 否定の言葉（意味が逆になるため、聞き落とすと大きな誤りになる）
-const NEGATION_RE = /ない|なかっ|ません|ず[にのともで、。]|ず$|ダメ|だめ/;
+const NEGATION_RE = /ない|なかっ|ません|ず[にのともで、。]|ず$|ダメ(?!ージ)|だめ/; // 「ダメージ」は打ち消しではない
 export const hasNegation = text => NEGATION_RE.test(text || '');
 
 // 3通りの結果（results[窓の番号] = chunks）を合わせて、1つの結果（文字ごとの時刻つき）にする。
@@ -561,7 +561,11 @@ export function mergeAsrPasses(windows, results) {
 // 字幕の文 c について、読み方ごとの聞き取りを比べ、否定の言葉・入力された用語の有無が違えば理由を返す
 export function passDoubts(c, passes, terms = []) {
   if (!passes) return [];
-  const texts = Object.values(passes).map(P => P.filter(k => k.t >= c.start - 0.3 && k.t < c.end + 0.3).map(k => k.s).join('')).filter(Boolean);
+  // 読み方ごとの文字（文の範囲だけ。前後の文の端の文字を拾わないよう、余白は0.1秒）。文をほとんど落とした読み方
+  // （1108: 3通りのうち2つが「切りやすいですが…できないです」をまるごと落とした）は、比べても意味がないので除く
+  const n = normalizeText(c.text || '').length;
+  const texts = Object.values(passes).map(P => P.filter(k => k.t >= c.start - 0.1 && k.t < c.end + 0.1).map(k => k.s).join(''))
+    .filter(t => t && t.length >= Math.max(2, n * 0.6));
   const out = [];
   if (texts.some(t => hasNegation(t) !== hasNegation(c.text))) out.push('否定の言葉（ない・ません）を聞き落としている可能性');
   for (const t of terms) if (t.length >= 2 && !(c.text || '').includes(t) && texts.some(x => x.includes(t))) out.push(`「${t}」を聞き落としている可能性`);

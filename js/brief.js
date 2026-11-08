@@ -17,7 +17,8 @@ export const STYLES = {
 
 export const EMPTY_BRIEF = {
   title: '', content: '', message: '', flow: '', mustKeep: '', items: '', script: '', memo: '',
-  format: 'short', targetSec: 60, style: 'simple', cut: 'natural',
+  // カットの強さの初期設定は「テンポ重視」（手動編集 1107・1108 の話の途中の間は中央0.1秒。標準の0.24秒では間が長く感じられた）
+  format: 'short', targetSec: 60, style: 'simple', cut: 'tight',
   // 編集メモ: 言い間違い（auto: 自動判定・yes: あり・no: なし）と、動画1本ごとのメモ（動画の順）
   retake: 'auto', memos: [],
 };

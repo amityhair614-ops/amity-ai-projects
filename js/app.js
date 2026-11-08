@@ -246,7 +246,7 @@ function writeBrief(b) {
   for (const [k, id] of Object.entries(TEXT_FIELDS)) $(id).value = b[k] || '';
   for (const el of document.querySelectorAll('input[name=format]')) el.checked = el.value === b.format;
   for (const el of document.querySelectorAll('input[name=style]')) el.checked = el.value === b.style;
-  for (const el of document.querySelectorAll('input[name=cut]')) el.checked = el.value === (b.cut || 'natural');
+  for (const el of document.querySelectorAll('input[name=cut]')) el.checked = el.value === (b.cut || 'tight');
   for (const el of document.querySelectorAll('input[name=retake]')) el.checked = el.value === (b.retake || 'auto');
   // 動画1本ごとのメモ（保存した編集を開き直したとき）
   if (b.memos?.length && state.files?.length) {
@@ -264,7 +264,8 @@ function briefChanged() {
   briefTimer = setTimeout(() => {
     const b = readBrief();
     try {
-      localStorage.setItem(PREFS_KEY, JSON.stringify({ format: b.format, targetSec: b.targetSec, style: b.style, cut: b.cut }));
+      // カットの強さは cut2 に保存する（v1.0 候補・7 から初期設定を「テンポ重視」にしたため、前の初期設定の「標準」を引き継がない）
+      localStorage.setItem(PREFS_KEY, JSON.stringify({ format: b.format, targetSec: b.targetSec, style: b.style, cut2: b.cut }));
       const key = briefKey();
       if (key) {
         const text = {};
@@ -299,9 +300,12 @@ $('briefClear').addEventListener('click', () => {
 function initBrief() {
   const prefs = loadJSON(PREFS_KEY) || {};
   const text = (briefKey() && loadJSON(briefKey())) || {};
-  writeBrief(normalizeBrief({ ...EMPTY_BRIEF, ...prefs, ...text }));
+  writeBrief(normalizeBrief({ ...EMPTY_BRIEF, ...prefs, cut: prefs.cut2 || EMPTY_BRIEF.cut, ...text }));
 }
-writeBrief(normalizeBrief({ ...EMPTY_BRIEF, ...(loadJSON(PREFS_KEY) || {}) }));
+{
+  const p = loadJSON(PREFS_KEY) || {};
+  writeBrief(normalizeBrief({ ...EMPTY_BRIEF, format: p.format, targetSec: p.targetSec, style: p.style, cut: p.cut2 || EMPTY_BRIEF.cut }));
+}
 
 // ---------- 1. 動画を選ぶ ----------
 $('file').addEventListener('change', async () => {

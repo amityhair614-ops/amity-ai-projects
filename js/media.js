@@ -83,7 +83,14 @@ export function closeVideo(src) {
 
 // ---------- 映像のデコード（コマ数を絞って順に処理する） ----------
 
-const tick = () => new Promise(r => setTimeout(r, 0));
+// いったん処理を区切る（使い終わったコマのメモリを解放させる）。setTimeout(0) は続けて使うと1回4ミリ秒以上待たされる
+// （ブラウザの決まり）ため、1コマごとに使うと書き出しが遅くなる（1分の動画で約2000コマ → 8秒以上）。MessageChannel は待たされない
+const channel = typeof MessageChannel !== 'undefined' ? new MessageChannel() : null;
+const waiting = [];
+if (channel) channel.port1.onmessage = () => waiting.shift()?.();
+const tick = () => new Promise(r => { if (channel) { waiting.push(r); channel.port2.postMessage(0); } else setTimeout(r, 0); });
+// デコーダーの処理待ち（キューが空くまで）。少し待ってから確かめる（何度も確かめて CPU を使い続けないように）
+const wait = ms => new Promise(r => setTimeout(r, ms));
 
 class FrameDecoder {
   constructor(config) {
@@ -107,7 +114,7 @@ class FrameDecoder {
       }
       if (this.error) throw this.error;
       if (this.decoder.decodeQueueSize <= maxPending) return;
-      await tick();
+      await wait(2);
     }
   }
 
@@ -561,8 +568,9 @@ async function drawFrames(src, packets, rc, clip, piece, f0, f1, emit, opts = {}
     decoded++;
     const ts = frame.timestamp / 1e6;
     while (k < n && from + k / FPS < ts - 1e-3) await out();
-    // ズーム中は、このコマの出力時刻に合わせた枠で切り抜く
-    if (k < n) {
+    // ズーム中は、このコマの出力時刻に合わせた枠で切り抜く。
+    // 使う範囲より0.1秒以上前のコマ（キーフレームから使う所までの読み進め）は描かない（後に、使う範囲の手前のコマが必ず来る）
+    if (k < n && ts >= from - 0.1) {
       try {
         const r = cropAt(clip, piece.outStart + f0 / FPS + Math.max(0, ts - from));
         if (!painter.checked) await painter.check(frame);
