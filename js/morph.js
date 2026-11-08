@@ -194,6 +194,8 @@ export function boundaryStrength(a, b) {
     return 4.5;
   }
   if (last.pos === '助詞' && last.d1 === '連体化') return 1;
+  // 「〜したり／〜したり」: 並べて言う所は、節の切れ目に近い（「短くなりすぎちゃったり／思ったスタイルにならない」）
+  if (last.pos === '助詞' && last.d1 === '並立助詞' && /^(?:たり|だり)$/.test(last.s)) return 6.5;
   if (last.pos === '助詞' && last.d1 === '副助詞') return 3;
   if (last.pos === '名詞' && CLAUSE_NOUNS.test(last.s) && a.toks.length > 1) return 6.8; // 〜していく際
   const ender = (last.pos === '助動詞' || last.pos === '動詞' || last.pos === '形容詞') && last.cf === '基本形';

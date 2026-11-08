@@ -1473,13 +1473,14 @@ function phrasePages(text, maxChars, pauseAt, omits = null) {
     const p = pauseAt ? pauseAt(units[i + 1].start) : 0;
     // 言い切りの形の後の息継ぎ（「落ち着かない／まとまりが」）。後ろの名詞の説明（「感じやすい理由」）のこともあるので、
     // はっきりした間（0.7秒以上）でなければ「区切りやすい」までにする
-    if (p >= 0.18 && ambiguousEnd(units[i], units[i + 1])) s = p >= 0.7 ? 9 : 6.5;
+    const amb = p >= 0.18 && ambiguousEnd(units[i], units[i + 1]);
+    if (amb) s = p >= 0.7 ? 9 : p >= 0.4 ? 6.5 : 5.5;
     // 声の間は、言葉のまとまりの切れ目の手がかり（文節の切れ目にだけ使う。言葉の途中には区切りを作らない）
     // 区切りの強くない所（「〜は」「〜を」）は、声の間があっても「必ず区切る」まではしない（6.5まで）。
     // ただし名詞だけで言い切って、はっきり間をあけた所（「結論／傷んでなかったら」）は、1枚にしてよい
     const bare = s === 2 && units[i].toks[units[i].toks.length - 1].pos === '名詞';
     if (bare && p >= 0.3) s = 8;
-    else if (s >= 1.5 && s < 6.5) s = Math.min(6.5, s + (p >= 0.5 ? 5 : p >= 0.25 ? 3 : p >= 0.12 ? 1 : 0));
+    else if (!amb && s >= 1.5 && s < 6.5) s = Math.min(6.5, s + (p >= 0.5 ? 5 : p >= 0.25 ? 3 : p >= 0.12 ? 1 : 0));
     S.push(s);
   }
   if (globalThis.__phraseDebug) globalThis.__phraseDebug(units.map(u => u.text), S, units.map(u => (pauseAt ? +pauseAt(u.start).toFixed(2) : 0)));
