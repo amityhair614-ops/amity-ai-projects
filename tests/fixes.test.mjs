@@ -46,13 +46,14 @@ test('字幕の文字・時刻の修正: その字幕だけが変わる', () => 
 
 test('範囲のカット: 完成動画が短くなり、後ろの字幕もずれて追従する（話した文字の時刻と合ったまま）', () => {
   const p = pageAt(before, '下手すれば');
-  const later = pageAt(before, '根元付近にすきバサミを') && pagesOf(before).filter(x => x.lines.join('') === '根元付近にすきバサミを').at(-1);
+  const LATER = 'すきバサミを入れるのは';
+  const later = pagesOf(before).filter(x => x.lines.join('') === LATER).at(-1);
   const f = resolveFix({ id: 3, kind: 'cut', at: p.start, to: p.end, status: 'applied' }, before);
   const tl = build([f]);
   const cutLen = len(before) - len(tl);
   assert.ok(cutLen > 0.4 && cutLen <= p.end - p.start + 0.05, `${cutLen.toFixed(2)}秒短く`);
   assert.ok(!pagesOf(tl).some(x => x.lines.join('').includes('下手すれば')), 'カットした所の字幕は消える');
-  const later2 = pagesOf(tl).filter(x => x.lines.join('') === '根元付近にすきバサミを').at(-1);
+  const later2 = pagesOf(tl).filter(x => x.lines.join('') === LATER).at(-1);
   assert.ok(Math.abs((later.start - later2.start) - cutLen) < 0.05, '後ろの字幕はカットした長さだけ早くなる');
 });
 

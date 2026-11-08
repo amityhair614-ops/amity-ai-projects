@@ -1,3 +1,5 @@
+import { readMemos, parseMemo } from './memo.js';
+import { loadTokenizer, hasTokenizer, KUROMOJI_BASE } from './morph.js';
 import {
   checkSupport, openVideo, closeVideo, analyzeAudio, analyzeMotion, renderSegment, assembleOutput, getAudioMode, ASR_RATE,
   createRenderContext, RenderPaused, readBgm, analyzeBgm,
@@ -11,8 +13,8 @@ import {
   planSegments, segmentKey, renderBytes, spaceCheck, formatBytes, describeJob, jobIdFor, sameSource, MB,
 } from './resume.js';
 import {
-  detectSpeech, transcriptionWindows, asrWindows, asrRetryWindows, mergeAsrPasses, passDoubts, buildUnits, selectUnits, buildTimeline, formatTime, FRAME_SEC, FPS, trimUnit, untrimUnit,
-  cleanSubtitle, alignSentences, refineSubtitleTiming, fineSpeech, setBreakTerms, openingLines, openingText, openingPlan,
+  detectSpeech, transcriptionWindows, asrWindows, asrRetryWindows, untranscribedWindows, mergeAsrPasses, passDoubts, buildUnits, selectUnits, buildTimeline, formatTime, FRAME_SEC, FPS, trimUnit, untrimUnit,
+  cleanSubtitle, alignSentences, refineSubtitleTiming, fineSpeech, setBreakTerms, setSubtitleWords, openingLines, openingText, openingPlan,
   END_FADE, END_HOLD, extendEnding, outputLength, OPENING_DURATIONS, BEAUTY_TERMS, clearOpening,
 } from './plan.js';
 import { verifyUnits, verifiedRaw, attachAudioFixes, briefWords, domainWords } from './verify.js';
@@ -183,7 +185,7 @@ $('diagClear').addEventListener('click', () => {
 // 種類・長さ・スタイルは次の動画にも引き継ぐ。文章の入力は動画ごとに保存する
 const PREFS_KEY = 'amity.prefs.v1';
 const briefKey = () => (state.file && state.src ? 'amity.brief.v1:' + videoKey(state.file, state.src.duration) : null);
-const TEXT_FIELDS = { title: 'bTitle', content: 'bContent', message: 'bMessage', flow: 'bFlow', mustKeep: 'bMust', items: 'bItems', script: 'bScript' };
+const TEXT_FIELDS = { title: 'bTitle', content: 'bContent', message: 'bMessage', flow: 'bFlow', mustKeep: 'bMust', items: 'bItems', script: 'bScript', memo: 'bMemo' };
 
 function loadJSON(key) {
   try { return JSON.parse(localStorage.getItem(key) || 'null'); } catch { return null; }
@@ -195,6 +197,8 @@ function readBrief() {
   b.format = document.querySelector('input[name=format]:checked')?.value;
   b.style = document.querySelector('input[name=style]:checked')?.value;
   b.cut = document.querySelector('input[name=cut]:checked')?.value;
+  b.retake = document.querySelector('input[name=retake]:checked')?.value;
+  b.memos = (state.files || []).map(f => ({ text: state.fileMemos?.get(fileMemoKey(f)) || '' }));
   const preset = document.querySelector('input[name=dur]:checked')?.value;
   const f = FORMATS[b.format] || FORMATS.short;
   if (preset === 'custom') {
@@ -243,7 +247,15 @@ function writeBrief(b) {
   for (const el of document.querySelectorAll('input[name=format]')) el.checked = el.value === b.format;
   for (const el of document.querySelectorAll('input[name=style]')) el.checked = el.value === b.style;
   for (const el of document.querySelectorAll('input[name=cut]')) el.checked = el.value === (b.cut || 'natural');
+  for (const el of document.querySelectorAll('input[name=retake]')) el.checked = el.value === (b.retake || 'auto');
+  // 動画1本ごとのメモ（保存した編集を開き直したとき）
+  if (b.memos?.length && state.files?.length) {
+    state.fileMemos = state.fileMemos || new Map();
+    state.files.forEach((f, k) => { if (b.memos[k]?.text) state.fileMemos.set(fileMemoKey(f), b.memos[k].text); });
+    renderFileList();
+  }
   renderPresets(b.format, b.targetSec);
+  showMemoRead(b);
 }
 
 let briefTimer = null;
@@ -277,6 +289,8 @@ for (const el of document.querySelectorAll('input[name=format]')) {
   el.addEventListener('change', () => { renderPresets(el.value, FORMATS[el.value].defaultSec); briefChanged(); });
 }
 for (const el of document.querySelectorAll('input[name=style]')) el.addEventListener('change', briefChanged);
+for (const el of document.querySelectorAll('input[name=retake]')) el.addEventListener('change', () => { briefChanged(); showMemoRead(); });
+$('bMemo').addEventListener('input', () => showMemoRead());
 $('briefClear').addEventListener('click', () => {
   for (const id of Object.values(TEXT_FIELDS)) $(id).value = '';
   briefChanged();
@@ -323,6 +337,18 @@ $('fileAdd').addEventListener('change', async () => {
 });
 
 // 選んだ動画の一覧（並べ替え・削除）。解析の前だけ操作できる
+// 動画1本ごとの編集メモ（動画の名前と大きさで覚える。並べ替えても付いていく）
+const fileMemoKey = f => `${f.name}|${f.size}`;
+// 編集メモから読み取った内容を、メモの下に出す（読み取れなかった文も知らせる）
+function showMemoRead(b = readBrief()) {
+  const m = readMemos(b, state.lay);
+  const el = $('memoUsed');
+  const lines = [...m.read.map(t => '✓ ' + t), ...m.unread.map(t => `読み取れなかったメモ（反映していません）: ${t}`)];
+  if (b.retake === 'no') lines.unshift('✓ 言い間違い: なし（言い直しの判定をしません）');
+  el.hidden = !lines.length;
+  el.textContent = lines.join('\n');
+}
+
 function renderFileList() {
   const files = state.files || [];
   $('fileListBox').hidden = !files.length;
@@ -346,11 +372,22 @@ function renderFileList() {
       b.addEventListener('click', fn);
       li.appendChild(b);
     };
+    // この動画の編集メモ
+    const memo = document.createElement('input');
+    memo.type = 'text';
+    memo.className = 'fmemo';
+    memo.maxLength = 500;
+    memo.placeholder = files.length > 1 ? `${k + 1}本目のメモ（例: 15秒付近に言い間違いあり）` : 'この動画のメモ（例: 15秒付近に言い間違いあり）';
+    memo.setAttribute('aria-label', `${f.name}の編集メモ`);
+    state.fileMemos = state.fileMemos || new Map();
+    memo.value = state.fileMemos.get(fileMemoKey(f)) || '';
+    memo.addEventListener('input', () => { state.fileMemos.set(fileMemoKey(f), memo.value); briefChanged(); showMemoRead(); });
     if (files.length > 1) {
       btn('▲', '上へ', () => loadSources(move(files, k, -1)), k === 0);
       btn('▼', '下へ', () => loadSources(move(files, k, 1)), k === files.length - 1);
       btn('✕', '一覧から外す', () => loadSources(files.filter((_, i) => i !== k)));
     }
+    li.appendChild(memo);
     ol.appendChild(li);
   });
   $('fileAddLabel').hidden = files.length >= MAX_SOURCES || busy;
@@ -836,6 +873,26 @@ async function transcribeAudio(pcm, rmsDb, speech, bp, engine, store, persist, w
       raw = mergeAsrPasses([...windows, ...retry], [...perWindow, ...perB]);
     }
   }
+  // どの読み方でも文字にならなかった、はっきりした声（1秒以上）は、その声だけをもう一度読む（長い窓で文がまるごと落ちることがある）
+  if (engine === 'reazon' && raw.passes) {
+    const fine0 = fineSpeech(rmsDb, speech.threshold);
+    const lost = store.windowsV || untranscribedWindows(fine0, raw);
+    store.windowsV = lost;
+    if (lost.length) {
+      log('文字にならなかった声を、その声だけで読み直します', { windows: lost.length, sec: +lost.reduce((a, w) => a + w.end - w.start, 0).toFixed(1) });
+      store.resultsV = store.resultsV || {};
+      const perV = await transcribe(pcm, lost, bp.asrTerms, {
+        engine,
+        saved: store.resultsV,
+        onResult: async (i, chunks) => { store.resultsV[i] = chunks; await persist(); },
+        started: store.startedV || {},
+        onStart: async i => { store.startedV = { ...(store.startedV || {}), [i]: true }; await persist(); },
+      });
+      const allW = [...windows, ...(store.windowsB || []), ...lost];
+      const allR = [...perWindow, ...(store.windowsB?.length ? store.windowsB.map((_, i) => store.resultsB[i]) : []), ...perV];
+      raw = mergeAsrPasses(allW, allR);
+    }
+  }
   if (raw.passes) log('字幕AIの読み方ごとの文字数', { A: raw.passes.A.length, B: raw.passes.B.length, C: raw.passes.C.length, merged: raw.reduce((n, c) => n + c.tokens.length, 0) });
   const fine = fineSpeech(rmsDb, speech.threshold);
   // ReazonSpeech: 1文字ごとの時刻と声の切れ目で文に分け、用語の書き方を直す
@@ -954,6 +1011,7 @@ async function analyzeEachSource(job, bp) {
 
 async function runAnalysis(job) {
   const src = state.src;
+  prefetchMorph();
   const brief = normalizeBrief(job.brief);
   writeBrief(brief);
   const bp = briefPlan(brief);
@@ -1106,6 +1164,7 @@ async function runAnalysis(job) {
 
     setStep('plan', 'active');
     state.warnings = A.warnings;
+    await morphReady();
     makePlan(brief);
     if (!state.selected.size) throw new Error('使える場面が見つかりませんでした。音声と映像の両方を読み込めなかった可能性があります。');
     job.stage = 'review';
@@ -1253,15 +1312,45 @@ function applyScript(u) {
   }
 }
 
+// 字幕の言葉の区切りに使う辞書（kuromoji・約17MB）。文字起こしの間は、ファイルを先に読み込んでおくだけにする
+// （iPhone は文字起こしの間がいちばんメモリを使うので、辞書を組み立てるのは文字起こしの後）
+let morphPrefetch = null;
+function prefetchMorph() {
+  if (hasTokenizer() || morphPrefetch) return;
+  const files = ['base', 'check', 'tid', 'tid_pos', 'tid_map', 'cc', 'unk', 'unk_pos', 'unk_map', 'unk_char', 'unk_compat', 'unk_invoke'];
+  morphPrefetch = Promise.all([KUROMOJI_BASE + 'build/kuromoji.js', ...files.map(f => `${KUROMOJI_BASE}dict/${f}.dat.gz`)]
+    .map(u => fetch(u).then(r => r.blob()).catch(() => null))).catch(() => null);
+}
+let morphWarned = false;
+async function morphReady() {
+  if (hasTokenizer()) return true;
+  const t0 = performance.now();
+  try {
+    await Promise.race([loadTokenizer(), new Promise((_, rej) => setTimeout(() => rej(new Error('時間切れ（60秒）')), 60000))]);
+    timings.morph = +((performance.now() - t0) / 1000).toFixed(1);
+    log('言葉の区切りの辞書を準備しました', { sec: timings.morph });
+    return true;
+  } catch (err) {
+    log('言葉の区切りの辞書を読み込めませんでした（字幕は文字数で区切ります）', errorText(err));
+    if (!morphWarned) { morphWarned = true; showNotice('字幕の言葉の区切りに使う辞書を読み込めなかったため、字幕を文字の種類で区切りました（通信を確かめて、もう一度解析すると直ります）。'); }
+    return false;
+  }
+}
+
 // 解析結果（音声・文字起こし・動き）と入力内容から構成を作る。入力を変えたときは解析し直さずにこれだけ行う
 function makePlan(brief) {
   const src = state.src;
   const bp = briefPlan(brief);
   state.brief = bp.brief;
+  // 編集メモ（全体・1本ごと）: 時刻は、つないだ時刻に直す
+  const memo = readMemos(bp.brief, state.lay);
+  setSubtitleWords({ keep: memo.keepWords, omit: [...memo.omitWords, ...(state.fixWords || [])] });
   state.units = buildUnits({
     duration: src.duration, rmsDb: state.rmsDb, speech: state.speech, chunks: state.chunks, motion: state.motion, restarts: state.restarts,
     pace: bp.brief.cut === 'tight' ? 'tight' : bp.brief.style === 'tempo' ? 'tempo' : 'natural',
+    retakes: memo.retake === 'no' ? 'no' : 'auto', retakeTimes: memo.retakeTimes, keepTimes: memo.keepTimes,
   });
+  state.memo = memo;
   state.trims = {};
   state.doubtOk = new Set();
   setBreakTerms(bp.items);
@@ -1290,6 +1379,12 @@ function makePlan(brief) {
   if (bp.mustItems.length && state.chunks) {
     for (const m of must) used.push(m.unit ? `必ず残す: 「${m.item}」→ ${formatTime(m.unit.start)}の発言「${m.unit.text.slice(0, 24)}」` : `必ず残す: 「${m.item}」→ 合う発言が見つかりませんでした`);
   }
+  if (memo.read.length || bp.brief.retake === 'no') {
+    used.push(`編集メモを反映しました: ${[...(bp.brief.retake === 'no' ? ['言い間違いなし'] : []), ...memo.read].join(' / ')}`);
+    const flagged = state.units.filter(u => u.memoRetake);
+    if (flagged.length) used.push(`→ 言い間違いありと書いた所: ${flagged.map(u => `${formatTime(u.start)}「${u.text.slice(0, 16)}」${u.trimmed ? '（取り除きました）' : '（範囲を決められないため、確認の印をつけました）'}`).join('、')}`);
+  }
+  if (memo.unread.length) used.push(`読み取れなかったメモ（反映していません）: ${memo.unread.join(' / ')}`);
   if (bp.buckets !== 5) used.push(`流れ（${bp.buckets}段階）に合わせて、動画全体から順に場面を選びました。`);
   // 用語の聞き取りの補正（入力した言葉に合わせて直した所。字幕に入力の文章を足すことはしない）
   const fixes = new Map();
@@ -1321,8 +1416,9 @@ $('openingReset').addEventListener('click', () => {
   saveReview();
 });
 
-$('btnReplan').addEventListener('click', () => {
+$('btnReplan').addEventListener('click', async () => {
   if (!state.units) return;
+  await morphReady();
   makePlan(readBrief());
   $('btnReplan').hidden = true;
   showReview();
@@ -1671,6 +1767,9 @@ function saveReview() {
 // 書き出す内容（タイムライン）を作る。完成後の修正指示（fixes）があれば、元の動画の時刻で反映する（js/fixes.js）。
 // 解析はやり直さない（構成・字幕のページ・時刻を作り直すだけ）
 function renderTimeline(clips, { useSubs, useZoom, fixes = [] }) {
+  // 字幕で省く・残す言葉: 編集メモ ＋ 完成後の修正の指示（「字幕では「かなり」を省いて」）
+  const wf = (fixes || []).filter(f => f.kind === 'words' && f.status === 'applied');
+  setSubtitleWords({ keep: [...(state.memo?.keepWords || []), ...wf.flatMap(f => f.keep || [])], omit: [...(state.memo?.omitWords || []), ...wf.flatMap(f => f.omit || [])] });
   setBreakTerms(briefPlan(readBrief()).items);
   // 最後の場面は、話し終わりの後を少し延ばしてからフェードアウトする（声にフェードがかからないように）
   let shaped = extendEnding(clips.map(u => ({ ...u, text: state.chunks ? u.text : '', ...shifted(u, state.subOffset) })), state.speech?.voice, state.src.duration);
@@ -1692,6 +1791,7 @@ function renderTimeline(clips, { useSubs, useZoom, fixes = [] }) {
 
 // 「この内容でMP4を書き出す」: 書き出す内容（タイムライン）を決めて保存し、区間ごとに書き出す
 $('btnRender').addEventListener('click', async () => {
+  await morphReady();
   const clips = state.units.filter(u => state.selected.has(u.id));
   if (!clips.length || !state.job) return;
   const useSubs = !!state.chunks && $('optSubs').checked;
@@ -2046,6 +2146,7 @@ async function continueJob(job, { reselected = false } = {}) {
   state.warnings = A.warnings || [];
   const brief = normalizeBrief(job.review?.brief || job.brief);
   writeBrief(brief);
+  await morphReady();
   makePlan(brief);
   if (job.review?.selected) {
     const ids = new Set(state.units.map(u => u.id));
@@ -2265,8 +2366,12 @@ $('fixAdd').addEventListener('click', () => {
   if (kind === 'note') {
     f.note = $('fixNote').value.trim();
     const p = parseInstruction(f.note);
+    // 編集メモと同じ書き方（「字幕では「かなり」を省いて」）は、動画全体の字幕に使う
+    const m = p ? null : parseMemo(f.note);
+    const words = m && (m.omitWords.length || m.keepWords.length) ? { kind: 'words', omit: m.omitWords, keep: m.keepWords } : null;
     // 自由に書いた指示は、読み取れた内容を見せて確かめてもらう（勝手に変えない）
-    f = p ? { ...f, ...p, status: 'confirm' } : { ...f, status: 'check', reason: '内容を読み取れませんでした。種類を選んで入力し直してください（例:「25〜27秒の言い間違いを削除」）' };
+    f = p ? { ...f, ...p, status: 'confirm' } : words ? { ...f, ...words, status: 'confirm' }
+      : { ...f, status: 'check', reason: '内容を読み取れませんでした。種類を選んで入力し直してください（例:「25〜27秒の言い間違いを削除」「字幕では「かなり」を省いて」）' };
   }
   if (kind === 'subtitle' && !f.text) { $('fixStatus').textContent = '新しい字幕を入れてください。'; return; }
   if (f.kind !== 'note') {
@@ -2307,7 +2412,8 @@ function renderFixList() {
   $('fixUndo').disabled = !state.fixBatches.length;
 }
 
-$('fixApply').addEventListener('click', () => {
+$('fixApply').addEventListener('click', async () => {
+  await morphReady();
   const fine = state.rmsDb && state.speech ? fineSpeech(state.rmsDb, state.speech.threshold) : [];
   const batch = [];
   for (const f of state.fixes) {

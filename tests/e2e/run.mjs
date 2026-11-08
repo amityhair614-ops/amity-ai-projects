@@ -24,6 +24,7 @@
 import { chromium } from 'playwright-core';
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { execSync } from 'node:child_process';
 
 const dir = process.argv[2];
@@ -146,6 +147,12 @@ if (realAsr) {
     serve(route, m ? path.join(realAsr, m[1]) : '/nonexistent');
   });
 } else if (reazon) {
+  // 字幕の言葉の区切りの辞書（kuromoji）は、手元の node_modules から返す（npm install が必要）
+  const kuroDir = path.join(path.dirname(fileURLToPath(import.meta.url)), '../../node_modules/kuromoji');
+  await page.context().route(/^https:\/\/cdn\.jsdelivr\.net\/npm\/kuromoji@0\.1\.2\/(.*)$/, (route, request) => {
+    const rel = new URL(request.url()).pathname.replace(/^\/npm\/kuromoji@0\.1\.2\//, '');
+    route.fulfill({ path: path.join(kuroDir, rel), contentType: rel.endsWith('.js') ? 'text/javascript' : 'application/octet-stream', headers: { 'access-control-allow-origin': '*' } });
+  });
   const ortDist = process.env.ORT_DIST;
   await page.context().route(/^https:\/\/cdn\.jsdelivr\.net\/npm\/onnxruntime-web@1\.22\.0\/dist\/.*$/, (route, request) => {
     const f = path.basename(new URL(request.url()).pathname);

@@ -3,6 +3,7 @@
 // 入力から字幕の文字や場面を作ることはしない（話していない言葉を足さない・元の映像の順番を変えない）
 import { KEYWORDS, BEAUTY_TERMS, normalizeText, similarity, targetTolerance, outputLength, formatTime } from './plan.js';
 import { kanaPhrases } from './asrtext.js';
+import { readMemos } from './memo.js';
 
 export const FORMATS = {
   short: { label: 'ショート', aspect: '縦 9:16', size: '1080×1920', presets: [30, 45, 60], defaultSec: 60, min: 10, max: 180 },
@@ -15,11 +16,13 @@ export const STYLES = {
 };
 
 export const EMPTY_BRIEF = {
-  title: '', content: '', message: '', flow: '', mustKeep: '', items: '', script: '',
+  title: '', content: '', message: '', flow: '', mustKeep: '', items: '', script: '', memo: '',
   format: 'short', targetSec: 60, style: 'simple', cut: 'natural',
+  // 編集メモ: 言い間違い（auto: 自動判定・yes: あり・no: なし）と、動画1本ごとのメモ（動画の順）
+  retake: 'auto', memos: [],
 };
 // 文章で入力する項目（items: 使用アイテム・専門用語 / script: 話す内容の原稿）
-export const TEXT_KEYS = ['title', 'content', 'message', 'flow', 'mustKeep', 'items', 'script'];
+export const TEXT_KEYS = ['title', 'content', 'message', 'flow', 'mustKeep', 'items', 'script', 'memo'];
 
 // 入力の値をそろえる（保存データが古い・壊れている場合も安全な値にする）
 export function normalizeBrief(b) {
@@ -31,6 +34,8 @@ export function normalizeBrief(b) {
   if (FORMATS[b.format]) o.format = b.format;
   if (STYLES[b.style]) o.style = b.style;
   if (b.cut === 'natural' || b.cut === 'tight') o.cut = b.cut;
+  if (b.retake === 'auto' || b.retake === 'yes' || b.retake === 'no') o.retake = b.retake;
+  o.memos = Array.isArray(b.memos) ? b.memos.slice(0, 20).map(m => ({ text: typeof m?.text === 'string' ? m.text.slice(0, 500) : '' })) : [];
   const f = FORMATS[o.format];
   const sec = Number(b.targetSec);
   o.targetSec = Number.isFinite(sec) && sec > 0 ? Math.round(Math.min(f.max, Math.max(f.min, sec))) : f.defaultSec;
@@ -104,9 +109,11 @@ export function briefPlan(brief) {
   const b = normalizeBrief(brief);
   const themeTerms = extractTerms([b.title, b.content, b.flow].join('\n'));
   const messageTerms = extractTerms(b.message);
-  const mustItems = splitItems(b.mustKeep);
+  // 編集メモ（memo.js）: 「残して」と書いた言葉は必ず残す項目に、用語は使用アイテム・専門用語に加える
+  const memo = readMemos(b);
+  const mustItems = [...splitItems(b.mustKeep), ...memo.keepText];
   const steps = flowSteps(b.flow);
-  const items = itemTerms(b.items);
+  const items = [...new Set([...itemTerms(b.items), ...memo.terms])];
   return {
     brief: b,
     themeTerms: themeTerms.filter(w => !messageTerms.includes(w)),
@@ -121,6 +128,7 @@ export function briefPlan(brief) {
     // タイトル・説明のひらがなの言葉（「すかないで」）。文字起こしの聞き間違い（「つかないで」）を直す手がかり
     phrases: kanaPhrases(b.title, b.content, b.message, b.flow, b.mustKeep),
     script: b.script.trim(),
+    memo,
   };
 }
 

@@ -1,0 +1,285 @@
+{
+ "source": "6本: IMG_6486（11.20秒）・IMG_6487（6.20秒）・IMG_6488（10.23秒）・IMG_6489（12.60秒）・IMG_6490（19.07秒）・IMG_6491（13.27秒）。合計 72.57秒",
+ "manual": "タイトルなし(20261108-003951)（52.80秒・字幕なし）",
+ "ai": "amity-short-20261108-0917（56.67秒）",
+ "duration": 52.8,
+ "targetSec": 55,
+ "pauses": {
+  "n": 21,
+  "median": 0.10000000000000142,
+  "p75": 0.15000000000000568,
+  "p90": 0.20000000000000284,
+  "max": 0.25,
+  "note": "手動編集が残した範囲の音声を測った話の途中の間（1.5秒未満）"
+ },
+ "note": "6本の動画をつないだ手動編集（正解）と元の動画の照合結果（映像と音声）。時刻はアプリの「つないだ時刻」（動画と動画の間に1秒の無音。lay）。言い間違いはなく、手動編集は文の前後と文の途中の間（「結論」の後など）を詰めている。subtitles は、ご指定の字幕の区切りの正解例（前半）。音声と違う言い回し（「傷んでないなら」→ 音声は「傷んでなかったら」など）は音声の言葉にした",
+ "kept": [
+  {
+   "srcStart": 1.67,
+   "srcEnd": 5.27,
+   "outStart": 0,
+   "outEnd": 3.6,
+   "source": 1
+  },
+  {
+   "srcStart": 6.03,
+   "srcEnd": 9.53,
+   "outStart": 3.6,
+   "outEnd": 7.1,
+   "source": 1
+  },
+  {
+   "srcStart": 9.73,
+   "srcEnd": 10.4,
+   "outStart": 7.1,
+   "outEnd": 7.77,
+   "source": 1
+  },
+  {
+   "srcStart": 13.63,
+   "srcEnd": 16.8,
+   "outStart": 7.77,
+   "outEnd": 10.94,
+   "source": 2
+  },
+  {
+   "srcStart": 21.23,
+   "srcEnd": 21.83,
+   "outStart": 10.94,
+   "outEnd": 11.54,
+   "source": 3
+  },
+  {
+   "srcStart": 22.4,
+   "srcEnd": 23.5,
+   "outStart": 11.54,
+   "outEnd": 12.64,
+   "source": 3
+  },
+  {
+   "srcStart": 24.17,
+   "srcEnd": 29.4,
+   "outStart": 12.64,
+   "outEnd": 17.87,
+   "source": 3
+  },
+  {
+   "srcStart": 32.27,
+   "srcEnd": 37.17,
+   "outStart": 17.87,
+   "outEnd": 22.77,
+   "source": 4
+  },
+  {
+   "srcStart": 37.57,
+   "srcEnd": 41.3,
+   "outStart": 22.77,
+   "outEnd": 26.5,
+   "source": 4
+  },
+  {
+   "srcStart": 46.3,
+   "srcEnd": 53,
+   "outStart": 26.5,
+   "outEnd": 33.2,
+   "source": 5
+  },
+  {
+   "srcStart": 53.17,
+   "srcEnd": 59.73,
+   "outStart": 33.2,
+   "outEnd": 39.76,
+   "source": 5
+  },
+  {
+   "srcStart": 60.2,
+   "srcEnd": 63.1,
+   "outStart": 39.76,
+   "outEnd": 42.66,
+   "source": 5
+  },
+  {
+   "srcStart": 66.07,
+   "srcEnd": 69.23,
+   "outStart": 42.66,
+   "outEnd": 45.82,
+   "source": 6
+  },
+  {
+   "srcStart": 69.83,
+   "srcEnd": 77.43,
+   "outStart": 45.82,
+   "outEnd": 53.42,
+   "source": 6
+  }
+ ],
+ "removed": [
+  {
+   "srcStart": 0,
+   "srcEnd": 1.67,
+   "dur": 1.67
+  },
+  {
+   "srcStart": 5.27,
+   "srcEnd": 6.03,
+   "dur": 0.76
+  },
+  {
+   "srcStart": 9.53,
+   "srcEnd": 9.73,
+   "dur": 0.2
+  },
+  {
+   "srcStart": 10.4,
+   "srcEnd": 13.63,
+   "dur": 3.23
+  },
+  {
+   "srcStart": 16.8,
+   "srcEnd": 21.23,
+   "dur": 4.43
+  },
+  {
+   "srcStart": 21.83,
+   "srcEnd": 22.4,
+   "dur": 0.57
+  },
+  {
+   "srcStart": 23.5,
+   "srcEnd": 24.17,
+   "dur": 0.67
+  },
+  {
+   "srcStart": 29.4,
+   "srcEnd": 32.27,
+   "dur": 2.87
+  },
+  {
+   "srcStart": 37.17,
+   "srcEnd": 37.57,
+   "dur": 0.4
+  },
+  {
+   "srcStart": 41.3,
+   "srcEnd": 46.3,
+   "dur": 5
+  },
+  {
+   "srcStart": 53,
+   "srcEnd": 53.17,
+   "dur": 0.17
+  },
+  {
+   "srcStart": 59.73,
+   "srcEnd": 60.2,
+   "dur": 0.47
+  },
+  {
+   "srcStart": 63.1,
+   "srcEnd": 66.07,
+   "dur": 2.97
+  },
+  {
+   "srcStart": 69.23,
+   "srcEnd": 69.83,
+   "dur": 0.6
+  }
+ ],
+ "subtitles": [
+  {
+   "text": "セルフカットで"
+  },
+  {
+   "text": "ボブを切っていく際"
+  },
+  {
+   "text": "髪の毛を"
+  },
+  {
+   "text": "濡らして切った方がよいのか"
+  },
+  {
+   "text": "乾いた状態の髪を切ればよいのか"
+  },
+  {
+   "text": "結論"
+  },
+  {
+   "text": "傷んでなかったら"
+  },
+  {
+   "text": "乾いている髪を"
+  },
+  {
+   "text": "切っていきましょう"
+  }
+ ],
+ "spoken": [
+  {
+   "start": 1.9,
+   "end": 10.45,
+   "text": "セルフカットでボブを切っていく際に髪の毛をぬらして切った方がよいのかそれとも",
+   "retake": false
+  },
+  {
+   "start": 13.4,
+   "end": 16.75,
+   "text": "乾いた状態の髪を切ればよいのか",
+   "retake": false
+  },
+  {
+   "start": 21.3,
+   "end": 27.11,
+   "text": "結論傷んでなかったら乾いている髪を切っていきましょう",
+   "retake": false
+  },
+  {
+   "start": 26.11,
+   "end": 29.35,
+   "text": "ぬれている髪を切ってしまうと",
+   "retake": false
+  },
+  {
+   "start": 31.823,
+   "end": 37.233,
+   "text": "切りやすいですが仕上がりがイメージできないです",
+   "retake": false
+  },
+  {
+   "start": 36.653,
+   "end": 42.003,
+   "text": "乾かすと長さが短くなっちゃうおそれがあります",
+   "retake": false
+  },
+  {
+   "start": 46.023,
+   "end": 52.883,
+   "text": "乾いた髪を切ることで仕上がりをイメージしやすいでも若干切りにくさはあります",
+   "retake": false
+  },
+  {
+   "start": 52.983,
+   "end": 59.883,
+   "text": "仕上がりをイメージしたいのであれば乾いた髪を切るようにやっていきましょう",
+   "retake": false
+  },
+  {
+   "start": 59.013,
+   "end": 63.133,
+   "text": "ちなみにですが濡れている髪を切るのであれば",
+   "retake": false
+  },
+  {
+   "start": 65.74,
+   "end": 69.3,
+   "text": "髪の毛はダメージしている場合です",
+   "retake": false
+  },
+  {
+   "start": 69.41,
+   "end": 77.91,
+   "text": "くしも通らないかなり傷んでる方はぬらして切るそのようなやり方でやってみてください",
+   "retake": false
+  }
+ ]
+}

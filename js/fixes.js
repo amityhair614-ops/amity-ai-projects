@@ -8,6 +8,7 @@
 //   cut:      at〜to の範囲を取り除く（その範囲の字幕の文字も消える）
 //   gap:      at の近くの話の間を詰める（間が見つからなければ要確認）
 //   note:     自由入力（parseInstruction で解釈できたときだけ、上のどれかにする。勝手には変えない）
+//   words:    字幕で省く・残す言葉（動画全体。編集メモと同じ書き方 memo.js の parseMemo）
 
 // 完成動画の時刻 → 元の動画の時刻（場面の番号とその場面の場面 id）
 export function outToSrc(timeline, t) {
@@ -61,6 +62,8 @@ export function parseInstruction(input) {
 
 // 指示を、見ていた完成動画の構成（timeline）で元の動画の時刻に直す。直せないときは理由を返す
 export function resolveFix(fix, timeline) {
+  // 字幕で省く・残す言葉（動画全体）: 時刻は使わない
+  if (fix.kind === 'words') return { ...fix, status: fix.status };
   // 字幕の修正は、その時刻に出ている字幕で場所を決める（場面の最初の字幕は、前の場面の終わりに少し早く出ることがある）
   if (fix.kind === 'subtitle' || fix.kind === 'timing') {
     for (const c of timeline) for (const p of c.subtitles || []) {
@@ -159,5 +162,6 @@ export function describeFix(f) {
   if (f.kind === 'timing') return `${t(f.at)}の字幕を${Math.abs(f.shift).toFixed(1)}秒${f.shift < 0 ? '早く' : '遅く'}表示`;
   if (f.kind === 'cut') return `${t(f.at)}〜${t(f.to)}をカット`;
   if (f.kind === 'gap') return `${t(f.at)}付近の不要な間を詰める`;
+  if (f.kind === 'words') return [f.omit?.length ? `字幕で「${f.omit.join('」「')}」を省く` : '', f.keep?.length ? `字幕に「${f.keep.join('」「')}」を残す` : ''].filter(Boolean).join('・') + '（動画全体）';
   return `${t(f.at)}: ${f.note || ''}`;
 }

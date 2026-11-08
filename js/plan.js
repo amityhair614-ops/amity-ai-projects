@@ -1,4 +1,5 @@
 // 編集プランを作る純粋関数（ブラウザAPIを使わないので Node でテストできる）
+import { hasTokenizer, phraseUnits, boundaryStrength, ambiguousEnd, subtitleOmissions } from './morph.js';
 import { analyzeContent } from './content.js';
 
 import { displayText, cleanForDisplay, formatNumbers } from './captions.js';
@@ -424,6 +425,22 @@ export function asrRetryWindows(regions, rmsDb, windows, merged, rate = 4.5) {
   const low = windows.filter(w => w.pass === 'C').filter(w => toks.filter(t => t.t >= w.start - 0.3 && t.t < w.end + 0.3).length / Math.max(0.5, w.speech) < rate);
   if (!low.length) return [];
   return asrWindows(regions, rmsDb, ASR_WINDOW, null, null, true).filter(w => w.pass === 'B' && low.some(g => w.start < g.end && w.end > g.start));
+}
+
+// どの読み方でも文字にならなかった、はっきりした声（1秒以上）を、その声だけの窓でもう一度読む窓（B として合わせる）。
+// 長い窓（10秒以上）では、文がまるごと読み落とされることがある（1108 の6本目の最初「髪の毛はダメージしている場合です」:
+// 3通りとも同じ11秒の窓で読み、3.3秒の文を落とした。声だけを読むと、ReazonSpeech も Whisper も読めた）
+export function untranscribedWindows(fine, merged, { minSec = 1, joinGap = 0.3 } = {}) {
+  const toks = merged.flatMap(c => c.tokens || []);
+  const blobs = [];
+  for (const f of fine) {
+    const b = blobs[blobs.length - 1];
+    if (b && f.start - b.end < joinGap) { b.end = f.end; b.speech += f.end - f.start; }
+    else blobs.push({ start: f.start, end: f.end, speech: f.end - f.start });
+  }
+  return blobs
+    .filter(b => b.end - b.start >= minSec && b.speech >= minSec * 0.7 && !toks.some(t => t.t >= b.start - 0.15 && t.t <= b.end + 0.15))
+    .map(b => ({ start: +b.start.toFixed(3), end: +b.end.toFixed(3), padStart: 0.3, padEnd: 0.3, lo: +(b.start - 0.35).toFixed(3), hi: +(b.end + 0.3).toFixed(3), speech: +b.speech.toFixed(3), pass: 'B', retry: 'voice', headCut: false, tailCut: false }));
 }
 
 // 文字の並び a・b（{ s, t }）を照らし合わせる（編集距離）。返り値は [種類, a の番号, b の番号] の並び。
@@ -903,7 +920,10 @@ function applyRestart(u, r, P) {
   return true;
 }
 
-export function buildUnits({ duration, rmsDb, speech, chunks, motion, pace, restarts = [] }) {
+// retakes: 'no' のとき（編集メモで「言い間違いなし」）は、言い直し・くり返し・言いかけの判定を使わない（必要な発言を消さない）。
+// retakeTimes: 編集メモで「言い間違いあり」と書いた時刻（つないだ時刻）。keepTimes: 「削除しないで」と書いた時刻
+export function buildUnits({ duration, rmsDb, speech, chunks, motion, pace, restarts = [], retakes = 'auto', retakeTimes = [], keepTimes = [] }) {
+  if (retakes === 'no') restarts = [];
   const regions = speech.regions;
   // 声の区間（余白なし）。古い形式のデータ（voice がない）では余白つきの区間を使う
   const voice = speech.voice || regions;
@@ -929,7 +949,7 @@ export function buildUnits({ duration, rmsDb, speech, chunks, motion, pace, rest
   const fineAll = speech.threshold != null ? fineSpeech(rmsDb, speech.threshold) : [];
   const covered = [];
   if (chunks && chunks.length) {
-    const ca = analyzeContent(chunks);
+    const ca = retakes === 'no' ? chunks.map(() => null) : analyzeContent(chunks);
     const flags = ca.map(r => r?.drop || null);
     chunks.forEach((c, i) => {
       const segs = withShortWords(sentenceVoice(voice, rmsDb, c.start, c.end), c, fineAll);
@@ -1023,6 +1043,22 @@ export function buildUnits({ duration, rmsDb, speech, chunks, motion, pace, rest
   }
 
   units.sort((a, b) => a.start - b.start);
+  // 編集メモで指定した時刻（つないだ時刻）: 「削除しないで」は必ず残す。「言い間違いあり」は、取り除ける範囲が見つかっていれば取り除き、
+  // 見つからなければ確認の印をつける（範囲を勝手に決めて切らない）
+  const at = t => units.find(x => x.kind === 'speech' && t >= x.start - 0.5 && t <= x.end + 0.5);
+  for (const t of keepTimes) {
+    const u = at(t);
+    if (!u) continue;
+    if (u.excluded && u.excluded !== 'つなぎ言葉のみ') delete u.excluded;
+    u.mustKeep = u.mustKeep || '編集メモで「削除しない」と指定した場面';
+  }
+  for (const t of retakeTimes) {
+    const u = at(t);
+    if (!u || u.excluded || u.trimmed) continue;
+    u.memoRetake = true;
+    if (u.trimOption) { trimUnit(u, u.trimOption, P); u.trimOption = null; u.candidate = null; }
+    else u.candidate = '編集メモで「言い間違いあり」と書いた所です（自動では言い間違いの範囲を決められませんでした。確認画面で外すか、完成後の修正の指示でカットしてください）';
+  }
 
   // 点数づけ
   const firstSpeech = units.filter(u => u.kind === 'speech' && !u.excluded).slice(0, 2);
@@ -1416,7 +1452,69 @@ function linePages(text, maxChars, pauseAt) {
   return cuts.map((j, k) => text.slice(k ? cuts[k - 1] : 0, j).trim()).filter(Boolean);
 }
 
-function pageTexts(text, maxChars, maxLines, pauseAt) {
+// 1行の字幕のページ分け（言葉のまとまり＝文節で区切る。morph.js）。
+// 文節の切れ目ごとの「区切りの強さ」（文の終わり・条件の節の終わり・「〜は」「〜を」…）と、話した声の間、ページの長さから、
+// 全体で一番よい区切り方を選ぶ。文字数をそろえるために次の言葉をくっつけない。短くても意味のまとまった言葉（「結論」）は1枚にする。
+// 長くても、区切りの弱い所（「乾いた状態の髪を／切ればよいのか」）では無理に分けない（15文字まで）
+export const PHRASE = { soft: 12, perPage: 0.6 };
+// omits: 字幕で省く文字の位置（Set）。ページの長さは、省いた後の文字数で数える
+function phrasePages(text, maxChars, pauseAt, omits = null) {
+  const units = phraseUnits(text);
+  if (!units) return null;
+  const n = units.length;
+  if (n < 2) return [text];
+  const S = [];
+  for (let i = 0; i + 1 < n; i++) {
+    let s = boundaryStrength(units[i], units[i + 1]);
+    const p = pauseAt ? pauseAt(units[i + 1].start) : 0;
+    // 言い切りの形の後の息継ぎ（「落ち着かない／まとまりが」）。後ろの名詞の説明（「感じやすい理由」）のこともあるので、
+    // はっきりした間（0.7秒以上）でなければ「区切りやすい」までにする
+    if (p >= 0.18 && ambiguousEnd(units[i], units[i + 1])) s = p >= 0.7 ? 9 : 6.5;
+    // 声の間は、言葉のまとまりの切れ目の手がかり（文節の切れ目にだけ使う。言葉の途中には区切りを作らない）
+    // 区切りの強くない所（「〜は」「〜を」）は、声の間があっても「必ず区切る」まではしない（6.5まで）。
+    // ただし名詞だけで言い切って、はっきり間をあけた所（「結論／傷んでなかったら」）は、1枚にしてよい
+    const bare = s === 2 && units[i].toks[units[i].toks.length - 1].pos === '名詞';
+    if (bare && p >= 0.3) s = 8;
+    else if (s >= 1.5 && s < 6.5) s = Math.min(6.5, s + (p >= 0.5 ? 5 : p >= 0.25 ? 3 : p >= 0.12 ? 1 : 0));
+    S.push(s);
+  }
+  if (globalThis.__phraseDebug) globalThis.__phraseDebug(units.map(u => u.text), S, units.map(u => (pauseAt ? +pauseAt(u.start).toFixed(2) : 0)));
+  const shown = (a, b) => { let t = ''; for (let k = a; k < b; k++) if (!omits?.has(k)) t += text[k]; return t; };
+  const chars = (i, j) => normalizeText(shown(units[i].start, units[j - 1].end)).length || 1;
+  // 区切らないときの悪さ: 文の終わり 8・節の終わり 4・「〜際」1.5・声の間のある「〜は」「〜を」0.7・「〜すると」0.5
+  const keepCost = s => (s >= 9 ? 8 : s >= 7 ? 4 : s >= 6.8 ? 1.5 : s >= 6.5 ? 0.7 : s >= 6 ? 0.5 : s >= 5 ? 0.3 : 0);
+  const breakCost = s => (s <= 0 ? Infinity : s >= 6 ? 0 : s >= 5 ? 0.3 : s >= 4.5 ? 0.6 : s >= 4 ? 0.9 : s >= 3 ? 1.8 : s >= 2 ? 3.2 : 6);
+  // 4文字以下のページ（「あります」「メリットは」）は、前後がはっきりした切れ目のとき（「結論」）だけにする
+  const lenCost = (c, alone) => (c <= 2 ? (alone ? 0.5 : 4) : c === 3 ? (alone ? 0.2 : 2) : c === 4 ? (alone ? 0 : 1) : c === 5 ? (alone ? 0 : 0.3) : c <= PHRASE.soft ? 0 : 0.45 * (c - PHRASE.soft));
+  const cost = new Array(n + 1).fill(Infinity), from = new Array(n + 1).fill(-1);
+  cost[0] = 0;
+  for (let j = 1; j <= n; j++) {
+    for (let i = j - 1; i >= 0; i--) {
+      if (cost[i] === Infinity) continue;
+      const c = chars(i, j);
+      if (c > maxChars && j - i > 1) break;
+      // 前後どちらもはっきりした切れ目（文の終わり・節の終わり）なら、短くても1枚にしてよい
+      const alone = (i === 0 || S[i - 1] >= 7) && (j === n || S[j - 1] >= 7);
+      let k = PHRASE.perPage + lenCost(c, alone);
+      for (let m = i; m < j - 1; m++) k += keepCost(S[m]);
+      if (j < n) k += breakCost(S[j - 1]);
+      // 話す時間が短すぎて読めないページ（0.5秒未満）は避ける（1文字ごとの時刻がわかるとき）
+      const sec = pauseAt?.span ? pauseAt.span(units[i].start, j < n ? units[j].start : text.length) : null;
+      if (sec != null && sec < 0.5 && !alone) k += 4 * (0.5 - sec);
+      if (cost[i] + k < cost[j]) { cost[j] = cost[i] + k; from[j] = i; }
+    }
+  }
+  if (cost[n] === Infinity) return null;
+  const cuts = [];
+  for (let j = n; j > 0; j = from[j]) cuts.unshift(j);
+  return cuts.map((j, k) => text.slice(units[k ? cuts[k - 1] : 0].start, units[j - 1].end).trim()).filter(Boolean);
+}
+
+function pageTexts(text, maxChars, maxLines, pauseAt, omits = null) {
+  if (maxLines === 1 && hasTokenizer()) {
+    const r = phrasePages(text, maxChars, pauseAt, omits);
+    if (r) return r;
+  }
   if (maxLines === 1) return linePages(text, maxChars, pauseAt);
   const cap = maxChars * maxLines;
   const out = [];
@@ -1475,10 +1573,11 @@ function shiftPause(pa, off) {
   return f;
 }
 
-export function subtitlePages(text, duration, maxChars = SUB_MAX_CHARS, maxLines = SUB_LINES, pauseAt = null) {
+export function subtitlePages(text, duration, maxChars = SUB_MAX_CHARS, maxLines = SUB_LINES, pauseAt = null, omits = null) {
   const clean = (text || '').replace(/\s+/g, ' ').trim();
   if (!clean || duration <= 0) return [];
   const pa = clean === text ? pauseAt : null; // 空白を詰めて文字の位置がずれたときは使わない
+  if (clean !== text) omits = null;
   const pages = [];
   let cursor = 0;
   for (const sentence of splitSentences(clean)) {
@@ -1486,7 +1585,7 @@ export function subtitlePages(text, duration, maxChars = SUB_MAX_CHARS, maxLines
     cursor = sOff + sentence.length;
     const body = sentence.replace(/[、。]+$/, '');
     let pOff = 0;
-    for (const pt of pageTexts(body, maxChars, maxLines, shiftPause(pa, sOff))) {
+    for (const pt of pageTexts(body, maxChars, maxLines, shiftPause(pa, sOff), omits && shiftOmits(omits, sOff))) {
       const at = body.indexOf(pt, pOff);
       pOff = at + pt.length;
       // 行末の「、」「。」は字幕では付けない（すっきり見せる）
@@ -1606,11 +1705,24 @@ export function buildTimeline(clips, opts = {}) {
   for (let i = 0; i + 1 < tl.length; i++) {
     const L = tl[i].subtitles[tl[i].subtitles.length - 1], F = tl[i + 1].subtitles[0];
     if (!L || !F || F.start - L.end > 1.5) continue;
-    const t = L.lines.join(''), m = t.match(/(?:ます|です|ません|ました|でした|ください|下さい)(逆に|なので|だから|でも|つまり|それで|そして|例えば)$/);
+    const t = L.lines.join(''), m = t.match(/(?:^|ます|です|ません|ました|でした|ください|下さい)(逆に|なので|だから|でも|つまり|それで|そして|例えば)$/);
     const f = F.lines.join('');
-    if (!m || (f.length + m[1].length) > SUB_MAX_CHARS) continue;
-    L.lines = [t.slice(0, -m[1].length)];
-    F.lines = [m[1] + f];
+    if (!m) continue;
+    // 次の字幕に付けると長すぎるときは、つなぎの言葉だけのページは出さない（声はそのまま。「逆に」1語のページは読みにくい）
+    if (f.length + m[1].length > SUB_MAX_CHARS) {
+      // 長すぎるときは、次の字幕を最初の言葉のまとまりで分けて、そこに付ける（「逆に低いもの／10%、5%のものだと」）
+      const us = phraseUnits(f);
+      const head = us && us.length > 1 ? us[0].text : null;
+      if (!head || head.length + m[1].length > SUB_MAX_CHARS) continue;
+      const cut = F.start + (F.end - F.start) * (head.length / f.length);
+      const N = tl[i + 1].subtitles;
+      N.splice(1, 0, { ...F, lines: [f.slice(head.length)], start: cut, omitted: undefined });
+      F.lines = [m[1] + head];
+      F.end = cut;
+    } else F.lines = [m[1] + f];
+    // 言葉だけのページ（言葉のまとまりで区切ったとき）は、ページごと次の場面へ移す
+    if (t === m[1]) tl[i].subtitles.pop();
+    else L.lines = [t.slice(0, -m[1].length)];
   }
 
   // 場面の最後の字幕が短すぎて読めないとき（場面の終わりで切れる）は、次の場面の最初の字幕が出るまでのすき間に
@@ -1974,7 +2086,19 @@ function charPageTimes(pageTexts, clip, fine) {
   const on0 = fine.filter(r => r.start >= t0 - 0.4 && r.start <= t0 + 0.1).pop();
   const sub = clip.subStart ?? out[0]?.start;
   const first = t0 - 0.6 > sub ? Math.max(sub, on0 ? on0.start - 0.05 : t0 - PAGE_LEAD) : sub;
-  return out.map((p, i) => ({ start: i ? p.start : first, end: i + 1 < out.length ? out[i + 1].start : end }));
+  // 各ページの終わり: そのページの最後の文字を話し終えた所（声の区間の終わり）。次のページまで出し続けると、
+  // 話していない間も前の字幕が残る（言葉のまとまりで細かく区切ったとき特に目立つ）
+  const voiceEnd = k => {
+    const t = times[k] + CHAR_LAG;
+    const v = fine.find(r => r.start <= t + 0.05 && r.end >= t - 0.05) || fine.find(r => r.end >= t - 0.3 && r.start <= t + 0.3);
+    return v ? Math.max(t, v.end) : t + 0.25;
+  };
+  const lastChar = i => {
+    let k = (i + 1 < out.length ? out[i + 1].at : text.length) - 1;
+    while (k > out[i].at && /[、。\s]/.test(text[k])) k--;
+    return k;
+  };
+  return out.map((p, i) => ({ start: i ? p.start : first, end: i + 1 < out.length ? Math.max(i ? p.start : first, Math.min(out[i + 1].start, voiceEnd(lastChar(i)))) : end }));
 }
 
 // 時刻 a〜b の間の無音（声の区間 fine のすき間）の長さ
@@ -2011,17 +2135,64 @@ export function pageMaxDuration(text) {
   return Math.max(1.6, 1.0 + moraCount(text) * 0.2);
 }
 
+// 編集メモで指定した、字幕に残す言葉・字幕で省く言葉（setSubtitleWords）
+let SUB_WORDS = { keep: [], omit: [] };
+export function setSubtitleWords({ keep = [], omit = [] } = {}) { SUB_WORDS = { keep: [...keep], omit: [...omit] }; }
+
+// 省く文字の位置（Set）を、文の中の位置に直す
+function shiftOmits(omits, off) {
+  const out = new Set();
+  for (const k of omits) if (k >= off) out.add(k - off);
+  return out;
+}
+
+// ページ（subtitlePages の結果）から、省く言葉の文字を取り除く。文字だけになったページは出さない
+function dropOmitted(pages, text, times, omits) {
+  const keep = new Array(text.length).fill(true);
+  for (const o of omits) for (let k = o.start; k < o.end; k++) keep[k] = false;
+  const out = [];
+  let cur = 0;
+  for (const p of pages) {
+    const pt = p.lines.join('');
+    const at = text.indexOf(pt, cur);
+    if (at < 0) return null;
+    cur = at + pt.length;
+    let kept = '';
+    for (let k = at; k < cur; k++) if (keep[k]) kept += text[k];
+    kept = kept.replace(/^[、。\s]+|[、。\s]+$/g, '');
+    if (kept) out.push({ ...p, lines: [kept] });
+  }
+  let t = '';
+  const tt = [];
+  for (let k = 0; k < text.length; k++) if (keep[k]) { t += text[k]; tt.push(times[k]); }
+  return { pages: out, text: t, times: tt };
+}
+
+// ひらがなで出た動詞を、字幕でよく使う漢字の書き方にする（文字数は変わらない）: 「ぬらして」→「濡らして」「ぬれている」→「濡れている」
+const KANA_VERBS = [[/ぬら(?=[さしすせそ])/g, '濡ら'], [/ぬれ(?=[てたるなまずば])/g, '濡れ']];
+const kanaVerbs = t => KANA_VERBS.reduce((x, [re, to]) => x.replace(re, to), t);
+
 function timedPages(clip, text) {
   // 表示用の字幕の1段目: 文の中の「ね」「という」・つなぎ言葉を、1文字ごとの時刻と一緒に省いてから、ページに分ける
-  let inline = [];
+  let inline = [], omits = null;
   if (text === clip.text && clip.times?.length === text.length) {
     const c = cleanForDisplay(text, clip.times);
-    if (c.text !== text) { clip = { ...clip, text: c.text, times: c.times }; text = c.text; inline = c.omitted; }
+    const t = kanaVerbs(c.text);
+    if (t !== text) { clip = { ...clip, text: t, times: c.times }; text = t; inline = [...c.omitted]; }
+    // 字幕で省く言葉（「それとも」「ちなみにですが」「かなり」「そのような」…）。ページの区切りは省く前の文で決める
+    // （「理由／それは表面の…」のように、省く言葉が文の切れ目の手がかりになるため）
+    omits = subtitleOmissions(text, { keep: SUB_WORDS.keep, extra: SUB_WORDS.omit });
   }
   // 手直しで表示時刻が変わっていても、その範囲の中の発話だけを使う
   const fine = (clip.fine || []).map(r => ({ start: Math.max(r.start, clip.subStart), end: Math.min(r.end, clip.subEnd) })).filter(r => r.end > r.start);
   // 声の間を、ページ・行の区切りに使う（1文字ごとの時刻がわかるとき）
-  const pages = subtitlePages(text, 1, SUB_MAX_CHARS, SUB_LINES, text === clip.text ? charPauses(clip, fine) : null);
+  const omitSet = omits?.length ? new Set(omits.flatMap(o => Array.from({ length: o.end - o.start }, (_, k) => o.start + k))) : null;
+  let pages = subtitlePages(text, 1, SUB_MAX_CHARS, SUB_LINES, text === clip.text ? charPauses(clip, fine) : null, omitSet);
+  // 省く言葉を、1文字ごとの時刻と一緒に各ページから取り除く（省いた言葉を話している間は、次の字幕を出さない）
+  if (omits?.length && pages.length) {
+    const r = dropOmitted(pages, text, clip.times, omits);
+    if (r) { pages = r.pages; clip = { ...clip, text: r.text, times: r.times }; text = r.text; inline.push(...omits.map(o => o.word)); }
+  }
   if (!pages.length) return [];
   const src = charPageTimes(pages.map(p => p.lines.join('')), clip, fine) || pageSourceTimes(pages.map(p => p.lines.join('')), clip.subStart, clip.subEnd, fine);
   const clipEnd = clip.outStart + clip.outDuration;
@@ -2047,7 +2218,7 @@ function timedPages(clip, text) {
 // 読み取れる表示時間（文字数に合わせる）。短く速く話した所の字幕（「グラデーションのように」0.56秒）は、
 // 前のページとの間のすき間から少し早く出し始め（最大0.3秒）、まだ足りなければ次のページへの切り替えを少し遅らせる
 // （次のページも読める長さを残す。最大0.5秒）。声とのずれは早め0.3秒・遅め0.5秒以内にとどめる
-export const READ_SEC = { base: 0.3, perChar: 0.08, min: 0.8, shift: 0.3, late: 0.5, give: 0.3 };
+export const READ_SEC = { base: 0.3, perChar: 0.08, min: 0.8, shift: 0.15, late: 0.3, give: 0.3 };
 const readTime = p => Math.max(READ_SEC.min, READ_SEC.base + READ_SEC.perChar * p.lines.join('').length);
 function readable(pages, clipStart, clipEnd = Infinity) {
   for (let i = 0; i < pages.length; i++) {

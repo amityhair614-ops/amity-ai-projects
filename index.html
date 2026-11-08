@@ -248,7 +248,8 @@
     .fix-stage { position: relative; width: 100%; max-width: 360px; margin: 8px auto; background: #000; border-radius: 8px; overflow: hidden; }
     .fix-stage video { width: 100%; display: block; }
     .fix-sub { position: absolute; left: 0; right: 0; bottom: 10%; text-align: center; color: #fff; font-weight: 700; font-size: 16px; text-shadow: 0 0 3px #000, 0 0 3px #000; padding: 0 8px; }
-  </style>
+  .file-list .fmemo { display: block; width: 100%; margin-top: 4px; font-size: 14px; padding: 6px 8px; border: 1px solid var(--line, #ccc); border-radius: 8px; box-sizing: border-box; }
+</style>
 </head>
 <body>
 <main>
@@ -352,6 +353,18 @@
         <label><input type="radio" name="style" value="simple" checked><span><b>シンプル・オシャレ</b><small>自然なカット・控えめなズーム・白ゴシック字幕。映像が主役</small></span></label>
         <label><input type="radio" name="style" value="tempo"><span><b>テンポ重視</b><small>短めの場面を多めに・ズームを少し多めに。飽きにくいテンポ</small></span></label>
       </div>
+    </div>
+
+    <div class="field-group">
+      <p class="group-title">編集メモ（任意）</p>
+      <p class="note" style="margin-top:0">編集で気をつけてほしいことを書くと、字幕とカットに反映します。動画1本ごとのメモは、上の動画の一覧の各動画の下に書けます。</p>
+      <div class="seg style-cards" role="radiogroup" aria-label="言い間違い">
+        <label><input type="radio" name="retake" value="auto" checked><span><b>言い間違い: 自動判定</b><small>話した内容と音から、言い直し・くり返しを探します</small></span></label>
+        <label><input type="radio" name="retake" value="no"><span><b>言い間違い: なし</b><small>言い直し・くり返しとして発言を取り除きません（必要な発言を消しません）</small></span></label>
+        <label><input type="radio" name="retake" value="yes"><span><b>言い間違い: あり</b><small>メモに「2本目の15秒付近」のように場所を書くと、そこを確かめます</small></span></label>
+      </div>
+      <label class="field"><span>全体のメモ<small>1行に1つ</small></span><textarea id="bMemo" rows="3" maxlength="2000" placeholder="例:&#10;2本目の15秒付近に言い間違いあり&#10;字幕では「かなり」を省いて&#10;「すきバサミ」を正確に表示"></textarea></label>
+      <p class="brief-used" id="memoUsed" hidden></p>
     </div>
 
     <div class="field-group">
