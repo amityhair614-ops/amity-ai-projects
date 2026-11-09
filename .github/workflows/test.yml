@@ -1,4 +1,4 @@
-# 計算部分の単体テスト（tests/*.test.mjs）を自動で実行する。
+# 計算部分の単体テスト（tests/*.test.mjs）を自動で実行する（アプリと同じく、字幕の言葉の区切りの辞書を読み込んでから）。
 # ブラウザを使う通しテスト（tests/e2e）は実行しない。
 name: テスト
 
@@ -21,4 +21,6 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: 22
-      - run: node --test tests/*.test.mjs
+      # 字幕の言葉の区切りに使う kuromoji（devDependencies）を入れてから、辞書を読み込んだ状態でテストする（package.json の npm test）
+      - run: npm ci
+      - run: npm test
