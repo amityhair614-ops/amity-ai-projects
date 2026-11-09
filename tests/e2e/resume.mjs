@@ -100,6 +100,12 @@ async function launch() {
     args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader'],
   });
   await ctx.route('**/js/transcribe-worker.js', r => r.fulfill({ contentType: 'text/javascript', body: fakeWorker }));
+  // 字幕の言葉の区切りの辞書（kuromoji）は、手元の node_modules から返す（npm install が必要）
+  const kuroDir = path.join(path.dirname(new URL(import.meta.url).pathname), '../../node_modules/kuromoji');
+  await ctx.route(/^https:\/\/cdn\.jsdelivr\.net\/npm\/kuromoji@0\.1\.2\/(.*)$/, (route, request) => {
+    const rel = new URL(request.url()).pathname.replace(/^\/npm\/kuromoji@0\.1\.2\//, '');
+    route.fulfill({ path: path.join(kuroDir, rel), contentType: rel.endsWith('.js') ? 'text/javascript' : 'application/octet-stream', headers: { 'access-control-allow-origin': '*' } });
+  });
   ctx.on('close', () => console.log('[context close]'));
   if (failDecoder && phase === '1回目') {
     // iPhone で出た「EncodingError: Decoder failure」を、指定した回数目のデコードで起こす（失敗の扱いを確かめるため）
@@ -128,6 +134,8 @@ async function launch() {
     }, [nth, at, Number(times || 1)]);
   }
   const page = ctx.pages()[0] || await ctx.newPage();
+  // 確認のポップアップは出ないはず（書き出しの確認は画面の中）。出たら記録する
+  page.on('dialog', async d => { console.log('[確認ダイアログ] ' + d.message().replace(/\n/g, ' / ')); await d.accept(); });
   page.on('pageerror', e => console.log('[pageerror] ' + e.message));
   page.on('crash', () => console.log('[crash] ページがクラッシュしました'));
   page.on('close', () => console.log('[close] ページが閉じられました'));
@@ -268,7 +276,7 @@ try {
       throw new Error('PLAN_ONLY_DONE');
     }
     const tr = Date.now();
-    await page.click('#btnRender');
+    await pressRender(page);
     page.__renderStart = tr;
   }
   const noKill = kStage === 'none';
@@ -357,7 +365,7 @@ try {
       });
       const steps = await page.$$eval('#steps li', els => els.map(e => e.textContent).join(' | '));
       report.push('再開した解析の段階: ' + steps);
-      await page.click('#btnRender');
+      await pressRender(page);
     }
     await page.waitForSelector('#stepResult:not([hidden]), #renderError:not([hidden])', { timeout: 7200000 });
     }
@@ -415,4 +423,14 @@ try {
   console.log(report.join('\n'));
   console.log('ページ(renderer)のメモリのピーク(MB): ' + JSON.stringify(peaks));
   fs.rmSync(profile, { recursive: true, force: true });
+}
+
+// 書き出しのボタンを押す。書き出す前の確認（画面の中）が出たら「このまま書き出す」を押す
+async function pressRender(page) {
+  await page.click('#btnRender');
+  const first = await page.waitForSelector('#renderCheck:not([hidden]), #renderBar:not([hidden]), #renderError:not([hidden])', { timeout: 120000 });
+  if (await first.evaluate(el => el.id === 'renderCheck')) {
+    console.log('[書き出す前の確認] ' + (await page.$$eval('#renderCheckList li', els => els.map(e => e.textContent).join(' / '))));
+    await page.click('#renderGo');
+  }
 }

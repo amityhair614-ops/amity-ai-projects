@@ -420,6 +420,14 @@ try {
     await page.setInputFiles('#bgmFile', bgmArg);
     if (bgmVol) await page.$eval('#bgmVol', (el, v) => { el.value = v; el.dispatchEvent(new Event('input')); }, bgmVol);
   } else if (process.argv.includes('--bgm-unselected')) await page.check('#optBgm'); // BGM を ON にしたまま曲を選ばない
+  // --force-doubt: 字幕の要確認がある状態を作る（選んだ場面の1つ。音声の聞き取りの結果がたまたま確かでも、確認の流れを試すため）
+  if (process.argv.includes('--force-doubt')) {
+    console.log('[要確認を付けた場面] ' + await page.evaluate(() => {
+      const s = window.amityDebug, u = s.units.filter(x => s.selected.has(x.id) && x.kind === 'speech' && x.text === x.aiText)[3];
+      u.doubts = ['（テスト）否定の言葉を聞き落としている可能性'];
+      return `元の時刻 ${u.start.toFixed(2)}秒「${u.text.slice(0, 16)}」`;
+    }));
+  }
   // --taps=N: 書き出しのボタンを続けて N 回押す（準備に時間がかかって、何度も押してしまったとき）
   const taps = +(arg('taps') || 1);
   dialogsAtRender = dialogs;
