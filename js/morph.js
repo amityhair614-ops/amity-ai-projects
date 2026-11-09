@@ -26,10 +26,16 @@ export function loadTokenizer({ base = KUROMOJI_BASE } = {}) {
       km = require('kuromoji');
       base = path.join(path.dirname(require.resolve('kuromoji/package.json')), '/');
     } else {
-      if (!globalThis.kuromoji) await loadScript(base + 'build/kuromoji.js');
+      // kuromoji の本体は、アプリと同じ場所（vendor/kuromoji。辞書の読み込み部分を直した版）から読み込む。
+      // 別のサイトから読み込むと、中で起きた例外が Safari では「Script error.」としか分からない。辞書（約17MB）は CDN から
+      if (!globalThis.kuromoji) await loadScript(new URL('../vendor/kuromoji/kuromoji.js', import.meta.url).href);
       km = globalThis.kuromoji;
+      if (!km?.builder) throw new Error('言葉の区切りの辞書の仕組み（kuromoji）を読み込めませんでした');
     }
-    const tk = await new Promise((resolve, reject) => km.builder({ dicPath: base + 'dict/' }).build((err, t) => (err ? reject(err) : resolve(t))));
+    const tk = await new Promise((resolve, reject) => {
+      try { km.builder({ dicPath: base + 'dict/' }).build((err, t) => (err || !t ? reject(err || new Error('辞書を組み立てられませんでした')) : resolve(t))); }
+      catch (err) { reject(err); }
+    });
     setTokenizer(tk);
     return tk;
   })().catch(err => { loading = null; throw err; });

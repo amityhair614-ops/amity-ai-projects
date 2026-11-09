@@ -1,0 +1,19 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>字幕の辞書の読み込み（WebKit）</title>
+<!-- WebKit（Safari と同じエンジン）で、https のページから字幕の言葉の区切りの辞書（kuromoji）を読み込めるかを確かめる。
+     tests/webkit/morph.py から開く。?base= は kuromoji の置き場所（CDN の代わりに手元の node_modules/kuromoji/） -->
+<script type="module">
+const q = new URLSearchParams(location.search);
+const report = (type, o) => fetch('/__report', { method: 'POST', body: JSON.stringify({ type, phase: 'morph', ...o }) });
+window.addEventListener('error', e => report('pageerror', { message: e.message, file: e.filename, line: e.lineno }));
+window.addEventListener('unhandledrejection', e => report('pageerror', { message: String(e.reason?.message || e.reason) }));
+try {
+  const m = await import('/js/morph.js');
+  const t0 = performance.now();
+  await Promise.race([m.loadTokenizer({ base: q.get('base') }), new Promise((_, rej) => setTimeout(() => rej(new Error('30秒たっても終わらない')), 30000))]);
+  report('DONE', { ok: true, sec: +((performance.now() - t0) / 1000).toFixed(1), sample: m.phraseUnits('セルフカットでボブを切っていく際').map(u => u.text).join('/'), ua: navigator.userAgent });
+} catch (e) {
+  report('DONE', { ok: false, error: String(e?.message || e), ua: navigator.userAgent });
+}
+</script>

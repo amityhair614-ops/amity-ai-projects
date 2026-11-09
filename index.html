@@ -248,7 +248,10 @@
     .fix-stage { position: relative; width: 100%; max-width: 360px; margin: 8px auto; background: #000; border-radius: 8px; overflow: hidden; }
     .fix-stage video { width: 100%; display: block; }
     .fix-sub { position: absolute; left: 0; right: 0; bottom: 10%; text-align: center; color: #fff; font-weight: 700; font-size: 16px; text-shadow: 0 0 3px #000, 0 0 3px #000; padding: 0 8px; }
-  .file-list .fmemo { display: block; width: 100%; margin-top: 4px; font-size: 14px; padding: 6px 8px; border: 1px solid var(--line, #ccc); border-radius: 8px; box-sizing: border-box; }
+  .render-check { border: 1px solid var(--warn, #c9a227); border-radius: 12px; padding: 12px 14px; margin: 12px 0; }
+.render-check ul { margin: 6px 0 12px; padding-left: 1.2em; }
+.render-check li { margin: 4px 0; line-height: 1.5; }
+.file-list .fmemo { display: block; width: 100%; margin-top: 4px; font-size: 14px; padding: 6px 8px; border: 1px solid var(--line, #ccc); border-radius: 8px; box-sizing: border-box; }
 </style>
 </head>
 <body>
@@ -456,6 +459,12 @@
         <small class="note">初期は2%（話し声の邪魔にならない、ごく小さい音量）。0〜10%で選べます。話している間は、さらに小さくします。曲は高い音と急に大きくなる音（ドラムなど）を抑えて、やわらかく入れます。やさしいピアノや静かなアンビエントの曲がおすすめです</small>
         <p class="note" id="bgmNote" role="status" hidden></p>
       </div>
+    </div>
+    <div class="render-check" id="renderCheck" hidden role="region" aria-label="書き出す前の確認">
+      <p class="group-title" style="margin-top:0">書き出す前の確認</p>
+      <ul id="renderCheckList"></ul>
+      <button type="button" class="btn block" id="renderGo">このまま書き出す</button>
+      <button type="button" class="link-btn" id="renderBack">戻って確認する</button>
     </div>
     <button class="btn block" id="btnRender">この内容でMP4を書き出す</button>
     <p class="note">書き出しは数秒ずつの区間に分けて進め、書き終えた区間はこのiPhoneの中に保存します。途中でSafariを閉じた場合は、もう一度開いて「途中の編集」の「続きから再開」を押してください。

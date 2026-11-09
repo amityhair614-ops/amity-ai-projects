@@ -90,9 +90,15 @@ function unloadVideo(v) {
 }
 
 // ---------- 起動時: 環境の記録と、前回落ちたかどうかの表示 ----------
+// 起きた場所（ファイル・行）と処理の段階を記録する（診断情報に入る。動画や音声は入れない）。
+// 「Script error.」は、別のサイトから読み込んだスクリプトの例外で、ブラウザが中身を隠したもの
 window.addEventListener('error', e => {
-  log('ページのエラー', errorText(e.error || e.message));
-  showError($('globalError'), e.error || e.message);
+  const where = { file: String(e.filename || '').split('/').slice(-2).join('/'), line: e.lineno, col: e.colno, stage: state.job?.stage || null, busy: renderBusy ? 'render' : null };
+  log('ページのエラー', errorText(e.error || e.message), where);
+  const hidden = !e.error && /^Script error\.?$/i.test(e.message || '');
+  showError($('globalError'), hidden
+    ? `別のサイトから読み込んだプログラムでエラーが起きました（ブラウザの制限で、詳しい内容は表示できません。処理の段階: ${where.stage || '開始前'}）。ページを読み込み直してから、もう一度お試しください。何度も起きるときは、下の「診断情報」をコピーして送ってください。`
+    : `${errorText(e.error || e.message)}（${where.file || '?'}:${where.line || '?'}・処理の段階: ${where.stage || '開始前'}）`);
 });
 window.addEventListener('unhandledrejection', e => {
   log('処理されなかったエラー', errorText(e.reason));
@@ -1322,19 +1328,22 @@ let morphPrefetch = null;
 function prefetchMorph() {
   if (hasTokenizer() || morphPrefetch) return;
   const files = ['base', 'check', 'tid', 'tid_pos', 'tid_map', 'cc', 'unk', 'unk_pos', 'unk_map', 'unk_char', 'unk_compat', 'unk_invoke'];
-  morphPrefetch = Promise.all([KUROMOJI_BASE + 'build/kuromoji.js', ...files.map(f => `${KUROMOJI_BASE}dict/${f}.dat.gz`)]
+  morphPrefetch = Promise.all([new URL('../vendor/kuromoji/kuromoji.js', import.meta.url).href, ...files.map(f => `${KUROMOJI_BASE}dict/${f}.dat.gz`)]
     .map(u => fetch(u).then(r => r.blob()).catch(() => null))).catch(() => null);
 }
 let morphWarned = false;
+let morphFailed = false;
 async function morphReady() {
   if (hasTokenizer()) return true;
+  if (morphFailed) return false; // 一度失敗したら、同じページでは待たない（今までの区切り方で作る）
   const t0 = performance.now();
   try {
-    await Promise.race([loadTokenizer(), new Promise((_, rej) => setTimeout(() => rej(new Error('時間切れ（60秒）')), 60000))]);
+    await Promise.race([loadTokenizer(), new Promise((_, rej) => setTimeout(() => rej(new Error('時間切れ（25秒）')), 25000))]);
     timings.morph = +((performance.now() - t0) / 1000).toFixed(1);
     log('言葉の区切りの辞書を準備しました', { sec: timings.morph });
     return true;
   } catch (err) {
+    morphFailed = true;
     log('言葉の区切りの辞書を読み込めませんでした（字幕は文字数で区切ります）', errorText(err));
     if (!morphWarned) { morphWarned = true; showNotice('字幕の言葉の区切りに使う辞書を読み込めなかったため、字幕を文字の種類で区切りました（通信を確かめて、もう一度解析すると直ります）。'); }
     return false;
@@ -1794,17 +1803,69 @@ function renderTimeline(clips, { useSubs, useZoom, fixes = [] }) {
 }
 
 // 「この内容でMP4を書き出す」: 書き出す内容（タイムライン）を決めて保存し、区間ごとに書き出す
-$('btnRender').addEventListener('click', async () => {
-  await morphReady();
+// 書き出しの開始（ボタンを押したとき・「書き出す前の確認」で「このまま書き出す」を押したとき）。
+// 同時に2つ始めない（押してから準備が終わるまでの間に何度押しても1回だけ）。確認事項は書き出す前に画面の中にまとめて出し、
+// 「このまま書き出す」を押した後は、書き出しの途中で確認を出さない（ポップアップは使わない）
+let renderStarting = false;
+$('btnRender').addEventListener('click', () => startRender());
+$('renderGo').addEventListener('click', () => startRender({ confirmed: true }));
+$('renderBack').addEventListener('click', () => { $('renderCheck').hidden = true; });
+
+// 元の動画の時刻（つないだ時刻）→「2本目の0:14」
+function sourceLabel(t) {
+  const L = state.lay;
+  if (!L || L.length < 2) return `元の動画の${formatTime(t)}`;
+  const k = L.findIndex(l => t < l.end + 0.5);
+  const i = k < 0 ? L.length - 1 : k;
+  return `元の${i + 1}本目の${formatTime(Math.max(0, t - L[i].offset))}`;
+}
+
+async function startRender({ confirmed = false } = {}) {
+  if (renderStarting || renderBusy) { log('書き出しはもう始まっています（もう一度は始めません）'); return; }
+  renderStarting = true;
+  const btn = $('btnRender'), label = btn.textContent;
+  btn.disabled = true;
+  $('renderGo').disabled = true;
+  try {
+    if (!hasTokenizer() && !morphFailed) btn.textContent = '字幕の準備中…';
+    await morphReady();
+    btn.textContent = label;
+    await prepareAndRender(confirmed);
+  } catch (err) {
+    log('書き出しを始められませんでした', errorText(err));
+    showError($('renderError'), `書き出しを始められませんでした（${errorText(err)}）。もう一度「この内容でMP4を書き出す」を押してください。何度も起きるときは、下の「診断情報」をコピーして送ってください。`);
+  } finally {
+    btn.textContent = label;
+    renderStarting = false;
+    $('renderGo').disabled = false;
+    if (!renderBusy) btn.disabled = false;
+  }
+}
+
+async function prepareAndRender(confirmed) {
   const clips = state.units.filter(u => state.selected.has(u.id));
   if (!clips.length || !state.job) return;
   const useSubs = !!state.chunks && $('optSubs').checked;
-  // 意味が変わるおそれのある字幕を確認しないまま書き出すときは、はっきり知らせる（完成した字幕とはみなさない）
-  const doubtful = useSubs ? clips.filter(u => openDoubts(u).length) : [];
-  if (doubtful.length && !confirm(`字幕のうち${doubtful.length}場面は、まだ確認されていません（否定の言葉・文の終わり・用語の聞き落としの可能性）。\n${doubtful.slice(0, 5).map(u => `・${formatTime(u.start)}「${u.text.slice(0, 20)}」`).join('\n')}\nこのまま書き出しますか？`)) return;
-  state.doubtfulAtRender = doubtful.map(u => ({ t: u.start, text: u.text, doubts: openDoubts(u) }));
   const useZoom = $('optZoom').checked;
   const { timeline, overlay, outSec } = renderTimeline(clips, { useSubs, useZoom, fixes: state.fixes });
+  // 意味が変わるおそれのある字幕（完成した字幕とはみなさない）。時刻は完成動画の時刻と、元の動画の時刻の両方を出す
+  const doubtful = useSubs ? clips.filter(u => openDoubts(u).length) : [];
+  const outAt = u => timeline.find(c => c.id === u.id)?.outStart;
+  const checks = doubtful.slice(0, 8).map(u => `字幕の要確認: 完成動画の${formatTime(outAt(u) ?? 0)}（${sourceLabel(u.start)}）「${u.text.slice(0, 20)}」— 否定の言葉・文の終わり・用語を聞き落とした可能性`);
+  if (doubtful.length > 8) checks.push(`ほかに字幕の要確認が${doubtful.length - 8}場面あります`);
+  const noBgm = $('optBgm').checked && !state.bgmFile;
+  if (noBgm) checks.push('BGMの曲が選ばれていません → BGMなしで書き出します（BGMを入れるときは、上の「BGM」で曲を選んでから押してください）');
+  if (checks.length && !confirmed) {
+    const ul = $('renderCheckList');
+    ul.textContent = '';
+    for (const t of checks) { const li = document.createElement('li'); li.textContent = t; ul.appendChild(li); }
+    $('renderGo').textContent = noBgm ? 'BGMなしで、このまま書き出す' : 'このまま書き出す';
+    $('renderCheck').hidden = false;
+    $('renderCheck').scrollIntoView({ block: 'center', behavior: 'smooth' });
+    return;
+  }
+  $('renderCheck').hidden = true;
+  state.doubtfulAtRender = doubtful.map(u => ({ t: outAt(u) ?? u.start, src: u.start, text: u.text, doubts: openDoubts(u) }));
   // 保存できる容量を確かめる（区間のファイルと完成したMP4が一時的に両方必要）
   const need = renderBytes(outSec).total;
   const sc = spaceCheck(await storageInfo(), need);
@@ -1828,33 +1889,46 @@ $('btnRender').addEventListener('click', async () => {
   job.review = { selected: [...state.selected], brief: readBrief(), trims: { ...state.trims }, opening: state.opening, openingOn: $('optOpening').checked, openingDur: openingDur(), doubtOk: [...state.doubtOk] };
   // BGM（選んだときだけ）: 曲のファイルも端末内に保存して、途中から再開しても同じ曲を使う
   let bgm = null;
-  if ($('optBgm').checked && !state.bgmFile && !confirm('BGMの曲が選ばれていません。BGMなしで書き出しますか？')) { $('btnRender').disabled = false; return; }
   if ($('optBgm').checked && state.bgmFile) {
     try {
       await copyIn(job.id, BGM_NAME, state.bgmFile);
       bgm = { name: state.bgmFile.name, size: state.bgmFile.size, volume: bgmVolume() };
     } catch (err) {
-      log('BGMの曲を保存できませんでした', errorText(err));
-      if (!confirm(`BGMの曲を読み込めませんでした（${errorText(err)}）。BGMなしで書き出しますか？`)) { $('btnRender').disabled = false; return; }
+      // 曲を読み込めないときは、確認を出さずにBGMなしで書き出し、そのことを画面で知らせる
+      log('BGMの曲を保存できませんでした（BGMなしで書き出します）', errorText(err));
+      showNotice(`BGMの曲を読み込めなかったため、BGMなしで書き出します（${errorText(err)}）。`);
     }
   }
   job.render = {
     lay: state.lay || null, bgm,
     timeline, segments, done: segments.map(sg => !!kept[sg.key]), gainDb: computeGainDb(clips), overlay, endFade: END_FADE, endHold: END_HOLD,
-    styleNote: styleSummary(timeline, useSubs, useZoom, overlay) + (state.doubtfulAtRender?.length ? ` / 字幕の要確認（未確認のまま書き出し）: ${state.doubtfulAtRender.map(d => `${formatTime(d.t)}「${d.text.slice(0, 16)}」`).join('、')}` : ''), outSec, startedAt: Date.now(), elapsed: 0, sessions: 0,
+    styleNote: styleSummary(timeline, useSubs, useZoom, overlay) + (state.doubtfulAtRender?.length ? ` / 字幕の要確認（未確認のまま書き出し）: ${state.doubtfulAtRender.map(d => `完成動画の${formatTime(d.t)}「${d.text.slice(0, 16)}」`).join('、')}` : ''), outSec, startedAt: Date.now(), elapsed: 0, sessions: 0,
   };
   job.output = null;
   log('演出', job.render.styleNote);
   log('書き出しの区間', { segments: segments.length, outSec: +outSec.toFixed(1), needMB: Math.round(need / MB), knownSpace: sc.known });
   await persistJob(job);
+  renderStarting = false;
   await runRender(job);
-});
+}
 
 // 区間のファイルの名前（前のバージョンで保存した途中の編集は seg-番号.mp4）
 const segName = seg => seg.file || `seg-${seg.index}.mp4`;
 
 // 区間ごとの書き出しと仕上げ。保存済みの区間はやり直さない
+// 書き出しは同時に1つだけ（途中から再開・修正の書き出し直しも同じ）
+let renderBusy = false;
 async function runRender(job) {
+  if (renderBusy) { log('書き出しはもう進んでいます（同じ書き出しを重ねて始めません）'); return; }
+  renderBusy = true;
+  let retrySingle = false;
+  try { retrySingle = await runRenderOnce(job); } finally { renderBusy = false; }
+  // 区間をつなげない端末: 前の書き出しが終わってから、区間に分けずに書き出し直す
+  if (retrySingle) return runRender(job);
+}
+
+async function runRenderOnce(job) {
+  window.__amityRenderRuns = (window.__amityRenderRuns || 0) + 1; // 動作確認用（tests/e2e/run.mjs が、書き出しを始めた回数を数える）
   const R = job.render;
   $('renderError').hidden = true;
   $('globalError').hidden = true;
@@ -2020,7 +2094,7 @@ async function runRender(job) {
       R.single = true;
       job.stage = 'render';
       await persistJob(job);
-      return runRender(job);
+      return true;
     } else {
       const seg = err.segment != null ? `区間 ${err.segment + 1}/${R.segments.length} の` : '';
       showError($('renderError'), `${seg}書き出しに失敗しました（${errorText(err)}）。\n書き終えた区間（${R.done.filter(Boolean).length}/${R.segments.length}）と編集の設定は端末内に保存してあります。上の「途中の編集」の「続きから再開」で、失敗した区間からやり直せます。\n何度も同じ所で失敗する場合は、下の「診断情報」をコピーして送ってください（失敗した区間・コマの位置・動画の形式を記録しています）。`);
@@ -2518,5 +2592,6 @@ $('fixRender').addEventListener('click', () => {
   previewRun++;
   $('fixPreview').pause();
   log('修正を反映して書き出し', { fixes: state.fixes.filter(f => f.status === 'applied').map(describeFix) });
-  $('btnRender').click();
+  // 最初の書き出しのときに確認を済ませているので、もう一度は聞かない
+  startRender({ confirmed: true });
 });

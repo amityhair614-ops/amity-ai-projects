@@ -119,9 +119,12 @@ self.onmessage = e => {
 // GPU を有効にする（GPU なしだと、コマを描くたびにメモリが増える Chrome 側の現象が出て、実機と違う測定になる）
 const asrRequests = [];
 const browser = await chromium.launch({ executablePath: process.env.CHROME_PATH, args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
-page = await browser.newPage({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2 });
+// https のページ（APP_URL=https://…）でも開けるよう、自分で作った証明書を受け付ける（Cloudflare Pages と同じ https での確認）
+page = await browser.newPage({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, ignoreHTTPSErrors: true });
 // 書き出し前の確認（字幕の要確認が残っているとき）は、内容を記録してから「はい」を選ぶ
-page.on('dialog', async d => { console.log('[確認ダイアログ] ' + d.message().replace(/\n/g, ' / ')); await d.accept(); });
+// 確認のポップアップ（window.confirm など）の回数。書き出しの確認は画面の中に出すので、書き出しでは0回のはず
+let dialogs = 0, dialogsAtRender = null;
+page.on('dialog', async d => { dialogs++; console.log('[確認ダイアログ] ' + d.message().replace(/\n/g, ' / ')); await d.accept(); });
 const logs = [];
 page.on('console', m => logs.push(`[${m.type()}] ${m.text()}`));
 page.on('pageerror', e => logs.push('[pageerror] ' + e.message));
@@ -416,13 +419,24 @@ try {
     await page.check('#optBgm');
     await page.setInputFiles('#bgmFile', bgmArg);
     if (bgmVol) await page.$eval('#bgmVol', (el, v) => { el.value = v; el.dispatchEvent(new Event('input')); }, bgmVol);
+  } else if (process.argv.includes('--bgm-unselected')) await page.check('#optBgm'); // BGM を ON にしたまま曲を選ばない
+  // --taps=N: 書き出しのボタンを続けて N 回押す（準備に時間がかかって、何度も押してしまったとき）
+  const taps = +(arg('taps') || 1);
+  dialogsAtRender = dialogs;
+  await page.evaluate(n => { for (let i = 0; i < n; i++) document.getElementById('btnRender').click(); }, taps);
+  // 書き出す前の確認（画面の中）が出たら、内容を記録して「このまま書き出す」を押す（これも続けて押す）
+  const first = await page.waitForSelector('#renderCheck:not([hidden]), #renderBar:not([hidden]), #renderError:not([hidden])', { timeout: 120000 });
+  if (await first.evaluate(el => el.id === 'renderCheck')) {
+    console.log('[書き出す前の確認] ' + (await page.$$eval('#renderCheckList li', els => els.map(e => e.textContent).join(' / '))));
+    await page.evaluate(n => { for (let i = 0; i < n; i++) document.getElementById('renderGo').click(); }, taps);
   }
-  await page.click('#btnRender');
   if (reloadAt === 'render') await reloadDuring('render');
   await page.waitForSelector('#stepResult:not([hidden]), #renderError:not([hidden])', { timeout: +(process.env.RENDER_TIMEOUT || 600000) });
   const renderErr = await page.$eval('#renderError', el => (el.hidden ? null : el.textContent));
   if (renderErr) throw new Error('書き出しエラー: ' + renderErr);
   console.log(`書き出し: ${((Date.now() - t1) / 1000).toFixed(1)}秒`);
+  console.log(`書き出しを始めた回数: ${await page.evaluate(() => window.__amityRenderRuns || 0)} / 書き出しの間の確認ダイアログ: ${dialogs - dialogsAtRender}回 / ページのエラー: ${logs.filter(l => l.startsWith('[pageerror]')).length}件`);
+  for (const l of logs.filter(l => l.startsWith('[pageerror]'))) console.log('  ' + l);
   console.log('段階ごとの時間（秒）: ' + JSON.stringify(await page.evaluate(() => window.__amityTimings || {})));
   const b64 = await page.evaluate(async () => {
     const buf = new Uint8Array(await window.amityDebug.blob.arrayBuffer());
