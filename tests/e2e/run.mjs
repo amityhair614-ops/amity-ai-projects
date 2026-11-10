@@ -60,7 +60,7 @@ const tFile = fs.existsSync(path.join(dir, `${base}-transcript.json`)) ? `${base
 const transcript = JSON.parse(fs.readFileSync(path.join(dir, tFile), 'utf8'));
 const tag = base + (noAsr ? '-noasr' : '') + (failAsr ? '-failasr' : '') + (webaudio ? '-webaudio' : '') + (realAsr ? '-realasr' : '') + (reazon ? '-reazon' : '') + (scriptArg ? '-script' : '') + (process.env.TAG || '')
   + (zoom === true ? '-zoom' : zoom === false ? '-nozoom' : '') + (noSubs ? '-nosubs' : '')
-  + (target ? '-t' + target : '') + (style ? '-' + style : '') + (cutArg ? '-' + cutArg : '') + (withBrief ? '-brief' : '') + (replan ? '-replan' + replan : '');
+  + (target ? '-t' + target : '') + (style ? '-' + style : '') + (cutArg ? '-' + cutArg : '') + (arg('mode') ? '-' + arg('mode') : '') + (withBrief ? '-brief' : '') + (replan ? '-replan' + replan : '');
 
 // ブラウザのプロセスごとのメモリ（RSS）を0.5秒ごとに測り、段階ごとのピークを記録する
 const mem = { stage: '開始', peaks: {} };
@@ -305,6 +305,8 @@ try {
   await setTarget(target);
   if (style) await page.click(`input[name=style][value=${style}] + span`);
   if (cutArg) await page.click(`input[name=cut][value=${cutArg}] + span`);
+  // --mode=cut: 編集の種類「カットのみ（試作）」
+  if (arg('mode')) await page.click(`input[name=mode][value=${arg('mode')}] + span`);
   // 偽の文字起こし（Whisper の形の結果）は Whisper の区切り方で返す
   if (await page.$('#optEngine')) await page.selectOption('#optEngine', reazon ? 'reazon' : 'whisper');
   if (titleArg) await page.fill('#bTitle', titleArg);

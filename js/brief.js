@@ -21,6 +21,8 @@ export const EMPTY_BRIEF = {
   format: 'short', targetSec: 60, style: 'simple', cut: 'tight',
   // 編集メモ: 言い間違い（auto: 自動判定・yes: あり・no: なし）と、動画1本ごとのメモ（動画の順）
   retake: 'auto', memos: [],
+  // 編集の種類: short（ショート・字幕つき。今まで）/ cut（カット専用・試作。js/cutonly.js）
+  mode: 'short',
 };
 // 文章で入力する項目（items: 使用アイテム・専門用語 / script: 話す内容の原稿）
 export const TEXT_KEYS = ['title', 'content', 'message', 'flow', 'mustKeep', 'items', 'script', 'memo'];
@@ -36,6 +38,7 @@ export function normalizeBrief(b) {
   if (STYLES[b.style]) o.style = b.style;
   if (b.cut === 'natural' || b.cut === 'tight') o.cut = b.cut;
   if (b.retake === 'auto' || b.retake === 'yes' || b.retake === 'no') o.retake = b.retake;
+  if (b.mode === 'short' || b.mode === 'cut') o.mode = b.mode;
   o.memos = Array.isArray(b.memos) ? b.memos.slice(0, 20).map(m => ({ text: typeof m?.text === 'string' ? m.text.slice(0, 500) : '' })) : [];
   const f = FORMATS[o.format];
   const sec = Number(b.targetSec);

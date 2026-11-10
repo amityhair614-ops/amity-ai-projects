@@ -1,3 +1,4 @@
+import { planRemoveOnly, removedReasons } from './cutonly.js';
 import { readMemos, parseMemo } from './memo.js';
 import { loadTokenizer, hasTokenizer, KUROMOJI_BASE } from './morph.js';
 import {
@@ -204,6 +205,7 @@ function readBrief() {
   b.style = document.querySelector('input[name=style]:checked')?.value;
   b.cut = document.querySelector('input[name=cut]:checked')?.value;
   b.retake = document.querySelector('input[name=retake]:checked')?.value;
+  b.mode = document.querySelector('input[name=mode]:checked')?.value;
   b.memos = (state.files || []).map(f => ({ text: state.fileMemos?.get(fileMemoKey(f)) || '' }));
   const preset = document.querySelector('input[name=dur]:checked')?.value;
   const f = FORMATS[b.format] || FORMATS.short;
@@ -254,6 +256,7 @@ function writeBrief(b) {
   for (const el of document.querySelectorAll('input[name=style]')) el.checked = el.value === b.style;
   for (const el of document.querySelectorAll('input[name=cut]')) el.checked = el.value === (b.cut || 'tight');
   for (const el of document.querySelectorAll('input[name=retake]')) el.checked = el.value === (b.retake || 'auto');
+  for (const el of document.querySelectorAll('input[name=mode]')) el.checked = el.value === (b.mode || 'short');
   // 動画1本ごとのメモ（保存した編集を開き直したとき）
   if (b.memos?.length && state.files?.length) {
     state.fileMemos = state.fileMemos || new Map();
@@ -297,6 +300,7 @@ for (const el of document.querySelectorAll('input[name=format]')) {
 }
 for (const el of document.querySelectorAll('input[name=style]')) el.addEventListener('change', briefChanged);
 for (const el of document.querySelectorAll('input[name=retake]')) el.addEventListener('change', () => { briefChanged(); showMemoRead(); });
+for (const el of document.querySelectorAll('input[name=mode]')) el.addEventListener('change', briefChanged);
 $('bMemo').addEventListener('input', () => showMemoRead());
 $('briefClear').addEventListener('click', () => {
   for (const id of Object.values(TEXT_FIELDS)) $(id).value = '';
@@ -852,7 +856,11 @@ async function persistJob(job) {
 // 1本の動画でも、複数の動画を1本ずつ読むときも、同じこの手順を使う（動画と動画の間をまたいで読まない）
 async function transcribeAudio(pcm, rmsDb, speech, bp, engine, store, persist, warnings) {
   // ReazonSpeech: 区切り方の違う2通り（30秒ごと・話のまとまりごと）で読み、どれかが落とした言葉をほかの結果で補う（asrWindows・mergeAsrPasses）
-  const windows = store.windows || (engine === 'reazon' ? asrWindows(speech.regions, rmsDb) : transcriptionWindows(speech.regions, ENGINES[engine].window));
+  // カット専用モード（試作）: 字幕AIは1回だけ読む（話のまとまりごとの窓 C だけ。3通りで読んで合わせることはしない）
+  const single = engine === 'reazon' && asrSingle(bp);
+  const windows = store.windows || (engine === 'reazon'
+    ? (single ? asrWindows(speech.regions, rmsDb).filter(w => w.pass === 'C').map(({ pass, ...w }) => w) : asrWindows(speech.regions, rmsDb))
+    : transcriptionWindows(speech.regions, ENGINES[engine].window));
   store.windows = windows;
   store.results = store.results || {};
   store.started = store.started || {};
@@ -884,9 +892,9 @@ async function transcribeAudio(pcm, rmsDb, speech, bp, engine, store, persist, w
     }
   }
   // どの読み方でも文字にならなかった、はっきりした声（1秒以上）は、その声だけをもう一度読む（長い窓で文がまるごと落ちることがある）
-  if (engine === 'reazon' && raw.passes) {
+  if (engine === 'reazon' && (raw.passes || single)) {
     const fine0 = fineSpeech(rmsDb, speech.threshold);
-    const lost = store.windowsV || untranscribedWindows(fine0, raw);
+    const lost = store.windowsV || (single ? untranscribedWindows(fine0, raw).map(({ pass, ...w }) => w) : untranscribedWindows(fine0, raw));
     store.windowsV = lost;
     if (lost.length) {
       log('文字にならなかった声を、その声だけで読み直します', { windows: lost.length, sec: +lost.reduce((a, w) => a + w.end - w.start, 0).toFixed(1) });
@@ -898,9 +906,12 @@ async function transcribeAudio(pcm, rmsDb, speech, bp, engine, store, persist, w
         started: store.startedV || {},
         onStart: async i => { store.startedV = { ...(store.startedV || {}), [i]: true }; await persist(); },
       });
-      const allW = [...windows, ...(store.windowsB || []), ...lost];
-      const allR = [...perWindow, ...(store.windowsB?.length ? store.windowsB.map((_, i) => store.resultsB[i]) : []), ...perV];
-      raw = mergeAsrPasses(allW, allR);
+      if (single) raw = [...raw, ...perV.flat()].sort((a, b) => a.start - b.start);
+      else {
+        const allW = [...windows, ...(store.windowsB || []), ...lost];
+        const allR = [...perWindow, ...(store.windowsB?.length ? store.windowsB.map((_, i) => store.resultsB[i]) : []), ...perV];
+        raw = mergeAsrPasses(allW, allR);
+      }
     }
   }
   if (raw.passes) log('字幕AIの読み方ごとの文字数', { A: raw.passes.A.length, B: raw.passes.B.length, C: raw.passes.C.length, merged: raw.reduce((n, c) => n + c.tokens.length, 0) });
@@ -910,7 +921,8 @@ async function transcribeAudio(pcm, rmsDb, speech, bp, engine, store, persist, w
   // ReazonSpeech: 聞き取った文字を、同じ音声で確かめて直す（聞き間違い・文の終わりの聞き落とし・合わせたときの乱れ）。
   // 入力したタイトル・説明・用語の言葉は、音声に合っているときだけ使う（verify.js）
   let checked = raw, audioFixes = [], asrVerify = null;
-  if (engine === 'reazon' && raw.some(c => c.tokens?.length)) {
+  // カット専用モードでは、聞き取りを音声で確かめる処理（字幕の文字を正しくするため）を省く
+  if (engine === 'reazon' && !single && raw.some(c => c.tokens?.length)) {
     try {
       const units = verifyUnits(raw.flatMap(c => c.tokens || []), fine, raw.passes);
       const b = bp.brief;
@@ -946,7 +958,7 @@ const cacheName = key => 'a-' + [...key].reduce((h, c) => (Math.imul(h, 31) + c.
 async function analyzeEachSource(job, bp) {
   const A = job.analysis, n = state.srcs.length, files = state.files;
   const engine = job.asrEngine || 'whisper';
-  const wordsKey = JSON.stringify([engine, job.useAsr, bp.asrTerms, bp.items, bp.brief?.title, bp.brief?.content]);
+  const wordsKey = JSON.stringify([engine, job.useAsr, bp.asrTerms, bp.items, bp.brief?.title, bp.brief?.content, ...(asrSingle(bp) ? ['asr1'] : [])]);
   A.src = A.src || [];
   const parts = [];
   for (let k = 0; k < n; k++) {
@@ -1322,6 +1334,11 @@ function applyScript(u) {
   }
 }
 
+// カット専用モード（試作）で、字幕AIを1回だけ読むか（?asr=full で、比べるために3回読む）
+function asrSingle(bp) {
+  return bp?.brief?.mode === 'cut' && new URLSearchParams(location.search).get('asr') !== 'full';
+}
+
 // 字幕の言葉の区切りに使う辞書（kuromoji・約17MB）。文字起こしの間は、ファイルを先に読み込んでおくだけにする
 // （iPhone は文字起こしの間がいちばんメモリを使うので、辞書を組み立てるのは文字起こしの後）
 let morphPrefetch = null;
@@ -1378,7 +1395,14 @@ function makePlan(brief) {
   const { must } = applyBrief(state.units, bp);
   applyStyle(state.units, bp.brief.style);
   const { target, max } = targetRange(bp.brief.targetSec);
-  const sel = selectUnits(state.units, src.duration, target, max, { buckets: bp.buckets });
+  // カット専用モード（試作）: 目標の長さに合わせて選ばず、不要な部分だけを削除して残りを全部使う
+  const cutOnly = bp.brief.mode === 'cut';
+  const sel = cutOnly ? planRemoveOnly(state.units) : selectUnits(state.units, src.duration, target, max, { buckets: bp.buckets });
+  if (cutOnly) {
+    state.removed = removedReasons(state.units, sel);
+    log('カット専用モード: 削除した発言', state.removed.map(r => `${formatTime(r.start)}「${r.text}」${r.reason}`));
+    for (const id of ['optSubs', 'optBgm', 'optZoom', 'optOpening']) if ($(id)) $(id).checked = false;
+  }
   state.selected = new Set(sel.map(u => u.id));
   state.fit = fitReport({ targetSec: bp.brief.targetSec, selected: sel, units: state.units, sourceDuration: src.duration });
   // 入力内容がどう使われたか

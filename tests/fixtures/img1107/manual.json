@@ -1,0 +1,263 @@
+{
+ "source": "3本: IMG_6443（13.70秒）・IMG_6444（14.83秒）・IMG_6445（35.23秒）",
+ "manual": "手動編集（44.47秒・字幕なし）",
+ "ai": "amity-short-20261107-0815（47.63秒）",
+ "duration": 44.47,
+ "targetSec": 45,
+ "pauses": {
+  "n": 32,
+  "median": 0.1499999999999999,
+  "p75": 0.25,
+  "p90": 0.3000000000000007,
+  "max": 0.34999999999999964,
+  "note": "手動編集が残した範囲の音声を測った話の途中の間（1.5秒未満）"
+ },
+ "note": "3本の動画をつないだ手動編集（正解）と元の動画の照合結果（映像と音声。scratchpad の align3.py）。時刻はアプリの「つないだ時刻」。手動編集には字幕がない（subtitles は空）。言い直し: 「伸びてから／それから」の「それから」、「見てもらうこれ／この／この選択を」の言いかけを手動編集は削っている",
+ "kept": [
+  {
+   "srcStart": 0.67,
+   "srcEnd": 2.77,
+   "outStart": 0,
+   "outEnd": 2.1,
+   "source": 1
+  },
+  {
+   "srcStart": 3.07,
+   "srcEnd": 12.9,
+   "outStart": 2.1,
+   "outEnd": 11.93,
+   "source": 1
+  },
+  {
+   "srcStart": 16.3,
+   "srcEnd": 17.4,
+   "outStart": 11.93,
+   "outEnd": 13.03,
+   "source": 2
+  },
+  {
+   "srcStart": 18.53,
+   "srcEnd": 20.73,
+   "outStart": 13.03,
+   "outEnd": 15.23,
+   "source": 2
+  },
+  {
+   "srcStart": 23,
+   "srcEnd": 24.53,
+   "outStart": 15.23,
+   "outEnd": 16.76,
+   "source": 2
+  },
+  {
+   "srcStart": 25.33,
+   "srcEnd": 28.6,
+   "outStart": 16.76,
+   "outEnd": 20.03,
+   "source": 2
+  },
+  {
+   "srcStart": 31.8,
+   "srcEnd": 36.3,
+   "outStart": 20.03,
+   "outEnd": 24.53,
+   "source": 3
+  },
+  {
+   "srcStart": 36.93,
+   "srcEnd": 39.37,
+   "outStart": 24.53,
+   "outEnd": 26.97,
+   "source": 3
+  },
+  {
+   "srcStart": 39.97,
+   "srcEnd": 42.1,
+   "outStart": 26.97,
+   "outEnd": 29.1,
+   "source": 3
+  },
+  {
+   "srcStart": 42.83,
+   "srcEnd": 46.93,
+   "outStart": 29.1,
+   "outEnd": 33.2,
+   "source": 3
+  },
+  {
+   "srcStart": 48.73,
+   "srcEnd": 52.03,
+   "outStart": 33.2,
+   "outEnd": 36.5,
+   "source": 3
+  },
+  {
+   "srcStart": 53.93,
+   "srcEnd": 55.73,
+   "outStart": 36.5,
+   "outEnd": 38.3,
+   "source": 3
+  },
+  {
+   "srcStart": 56.2,
+   "srcEnd": 60.57,
+   "outStart": 38.3,
+   "outEnd": 42.67,
+   "source": 3
+  },
+  {
+   "srcStart": 63.43,
+   "srcEnd": 65.7,
+   "outStart": 42.67,
+   "outEnd": 44.94,
+   "source": 3
+  }
+ ],
+ "removed": [
+  {
+   "srcStart": 0,
+   "srcEnd": 0.67,
+   "dur": 0.67
+  },
+  {
+   "srcStart": 2.77,
+   "srcEnd": 3.07,
+   "dur": 0.3
+  },
+  {
+   "srcStart": 12.9,
+   "srcEnd": 16.3,
+   "dur": 3.4
+  },
+  {
+   "srcStart": 17.4,
+   "srcEnd": 18.53,
+   "dur": 1.13
+  },
+  {
+   "srcStart": 20.73,
+   "srcEnd": 23,
+   "dur": 2.27
+  },
+  {
+   "srcStart": 24.53,
+   "srcEnd": 25.33,
+   "dur": 0.8
+  },
+  {
+   "srcStart": 28.6,
+   "srcEnd": 31.8,
+   "dur": 3.2
+  },
+  {
+   "srcStart": 36.3,
+   "srcEnd": 36.93,
+   "dur": 0.63
+  },
+  {
+   "srcStart": 39.37,
+   "srcEnd": 39.97,
+   "dur": 0.6
+  },
+  {
+   "srcStart": 42.1,
+   "srcEnd": 42.83,
+   "dur": 0.73
+  },
+  {
+   "srcStart": 46.93,
+   "srcEnd": 48.73,
+   "dur": 1.8
+  },
+  {
+   "srcStart": 52.03,
+   "srcEnd": 53.93,
+   "dur": 1.9
+  },
+  {
+   "srcStart": 55.73,
+   "srcEnd": 56.2,
+   "dur": 0.47
+  },
+  {
+   "srcStart": 60.57,
+   "srcEnd": 63.43,
+   "dur": 2.86
+  }
+ ],
+ "subtitles": [],
+ "spoken": [
+  {
+   "start": 1,
+   "end": 12.82,
+   "text": "セルフカットですきバサミを使って髪の量を軽くしていった結果スカスカになってしまったそんな時どうやればよいのか",
+   "retake": false
+  },
+  {
+   "start": 15.89,
+   "end": 17.35,
+   "text": "結論は",
+   "retake": false
+  },
+  {
+   "start": 18,
+   "end": 20.45,
+   "text": "そのまま伸ばすです",
+   "retake": false
+  },
+  {
+   "start": 22.02,
+   "end": 24.45,
+   "text": "やってはいけないことは",
+   "retake": false
+  },
+  {
+   "start": 24.94,
+   "end": 28.4,
+   "text": "自分で修正カットしていくです",
+   "retake": false
+  },
+  {
+   "start": 31.423,
+   "end": 36.283,
+   "text": "なぜ修正カットをやってはいけないのかやればやるほど",
+   "retake": false
+  },
+  {
+   "start": 36.823,
+   "end": 41.833,
+   "text": "短くなりすぎちゃったり思ったスタイルにならないです",
+   "retake": false
+  },
+  {
+   "start": 42.303,
+   "end": 46.933,
+   "text": "一度スカスカになったものは伸びてから",
+   "retake": false
+  },
+  {
+   "start": 47.663,
+   "end": 51.883,
+   "text": "それから修正したほうがねよいんですよね",
+   "retake": false
+  },
+  {
+   "start": 53.223,
+   "end": 61.123,
+   "text": "スカスカになった状態は、伸ばしていくまたは美容室行って見てもらうこれ",
+   "retake": false
+  },
+  {
+   "start": 62.023,
+   "end": 62.723,
+   "text": "この",
+   "retake": false
+  },
+  {
+   "start": 62.883,
+   "end": 65.433,
+   "text": "この選択をやってみてください",
+   "retake": false
+  }
+ ]
+}
