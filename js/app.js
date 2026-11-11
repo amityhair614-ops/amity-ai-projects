@@ -1,11 +1,12 @@
 import { planRemoveOnly, removedReasons } from './cutonly.js';
+import { fastCutVideo, verifyJoins } from './fastcut.js';
 import { readMemos, parseMemo } from './memo.js';
 import { loadTokenizer, hasTokenizer, KUROMOJI_BASE } from './morph.js';
 import {
   checkSupport, openVideo, closeVideo, analyzeAudio, analyzeMotion, renderSegment, assembleOutput, getAudioMode, ASR_RATE,
   createRenderContext, RenderPaused, readBgm, analyzeBgm,
 } from './media.js';
-import { MAX_SOURCES, MAX_TOTAL_SEC, layout, totalDuration, sourceAt, concatFrames, concatPcm, concatMotion, clampPieces, checkCompatible, move, sourceKey, shiftChunks, combineAudio, combineRestarts } from './sources.js';
+import { MAX_SOURCES, MAX_TOTAL_SEC, layout, totalDuration, sourceAt, localPiece, concatFrames, concatPcm, concatMotion, clampPieces, checkCompatible, move, sourceKey, shiftChunks, combineAudio, combineRestarts } from './sources.js';
 import {
   openWritable, copyIn, readFile, removeFile, listFiles, storageInfo, requestPersist, isStorageFull,
   saveJob, loadJob, listJobs, deleteJob, getWriteMode,
@@ -411,9 +412,10 @@ function renderFileList() {
 // 向き・比率がそろっているかを確かめて、つないだ時刻（sources.js の layout）を作る
 async function loadSources(files, opts = {}) {
   if (!files.length) return;
-  state.tSelected = Date.now(); // 動画を選んだ時刻（完成までの全体の時間を測る）
+  const tSelected = Date.now(); // 動画を選んだ時刻（完成までの全体の時間を測る）
   for (const k of Object.keys(timings)) delete timings[k];
   await loadSource(files[0], opts);
+  state.tSelected = tSelected; // loadSource が画面の状態を空にするため、そのあとで入れる
   state.files = files.slice(0, 1);
   if (files.length > 1 && state.src) {
     const srcs = [state.src];
@@ -1403,6 +1405,7 @@ function makePlan(brief) {
     log('カット専用モード: 削除した発言', state.removed.map(r => `${formatTime(r.start)}「${r.text}」${r.reason}`));
     for (const id of ['optSubs', 'optBgm', 'optZoom', 'optOpening']) if ($(id)) $(id).checked = false;
   }
+  $('optFastRow').hidden = !cutOnly;
   state.selected = new Set(sel.map(u => u.id));
   state.fit = fitReport({ targetSec: bp.brief.targetSec, selected: sel, units: state.units, sourceDuration: src.duration });
   // 入力内容がどう使われたか
@@ -1929,11 +1932,104 @@ async function prepareAndRender(confirmed) {
     styleNote: styleSummary(timeline, useSubs, useZoom, overlay) + (state.doubtfulAtRender?.length ? ` / 字幕の要確認（未確認のまま書き出し）: ${state.doubtfulAtRender.map(d => `完成動画の${formatTime(d.t)}「${d.text.slice(0, 16)}」`).join('、')}` : ''), outSec, startedAt: Date.now(), elapsed: 0, sessions: 0,
   };
   job.output = null;
+  // 高速書き出し（試作）: 使えない理由があれば記録して、今までの書き出しにする
+  const fastWhy = fastBlocker(timeline, overlay, { useSubs });
+  job.render.fast = fastWhy ? { off: fastWhy } : { on: true };
+  log('高速書き出し', fastWhy ? `使わない（${fastWhy}）` : '使う（試作）');
   log('演出', job.render.styleNote);
   log('書き出しの区間', { segments: segments.length, outSec: +outSec.toFixed(1), needMB: Math.round(need / MB), knownSpace: sc.known });
   await persistJob(job);
   renderStarting = false;
   await runRender(job);
+}
+
+// ---------- 高速書き出し（試作・カットのみ。js/fastcut.js） ----------
+// 構成・演出の面で、高速書き出しを使えるか。使えないときは理由（動画の形式の条件は fastcut.js が確かめる）
+function fastBlocker(timeline, overlay, { useSubs }) {
+  if (readBrief().mode !== 'cut') return '「カットのみ」のモードではない';
+  if (!$('optFast').checked) return '高速書き出しをオフにした';
+  if (useSubs) return '字幕を入れる';
+  if (timeline.some(c => c.zoom)) return 'ズームを入れる'; // ズームの設定が ON でも、実際に寄る場面がなければ使える（inCrop は手元の枠）
+  if (overlay?.opening) return '冒頭のタイトルを入れる';
+  if (!state.files?.length || state.files.length !== (state.srcs?.length || 1)) return '元の動画のファイルが見つからない';
+  const W = state.src.width, H = state.src.height;
+  if (timeline.some(c => c.crop && (c.crop.width < W * 0.98 || c.crop.height < H * 0.98))) return '画面の切り抜きが必要（縦横の比率が9:16でない）';
+  return null;
+}
+
+// タイムラインのピース（つないだ時刻）→ 動画ごとの時刻の範囲（続いている所はまとめる）
+function fastRanges(timeline, lay) {
+  const out = [];
+  for (const c of timeline) for (const p of c.pieces) {
+    const { source, piece } = lay ? localPiece(lay, p) : { source: 0, piece: p };
+    const r = { source, start: piece.srcStart, end: piece.srcStart + piece.frames / FPS };
+    const last = out[out.length - 1];
+    if (last && last.source === r.source && Math.abs(last.end - r.start) < 0.02) last.end = r.end;
+    else out.push(r);
+  }
+  return out;
+}
+
+// 高速書き出しを試す。できたら完成した MP4（File）、できなかったら null（理由を記録して、今までの書き出しに切り替える）
+async function tryFastRender(job, show) {
+  const R = job.render;
+  const t0 = performance.now();
+  for (let attempt = 0; attempt < 3; attempt++) {
+    await waitVisible();
+    const hiddenBefore = state.hiddenCount;
+    let bgm = null, res = null, stage = '書き出し';
+    try {
+      if (R.bgm) {
+        const f = await readFile(job.id, BGM_NAME);
+        if (f) bgm = { reader: await readBgm(f), volume: R.bgm.volume };
+      }
+      await removeFile(job.id, OUTPUT_NAME);
+      const w = await openWritable(job.id, OUTPUT_NAME);
+      const hevc = /^(hvc1|hev1)/.test(state.src.decoderConfig?.codec || '');
+      try {
+        await assembleOutput(state.srcs || state.src, R.timeline, planSegments(R.timeline, Infinity), null, w.stream, {
+          gainDb: R.gainDb, endFade: R.endFade || 0, endHold: 0, lay: R.lay, bgm, videoCodec: hevc ? 'hevc' : 'avc', rotation: state.src.rotation || 0,
+          feedVideo: async add => {
+            res = await fastCutVideo(state.files, fastRanges(R.timeline, R.lay), {
+              onPacket: add,
+              onProgress: r => show(r * 0.9, `高速書き出し中… ${Math.round(r * 90)}%（元の映像を使い、つなぎ目だけ作り直しています）`),
+            });
+          },
+        });
+      } catch (err) {
+        await w.dispose();
+        throw err;
+      } finally {
+        bgm?.reader.close();
+      }
+      // 書き出したあとの確かめ: つなぎ目のコマを、この端末のデコーダーで読んで、元の動画と比べる
+      stage = '確かめ';
+      show(0.92, 'つなぎ目のコマを確かめています…');
+      const tV = performance.now();
+      const out = await readFile(job.id, OUTPUT_NAME);
+      const v = await verifyJoins(out, state.files, res.joins);
+      timings.fastVerify = +((performance.now() - tV) / 1000).toFixed(1);
+      R.fast = { ...R.fast, stats: res.stats, verify: { checked: v.checked, minPsnr: v.minPsnr }, sec: +((performance.now() - t0) / 1000).toFixed(1) };
+      log('高速書き出しの結果', { ...res.stats, verify: R.fast.verify });
+      if (!v.ok) throw Object.assign(new Error(v.reason), { name: 'FastCutVerify', verify: v });
+      // 動作確認用（tests/e2e）: 確かめで問題が見つかったときに、今までの書き出しへ切り替わるかを試す
+      if (window.__amityFastTest === 'verify') throw Object.assign(new Error('（テスト）つなぎ目のコマが元の動画と一致しません'), { name: 'FastCutVerify' });
+      return out;
+    } catch (err) {
+      await removeFile(job.id, OUTPUT_NAME).catch(() => {});
+      // 画面を離れた（iPhone は裏でデコーダー・エンコーダーを止める）: 戻ってからやり直す
+      if (state.hiddenCount !== hiddenBefore && !isStorageFull(err)) { log('高速書き出しを一時停止（画面を離れたため）。戻ったらやり直します', errorText(err)); continue; }
+      if (isStorageFull(err)) throw err;
+      R.fast = { ...R.fast, failed: `${stage}: ${/^FastCut/.test(err?.name) ? err.message : errorText(err)}`, unsupported: err?.name === 'FastCutUnsupported' };
+      log('高速書き出しを使えませんでした（今までの書き出しに切り替えます）', R.fast.failed);
+      await persistJob(job);
+      showNotice(`高速書き出しを使えなかったため、今までの書き出しに切り替えました（${err?.name === 'FastCutUnsupported' ? '' : '問題: '}${/^FastCut/.test(err?.name) ? err.message : errorText(err)}）。`);
+      return null;
+    }
+  }
+  R.fast = { ...R.fast, failed: '画面を離れたため、何度も中断しました' };
+  await persistJob(job);
+  return null;
 }
 
 // 区間のファイルの名前（前のバージョンで保存した途中の編集は seg-番号.mp4）
@@ -1995,6 +2091,32 @@ async function runRenderOnce(job) {
     jobProgress(ratio);
   };
   try {
+    // 0. 高速書き出し（試作）: できたらここで完成。できなかったら今までの書き出しを続ける
+    if (R.fast?.on && !R.fast.failed) {
+      markTiming('render', 'active');
+      const out = await tryFastRender(job, show);
+      if (out) {
+        markTiming('render', 'done');
+        R.method = 'fast';
+        R.elapsed = (R.elapsed || 0) + (performance.now() - t0) / 1000;
+        job.stage = 'done';
+        job.output = { size: out.size, finishedAt: Date.now() };
+        job.keptSegs = {};
+        state.styleNote = R.styleNote = `${R.styleNote.replace(/最後: [^/]*/, '最後: 映像の黒いフェードなし（音声だけ小さくして終わる） ')} / 書き出し方式: 高速（試作・元の映像を使用。つなぎ目 ${R.fast.verify.checked}か所を確かめ済み）`;
+        await persistJob(job);
+        show(1, `書き出し完了（高速・${formatSec((performance.now() - t0) / 1000)}）`);
+        jobEnd('done');
+        log('書き出し完了', { method: 'fast', sizeMB: +(out.size / 1e6).toFixed(1), sec: Math.round((performance.now() - t0) / 1000), secPerOutSec: +(R.elapsed / Math.max(1, R.outSec)).toFixed(2), mbps: +(out.size * 8 / Math.max(1, R.outSec) / 1e6).toFixed(1) });
+        showResult(out, R.timeline);
+        return false;
+      }
+      markTiming('render', 'done');
+      R.method = 'normal';
+      state.styleNote = R.styleNote = `${R.styleNote} / 書き出し方式: 今まで（高速を使わなかった理由: ${R.fast.failed}）`;
+    } else if (R.fast?.off && readBrief().mode === 'cut') {
+      // カットのみのモードだけ、高速書き出しを使わなかった理由を出す（ショートは今までどおり）
+      state.styleNote = R.styleNote = `${R.styleNote.replace(/ \/ 書き出し方式:.*$/, '')} / 書き出し方式: 今まで（高速を使わなかった理由: ${R.fast.off}）`;
+    }
     // 1. 映像を区間ごとに書き出して保存する
     markTiming('render', 'active');
     const rc = createRenderContext(state.src);
@@ -2151,11 +2273,12 @@ function showResult(file, timeline) {
   const parts = [['動画の保存', T.store], ['音声', T.audio], ['文字起こし', T.asr], ['手元の動き', T.motion], ['構成（カット）', T.plan], ['字幕', T.subtitles], ['書き出し（エンコード）', T.render], ['仕上げ', T.assemble]].filter(([, v]) => v >= 0.05);
   const total = parts.reduce((a, [, v]) => a + v, 0);
   const sub = [T.asrLoad && `モデルの準備 ${sec(T.asrLoad)}`, T.verify && `聞き取りの確かめ ${sec(T.verify)}`].filter(Boolean);
+  const method = state.job?.render?.method === 'fast' ? `。書き出しは高速（試作）${T.fastVerify ? `・うち つなぎ目の確かめ ${sec(T.fastVerify)}` : ''}` : '';
   // 動画を選んでから完成までの全体の時間 = 処理を待った時間 + 操作の時間（入力・確認・字幕の手直しなど）
   const wall = state.tSelected ? (Date.now() - state.tSelected) / 1000 : null;
   const whole = wall && wall >= total ? `。動画を選んでから完成まで ${formatSec(wall)}（処理の待ち ${formatSec(total)}・操作など ${formatSec(wall - total)}）` : '';
-  $('outTimings').textContent = parts.length ? `処理 約${formatSec(total)}（${parts.map(([k, v]) => `${k} ${sec(v)}`).join('・')}${sub.length ? `。文字起こしのうち ${sub.join('・')}` : ''}）${whole}` : '-';
-  log('処理時間', { ...timings, wallSec: wall && Math.round(wall), processingSec: Math.round(total) });
+  $('outTimings').textContent = parts.length ? `処理 約${formatSec(total)}（${parts.map(([k, v]) => `${k} ${sec(v)}`).join('・')}${sub.length ? `。文字起こしのうち ${sub.join('・')}` : ''}${method}）${whole}` : '-';
+  log('処理時間', { ...timings, method: state.job?.render?.method || 'normal', wallSec: wall && Math.round(wall), processingSec: Math.round(total) });
   $('btnDownload').href = state.outUrl;
   $('btnDownload').download = state.outName;
   $('stepResult').hidden = false;

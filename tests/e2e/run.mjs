@@ -416,6 +416,12 @@ try {
   if (zoom === true) await page.check('#optZoom');
   if (zoom === false) await page.uncheck('#optZoom');
   if (noSubs) await page.uncheck('#optSubs');
+  // --no-fast: 高速書き出し（カットのみ・試作）を使わず、今までの書き出しで比べる
+  if (process.argv.includes('--no-fast') && await page.$('#optFast')) await page.$eval('#optFast', el => { el.checked = false; });
+  // --fast-fail-verify: 高速書き出しの確かめで問題が見つかった場合（今までの書き出しに切り替わるか）
+  if (process.argv.includes('--fast-fail-verify')) await page.evaluate(() => { window.__amityFastTest = 'verify'; });
+  // --fast-broken: 設定（SPS・PPS）を入れない壊れた動画を作り、確かめで見つけて今までの書き出しに切り替わるか
+  if (process.argv.includes('--fast-broken')) await page.evaluate(() => { window.__amityFastTest = 'noparams'; });
   mem.stage = '書き出し';
   if (bgmArg) {
     await page.check('#optBgm');
@@ -470,6 +476,7 @@ try {
     console.log(`MP4の字幕に手直しが反映: ${subs.replace(/[、。]/g, '').includes(editExpect.text) ? 'はい' : 'いいえ'}`);
   }
   console.log('演出: ' + (await page.$eval('#outStyle', el => el.textContent)));
+  console.log('処理時間: ' + (await page.$eval('#outTimings', el => el.textContent)));
   const tl = await page.evaluate(() => window.amityDebug.timeline.map(c => ({ outStart: +c.outStart.toFixed(2), dur: +c.outDuration.toFixed(2), pos: c.subPos, zoom: c.zoom && { z: c.zoom.z, rect: c.zoom.rect }, crop: c.crop, inCrop: c.inCrop, text: c.text, pieces: c.pieces.map(p => ({ srcStart: p.srcStart, frames: p.frames, outStart: p.outStart })), subs: c.subtitles.map(p => p.lines.join('／')), pages: c.subtitles.map(p => ({ s: +p.start.toFixed(2), e: +p.end.toFixed(2), t: p.lines.join('') })) })));
   fs.writeFileSync(path.join(dir, `timeline-${tag}.json`), JSON.stringify(tl, null, 1));
   // --fixes=FILE: 完成後の修正の指示を画面から入れ、適用・プレビューして、書き出し直す

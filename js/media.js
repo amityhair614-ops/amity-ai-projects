@@ -707,7 +707,9 @@ function sameConfig(a, b) {
 // 保存した区間の映像をつなぎ、音声を通して作って、stream（ファイル）に完成したMP4を書き出す。
 // getSegment(i): i 番目の区間のファイル（File）
 // srcs・lay: renderSegment と同じ（複数の動画を1本にするとき）。bgm: { reader（readBgm の結果）, volume（0〜0.1）, speech（声の区間・つないだ時刻） }
-export async function assembleOutput(srcs, timeline, segments, getSegment, stream, { gainDb = 0, onProgress, endFade = 0, endHold = 0, lay = null, bgm = null } = {}) {
+// feedVideo（高速書き出し・js/fastcut.js）: 区間のファイルの代わりに、映像のコマを add(packet, meta) で直接入れる関数。
+//   そのときは segments を1つ（planSegments(timeline, Infinity)）にする。videoCodec: 'avc' | 'hevc'。色の印は元の動画のまま
+export async function assembleOutput(srcs, timeline, segments, getSegment, stream, { gainDb = 0, onProgress, endFade = 0, endHold = 0, lay = null, bgm = null, feedVideo = null, videoCodec = 'avc', rotation = 0 } = {}) {
   const list = Array.isArray(srcs) ? srcs : [srcs];
   const src = list[0];
   const withAudio = list.some(v => v.audio);
@@ -718,8 +720,9 @@ export async function assembleOutput(srcs, timeline, segments, getSegment, strea
   // 同じ時刻を付けて返すことがあり（Linux の WebKit で確認）、MP4 の音声の時刻が壊れるため
   if (withAudio) useBundledAac();
   const output = new Output({ format: new Mp4OutputFormat({ fastStart: false }), target: new StreamTarget(stream) });
-  const videoSource = new EncodedVideoPacketSource('avc');
-  output.addVideoTrack(videoSource, { frameRate: FPS });
+  const videoSource = new EncodedVideoPacketSource(feedVideo ? videoCodec : 'avc');
+  // 高速書き出しは元の動画のコマ（回転する前の向き）をそのまま使うので、回転の情報を書く
+  output.addVideoTrack(videoSource, { frameRate: FPS, ...(feedVideo && rotation ? { rotation } : {}) });
   let audioSource = null;
   if (withAudio) {
     audioSource = new AudioBufferSource({ codec: 'aac', bitrate: AUDIO_BITRATE });
@@ -752,6 +755,12 @@ export async function assembleOutput(srcs, timeline, segments, getSegment, strea
           if (endFade) applyEndFade(data, raw.sr, piece.outStart + s.f0 / FPS, outTotal, endFade, endHold);
           await audioSource.add(toAudioBuffer(data, raw.sr, 0, len));
         }
+      }
+      // 高速書き出し: 元の動画のコマ（つなぎ目だけエンコードし直したもの）を、そのまま入れる
+      if (feedVideo) {
+        await feedVideo((packet, meta) => videoSource.add(packet, meta));
+        onProgress?.(1);
+        continue;
       }
       // 映像: 保存した区間のデータを、時刻だけずらしてそのまま入れる
       const file = await getSegment(seg.index);

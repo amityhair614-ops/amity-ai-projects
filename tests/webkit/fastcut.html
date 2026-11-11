@@ -1,0 +1,46 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>高速書き出し（WebKit）</title>
+<!-- WebKit（Safari と同じエンジン）で、高速書き出し（js/fastcut.js）が動くか・つなぎ目の確かめが通るかを試す。
+     tests/webkit/fastcut.py から開く。?files=s1.mov,s2.mov&ranges=JSON（/__files/ の動画） -->
+<script type="importmap">{ "imports": { "mediabunny": "/vendor/mediabunny.min.mjs" } }</script>
+<script type="module">
+const q = new URLSearchParams(location.search);
+const report = (type, o) => fetch('/__report', { method: 'POST', body: JSON.stringify({ type, phase: 'fastcut', ...o }) });
+window.addEventListener('error', e => report('pageerror', { message: e.message, file: e.filename, line: e.lineno }));
+window.addEventListener('unhandledrejection', e => report('pageerror', { message: String(e.reason?.message || e.reason) }));
+const support = async () => {
+  const r = {};
+  for (const codec of ['avc1.640028', 'hvc1.1.6.L120.B0']) {
+    r[codec] = {
+      enc: await VideoEncoder.isConfigSupported({ codec, width: 512, height: 912, bitrate: 8e6, ...(codec.startsWith('avc') ? { avc: { format: 'avc' } } : {}) }).then(x => x.supported).catch(e => String(e)),
+      dec: await VideoDecoder.isConfigSupported({ codec, codedWidth: 512, codedHeight: 912 }).then(x => x.supported).catch(e => String(e)),
+    };
+  }
+  return r;
+};
+try {
+  report('START', { ua: navigator.userAgent, webcodecs: typeof VideoEncoder !== 'undefined' && typeof VideoDecoder !== 'undefined' });
+  report('SUPPORT', await support());
+  const { fastCutVideo, verifyJoins } = await import('/js/fastcut.js');
+  const { Output, Mp4OutputFormat, BufferTarget, EncodedVideoPacketSource } = await import('mediabunny');
+  const files = [];
+  for (const n of q.get('files').split(',')) files.push(new File([await (await fetch('/__files/' + n)).blob()], n));
+  const ranges = JSON.parse(q.get('ranges'));
+  const t0 = performance.now();
+  const output = new Output({ format: new Mp4OutputFormat({ fastStart: false }), target: new BufferTarget() });
+  const vs = new EncodedVideoPacketSource(q.get('codec') || 'avc');
+  output.addVideoTrack(vs, { frameRate: 30 });
+  await output.start();
+  const res = await fastCutVideo(files, ranges, { onPacket: (p, m) => vs.add(p, m) });
+  await output.finalize();
+  const sec = +((performance.now() - t0) / 1000).toFixed(2);
+  const out = new File([output.target.buffer], 'out.mp4');
+  await fetch('/__upload/webkit-fast.mp4', { method: 'POST', body: output.target.buffer });
+  const t1 = performance.now();
+  const v = await verifyJoins(out, files, res.joins);
+  report('DONE', { ok: true, sec, verifySec: +((performance.now() - t1) / 1000).toFixed(2), stats: res.stats, verify: v });
+} catch (e) {
+  report('DONE', { ok: false, error: `${e?.name}: ${e?.message || e}` });
+}
+</script>
