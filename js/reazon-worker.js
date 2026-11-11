@@ -8,12 +8,29 @@
 // - 句読点は出さない。文の区切りは、アプリ側で声の切れ目から決める
 //
 // モデルの構成（RNN-T）: エンコーダー（音声の特徴→512次元×25回/秒）・デコーダー（直前の2文字）・ジョイナー（次の文字の確率）
-import * as ort from 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.22.0/dist/ort.wasm.min.mjs';
 import { encode, greedy, ortModel, parseSymbols } from './rnnt.js';
 import { verifySegment } from './verify.js';
 
-ort.env.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.22.0/dist/';
-ort.env.wasm.numThreads = 1; // 複数スレッドには特別なサーバー設定が必要なため1つで動かす
+// ONNX Runtime（計算の部品）は、モデルを読み込むときに読み込む（使うスレッドの数を先に決めるため）。
+// 複数スレッドは、ページがクロスオリジン分離（COOP・COEP の見出し）されているときだけ使える。分離されていないページ
+// （今の公開ページ）では、今までどおり1スレッド。複数スレッドで準備に失敗したときも、1スレッドでやり直す
+const ORT_CDN = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.22.0/dist/';
+let ort = null;
+let threadInfo = { threads: 1, requested: 1, auto: 1, isolated: false, source: 'cdn', fallback: null };
+
+// この端末で使えるスレッドの数（分離されていなければ1。端末のコア数から1つ残し、最大4）
+function autoThreads() {
+  if (!self.crossOriginIsolated || typeof SharedArrayBuffer === 'undefined') return 1;
+  const hw = navigator.hardwareConcurrency || 2;
+  return Math.max(1, Math.min(4, hw - 1));
+}
+
+async function loadOrt(base, threads, tag = '') {
+  const m = await import(base + 'ort.wasm.min.mjs' + tag);
+  m.env.wasm.wasmPaths = base;
+  m.env.wasm.numThreads = threads;
+  return m;
+}
 
 // 同じファイルを置いている場所（先に見つかった方を使う）
 const BASES = [
@@ -67,7 +84,27 @@ async function download(name, onProgress) {
   throw new Error(`文字起こしモデル（${file}）をダウンロードできませんでした: ${lastErr?.message || lastErr}`);
 }
 
-async function load() {
+// opts.threads: 使うスレッドの数（なし・0 は自動）。opts.ortLocal: ONNX Runtime をこのサイトから読む（試験用）
+async function load(opts = {}) {
+  const auto = autoThreads();
+  const isolated = !!self.crossOriginIsolated && typeof SharedArrayBuffer !== 'undefined';
+  const requested = opts.threads > 0 ? Math.min(4, Math.floor(opts.threads)) : auto;
+  const threads = isolated ? requested : 1;
+  const base = opts.ortLocal ? new URL('../vendor/ort/', self.location.href).href : ORT_CDN;
+  threadInfo = { threads, requested, auto, isolated, source: opts.ortLocal ? 'local' : 'cdn', fallback: null };
+  ort = await loadOrt(base, threads);
+  try {
+    await loadModels();
+  } catch (err) {
+    if (threads <= 1) throw err;
+    // 複数スレッドで準備できなかった: 計算の部品を読み込み直して、1スレッドでやり直す
+    threadInfo = { ...threadInfo, threads: 1, fallback: String(err?.message || err) };
+    ort = await loadOrt(base, 1, '?threads=1');
+    await loadModels();
+  }
+}
+
+async function loadModels() {
   const loaded = {};
   const progress = () => self.postMessage({
     type: 'load-progress',
@@ -102,8 +139,9 @@ self.onmessage = async e => {
   const m = e.data;
   try {
     if (m.type === 'load') {
-      await load();
-      self.postMessage({ type: 'loaded', device: 'wasm', sessions: `ReazonSpeech k2 v2（int8）・文字数 ${symbols.length}` });
+      const t0 = performance.now();
+      await load({ threads: m.threads, ortLocal: m.ortLocal });
+      self.postMessage({ type: 'loaded', device: 'wasm', sessions: `ReazonSpeech k2 v2（int8）・文字数 ${symbols.length}・${threadInfo.threads}スレッド`, threads: threadInfo, loadSec: +((performance.now() - t0) / 1000).toFixed(2) });
     } else if (m.type === 'run') {
       const tokens = await recognize(m.audio);
       const text = tokens.map(x => x.s).join('');

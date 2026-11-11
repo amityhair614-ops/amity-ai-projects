@@ -58,6 +58,13 @@ document.addEventListener('visibilitychange', () => {
 Object.defineProperty(state, 'hiddenCount', { get: () => hiddenCount, enumerable: false });
 window.amityDebug = state; // 動作確認用
 
+// テスト環境（/test/ で開いたとき・?test=1）: iPhone で速さを確かめる表示を出す。音声認識のスレッド数は ?asrThreads=1|2|4 で
+// 指定でき（なし: 自動）、?ort=local で ONNX Runtime をこのサイトから読む。今の公開ページ（/）の動作は変わらない
+const QS = new URLSearchParams(location.search);
+export const TEST_MODE = location.pathname.startsWith('/test/') || QS.get('test') === '1';
+const asrLoadOpts = () => ({ threads: +(QS.get('asrThreads') || 0) || 0, ortLocal: QS.get('ort') === 'local' });
+if (TEST_MODE) import('./testpanel.js').then(m => m.mountTestPanel({ state, timings, asrLoadOpts, worker: 'js/reazon-worker.js' })).catch(err => console.error('テストの表示を出せませんでした', err));
+
 const STAGE_LABELS = {
   open: '動画を開く', audio: '音声を読み込み中', asr: '文字起こし中', motion: '手元の動きを解析中',
   plan: '構成を作成中', render: 'MP4を書き出し中', store: '元の動画を端末内に保存', assemble: 'MP4を仕上げ',
@@ -667,7 +674,8 @@ function transcribe(pcm, windows, terms = [], { saved = {}, onResult, onStart, s
         slot.loaded = true;
         timings.asrLoad = +(((timings.asrLoad || 0) * 1000 + performance.now() - tLoad) / 1000).toFixed(1);
         state.asrDevice = m.device;
-        log('文字起こしモデル準備完了', { device: m.device, sessions: m.sessions });
+        if (m.threads) state.asrThreads = m.threads;
+        log('文字起こしモデル準備完了', { device: m.device, sessions: m.sessions, threads: m.threads });
         setEnv('文字起こしモデル', `${E.label}（${m.device}）${m.sessions}`);
         next();
       } else if (m.type === 'result') {
@@ -739,7 +747,7 @@ function transcribe(pcm, windows, terms = [], { saved = {}, onResult, onStart, s
     if (slot.loaded && engine === 'reazon') { setTimeout(next, 0); return; }
     const tLoad = performance.now();
     setProgress(0, 'AIモデルを準備中…');
-    worker.postMessage({ type: 'load', model: ASR_MODEL, terms });
+    worker.postMessage({ type: 'load', model: ASR_MODEL, terms, ...asrLoadOpts() });
   });
 }
 
@@ -766,7 +774,7 @@ function verifyTranscript(pcm, units, words, { saved = {}, onResult } = {}) {
     };
     worker.onmessage = e => {
       const m = e.data;
-      if (m.type === 'loaded') { slot.loaded = true; next(); }
+      if (m.type === 'loaded') { slot.loaded = true; if (m.threads) state.asrThreads = m.threads; next(); }
       else if (m.type === 'verified') {
         results[m.id] = { tokens: m.tokens, fixes: m.fixes, suggest: m.suggest || [], tried: m.tried };
         Promise.resolve(onResult?.(m.id, results[m.id])).catch(err => log('確かめた結果を保存できませんでした', errorText(err))).then(() => { i++; next(); });
@@ -785,7 +793,7 @@ function verifyTranscript(pcm, units, words, { saved = {}, onResult } = {}) {
     worker.onerror = e => finish(reject, new Error(e.message || '字幕AIの準備に失敗しました'));
     if (slot.loaded) { setTimeout(next, 0); return; }
     setProgress(0, '字幕AIを準備中…');
-    worker.postMessage({ type: 'load', model: ASR_MODEL });
+    worker.postMessage({ type: 'load', model: ASR_MODEL, ...asrLoadOpts() });
   });
 }
 
@@ -1140,6 +1148,7 @@ async function runAnalysis(job) {
         setStep('asr', 'active');
         try {
           A.asr = { ...(A.asr || {}), done: false };
+          if (TEST_MODE) state.testPcm = pcm.slice(0, 90 * ASR_RATE); // テスト環境: スレッド数の比べ用に、最初の90秒の音声を残す
           const r = await transcribeAudio(pcm, state.rmsDb, state.speech, bp, job.asrEngine || 'whisper', A.asr, () => persistJob(job), A.warnings);
           state.asrVerify = r.asrVerify;
           state.chunks = r.chunks;
