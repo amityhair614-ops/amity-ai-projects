@@ -41,9 +41,13 @@ const SEC = '([0-9０-９]+(?:[.．][0-9０-９]+)?)';
 
 // 自由入力の指示を読む。読み方が1通りに決まるときだけ { kind, at, to, text, shift } を返す。決まらなければ null
 // 例: 「18秒の字幕を○○に変更」「25〜27秒の言い間違いを削除」「32秒の字幕を0.3秒早く表示」「40秒付近の不要な間を詰める」
-export function parseInstruction(input) {
+// replace（v2・テスト環境）: 「「セルフカト」を「セルフカット」に直す」「セルフカト→セルフカット」= 動画全体の字幕で、聞き間違えた言葉を置き換える
+export function parseInstruction(input, { replace = false } = {}) {
   const s = (input || '').trim().replace(/\s+/g, '');
   let m;
+  if (replace && ((m = s.match(/^(?:字幕の)?[「『"](.+?)[」』"]を[「『"](.+?)[」』"]に(?:直す|直して|変更|修正|変える|変えて|置き換え|置き換えて|して)?(?:ください)?[。．]?$/)) || (m = s.match(/^[「『"]?([^「」『』"→]+?)[」』"]?(?:→|->|⇒)[「『"]?([^「」『』"→]+?)[」』"]?$/)))) {
+    return m[1] !== m[2] ? { kind: 'replace', from: m[1], to: m[2] } : null;
+  }
   if ((m = s.match(new RegExp(`^${SEC}秒(?:付近|あたり|頃)?の字幕を[「『"]?(.+?)[」』"]?に(?:変更|直す|修正|変える|して)`)))) {
     return { kind: 'subtitle', at: num(m[1]), text: m[2] };
   }
@@ -63,7 +67,7 @@ export function parseInstruction(input) {
 // 指示を、見ていた完成動画の構成（timeline）で元の動画の時刻に直す。直せないときは理由を返す
 export function resolveFix(fix, timeline) {
   // 字幕で省く・残す言葉（動画全体）: 時刻は使わない
-  if (fix.kind === 'words') return { ...fix, status: fix.status };
+  if (fix.kind === 'words' || fix.kind === 'replace') return { ...fix, status: fix.status };
   // 字幕の修正は、その時刻に出ている字幕で場所を決める（場面の最初の字幕は、前の場面の終わりに少し早く出ることがある）
   if (fix.kind === 'subtitle' || fix.kind === 'timing') {
     for (const c of timeline) for (const p of c.subtitles || []) {
@@ -114,7 +118,24 @@ function subtract(pieces, r) {
 
 // 適用する指示（status: 'ready'）を、構成の場面（clips: 元の動画の時刻の pieces・text・times を持つ）に反映した新しい場面を返す。
 // 字幕の文字・時刻の指示は clip.pageEdits に入れ、字幕のページを作るときに使う（buildTimeline・timedPages）
+// text の from を to に置き換え、1文字ごとの時刻 times も合わせる（置き換えた所は、元の言葉の時刻の間に並べる）
+export function replaceWithTimes(text, times, from, to) {
+  if (!from || !text?.includes(from)) return { text, times };
+  const timed = times?.length === text.length;
+  let out = '', ts = [], i = 0;
+  for (let k = text.indexOf(from); k >= 0; k = text.indexOf(from, k + from.length)) {
+    out += text.slice(i, k); if (timed) ts.push(...times.slice(i, k));
+    if (timed) { const a = times[k], b = times[k + from.length - 1]; for (let j = 0; j < to.length; j++) ts.push(+(a + ((b - a) * j) / Math.max(1, to.length - 1)).toFixed(3)); }
+    out += to; i = k + from.length;
+  }
+  out += text.slice(i); if (timed) ts.push(...times.slice(i));
+  return { text: out, times: timed ? ts : times };
+}
+
 export function applyFixes(clips, fixes) {
+  // 言葉の置き換え（動画全体）
+  const reps = (fixes || []).filter(f => f.status === 'applied' && f.kind === 'replace');
+  if (reps.length) clips = clips.map(c => { let x = { text: c.text, times: c.times }; for (const f of reps) x = replaceWithTimes(x.text, x.times, f.from, f.to); return x.text === c.text ? c : { ...c, ...x }; });
   const ready = (fixes || []).filter(f => f.status === 'applied' && f.srcAt != null);
   if (!ready.length) return clips;
   return clips.map(c0 => {
@@ -162,6 +183,7 @@ export function describeFix(f) {
   if (f.kind === 'timing') return `${t(f.at)}の字幕を${Math.abs(f.shift).toFixed(1)}秒${f.shift < 0 ? '早く' : '遅く'}表示`;
   if (f.kind === 'cut') return `${t(f.at)}〜${t(f.to)}をカット`;
   if (f.kind === 'gap') return `${t(f.at)}付近の不要な間を詰める`;
+  if (f.kind === 'replace') return `字幕の「${f.from}」を「${f.to}」に置き換え（動画全体）`;
   if (f.kind === 'words') return [f.omit?.length ? `字幕で「${f.omit.join('」「')}」を省く` : '', f.keep?.length ? `字幕に「${f.keep.join('」「')}」を残す` : ''].filter(Boolean).join('・') + '（動画全体）';
   return `${t(f.at)}: ${f.note || ''}`;
 }

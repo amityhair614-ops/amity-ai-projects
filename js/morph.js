@@ -227,13 +227,14 @@ export function boundaryStrength(a, b) {
 // keep: 省かない言葉（編集メモで「字幕に残す」と書いた言葉）。extra: 省く言葉（編集メモで「字幕で省く」と書いた言葉）
 const OMIT_CONJ = /^(?:それとも|でも|ちなみに)$/;
 const OMIT_DEGREE = /^(?:かなり|とても|非常に|めっちゃ|めちゃくちゃ)$/;
-export function subtitleOmissions(text, { keep = [], extra = [] } = {}) {
+// only: 決まりの言葉は省かず、extra（編集メモで省くと書いた言葉）だけを省く（v2）
+export function subtitleOmissions(text, { keep = [], extra = [], only = false } = {}) {
   const ts = tokenize(text);
   if (!ts) return null;
   const out = [];
   const kept = w => keep.some(k => k && w.includes(k));
   const add = (start, end) => { const word = text.slice(start, end); if (!kept(word)) out.push({ start, end, word }); };
-  for (let i = 0; i < ts.length; i++) {
+  for (let i = 0; i < (only ? 0 : ts.length); i++) {
     const t = ts[i], n = ts[i + 1], n2 = ts[i + 2];
     const atHead = i === 0 || ts[i - 1].pos === '記号' || isEnd(ts, i - 1);
     // つなぎの言葉（文・節の頭の「それとも」「でも」「ちなみに（ですが）」）

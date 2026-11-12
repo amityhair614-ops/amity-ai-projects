@@ -15,8 +15,8 @@ import {
   planSegments, segmentKey, renderBytes, spaceCheck, formatBytes, describeJob, jobIdFor, sameSource, MB,
 } from './resume.js';
 import {
-  detectSpeech, transcriptionWindows, asrWindows, asrRetryWindows, untranscribedWindows, mergeAsrPasses, passDoubts, buildUnits, selectUnits, buildTimeline, formatTime, FRAME_SEC, FPS, trimUnit, untrimUnit,
-  cleanSubtitle, alignSentences, refineSubtitleTiming, fineSpeech, setBreakTerms, setSubtitleWords, openingLines, openingText, openingPlan,
+  detectSpeech, transcriptionWindows, asrWindows, shortAsrWindows, asrRetryWindows, untranscribedWindows, voiceGapWindows, mergeAsrPasses, passDoubts, buildUnits, selectUnits, buildTimeline, formatTime, FRAME_SEC, FPS, trimUnit, untrimUnit,
+  cleanSubtitle, alignSentences, refineSubtitleTiming, fineSpeech, setBreakTerms, setSubtitleWords, setSubtitleMode, bridgeSelected, openingLines, openingText, openingPlan,
   END_FADE, END_HOLD, extendEnding, outputLength, OPENING_DURATIONS, BEAUTY_TERMS, clearOpening,
 } from './plan.js';
 import { verifyUnits, verifiedRaw, attachAudioFixes, briefWords, domainWords } from './verify.js';
@@ -62,8 +62,15 @@ window.amityDebug = state; // 動作確認用
 // 指定でき（なし: 自動）、?ort=local で ONNX Runtime をこのサイトから読む。今の公開ページ（/）の動作は変わらない
 const QS = new URLSearchParams(location.search);
 export const TEST_MODE = location.pathname.startsWith('/test/') || QS.get('test') === '1';
+// 改善版（v2・テスト環境だけ。?v2=0 で今までの方式）: 音声認識は短い窓（0.3秒以上の間で区切る）＋長い窓で読んで音声で確かめる・
+// カットは話の途中・小さな語尾を切らない・字幕は1文ずつ（docs/V2-SUBTITLE-CUT.md）
+export const V2 = TEST_MODE && QS.get('v2') !== '0';
+// v2: 短い窓・長い窓のどちらも同じ字にする聞き間違い（髪の話。今までの30秒の窓では読めていた）
+const V2_TERM_FIXES = [[/部屋肩/g, 'ヘアカッター'], [/(?<=[るた])サイン(?=根元|根本|毛先|中間|は|に)/g, '際']];
 const asrLoadOpts = () => ({ threads: +(QS.get('asrThreads') || 0) || 0, ortLocal: QS.get('ort') === 'local' });
-if (TEST_MODE) import('./testpanel.js').then(m => m.mountTestPanel({ state, timings, asrLoadOpts, worker: 'js/reazon-worker.js' })).catch(err => console.error('テストの表示を出せませんでした', err));
+// v2: 字幕は1文ずつ（2行まで）・話したとおり
+if (V2) setSubtitleMode('sentence');
+if (TEST_MODE) import('./testpanel.js').then(m => m.mountTestPanel({ state, timings, asrLoadOpts, worker: 'js/reazon-worker.js', v2: V2 })).catch(err => console.error('テストの表示を出せませんでした', err));
 
 const STAGE_LABELS = {
   open: '動画を開く', audio: '音声を読み込み中', asr: '文字起こし中', motion: '手元の動きを解析中',
@@ -868,8 +875,12 @@ async function transcribeAudio(pcm, rmsDb, speech, bp, engine, store, persist, w
   // ReazonSpeech: 区切り方の違う2通り（30秒ごと・話のまとまりごと）で読み、どれかが落とした言葉をほかの結果で補う（asrWindows・mergeAsrPasses）
   // カット専用モード（試作）: 字幕AIは1回だけ読む（話のまとまりごとの窓 C だけ。3通りで読んで合わせることはしない）
   const single = engine === 'reazon' && asrSingle(bp);
+  // v2: 短い窓（A）＋話のまとまりごとの窓（C）。30秒ごとの窓は使わない
+  const v2 = V2 && engine === 'reazon' && !single;
   const windows = store.windows || (engine === 'reazon'
-    ? (single ? asrWindows(speech.regions, rmsDb).filter(w => w.pass === 'C').map(({ pass, ...w }) => w) : asrWindows(speech.regions, rmsDb))
+    ? (single ? asrWindows(speech.regions, rmsDb).filter(w => w.pass === 'C').map(({ pass, ...w }) => w)
+      : v2 ? [...shortAsrWindows(rmsDb, { srcSec: pcm.length / ASR_RATE }), ...asrWindows(speech.regions, rmsDb, 30, null, null, false).filter(w => w.pass === 'C')]
+      : asrWindows(speech.regions, rmsDb))
     : transcriptionWindows(speech.regions, ENGINES[engine].window));
   store.windows = windows;
   store.results = store.results || {};
@@ -885,7 +896,7 @@ async function transcribeAudio(pcm, rmsDb, speech, bp, engine, store, persist, w
   });
   let raw = mergeAsrPasses(windows, perWindow);
   // 文字が少ないまとまりがあるときだけ、そこを区切り方の違う窓（B）でもう一度読む
-  if (engine === 'reazon' && raw.passes && !windows.some(w => w.pass === 'B')) {
+  if (engine === 'reazon' && raw.passes && !v2 && !windows.some(w => w.pass === 'B')) {
     const retry = store.windowsB || asrRetryWindows(speech.regions, rmsDb, windows, raw);
     store.windowsB = retry;
     if (retry.length) {
@@ -904,7 +915,9 @@ async function transcribeAudio(pcm, rmsDb, speech, bp, engine, store, persist, w
   // どの読み方でも文字にならなかった、はっきりした声（1秒以上）は、その声だけをもう一度読む（長い窓で文がまるごと落ちることがある）
   if (engine === 'reazon' && (raw.passes || single)) {
     const fine0 = fineSpeech(rmsDb, speech.threshold);
-    const lost = store.windowsV || (single ? untranscribedWindows(fine0, raw).map(({ pass, ...w }) => w) : untranscribedWindows(fine0, raw));
+    // v2: 文字が1つもない声の区間だけでなく、文字と文字の間が1.2秒以上あいていて、そこに声がある所も読み直す
+    // （1112: 声が続いていたため、間の4.6秒・2文を落としても、声の区間には文字があった）
+    const lost = store.windowsV || (single ? untranscribedWindows(fine0, raw).map(({ pass, ...w }) => w) : v2 ? voiceGapWindows(fine0, raw) : untranscribedWindows(fine0, raw));
     store.windowsV = lost;
     if (lost.length) {
       log('文字にならなかった声を、その声だけで読み直します', { windows: lost.length, sec: +lost.reduce((a, w) => a + w.end - w.start, 0).toFixed(1) });
@@ -924,7 +937,7 @@ async function transcribeAudio(pcm, rmsDb, speech, bp, engine, store, persist, w
       }
     }
   }
-  if (raw.passes) log('字幕AIの読み方ごとの文字数', { A: raw.passes.A.length, B: raw.passes.B.length, C: raw.passes.C.length, merged: raw.reduce((n, c) => n + c.tokens.length, 0) });
+  if (raw.passes) log(v2 ? '字幕AIの読み方ごとの文字数（v2: A=短い窓・C=まとまり）' : '字幕AIの読み方ごとの文字数', { A: raw.passes.A.length, B: raw.passes.B.length, C: raw.passes.C.length, merged: raw.reduce((n, c) => n + c.tokens.length, 0) });
   const fine = fineSpeech(rmsDb, speech.threshold);
   // ReazonSpeech: 1文字ごとの時刻と声の切れ目で文に分け、用語の書き方を直す
   // Whisper: 文ごとの時刻を、無音の切れ目に合わせて割り当て直す
@@ -934,7 +947,7 @@ async function transcribeAudio(pcm, rmsDb, speech, bp, engine, store, persist, w
   // カット専用モードでは、聞き取りを音声で確かめる処理（字幕の文字を正しくするため）を省く
   if (engine === 'reazon' && !single && raw.some(c => c.tokens?.length)) {
     try {
-      const units = verifyUnits(raw.flatMap(c => c.tokens || []), fine, raw.passes);
+      const units = verifyUnits(raw.flatMap(c => c.tokens || []), fine, raw.passes, v2 ? { keepWords: true } : {});
       const b = bp.brief;
       const words = [...briefWords([b.title, b.content, b.message, b.flow, b.mustKeep], [...bp.items, ...bp.asrTerms]), ...domainWords(BEAUTY_TERMS)];
       store.verify = store.verify || {};
@@ -954,6 +967,25 @@ async function transcribeAudio(pcm, rmsDb, speech, bp, engine, store, persist, w
       warnings?.push('字幕AIの聞き取りを音声で確かめられなかったため、聞き間違いが残っている可能性があります（' + errorText(err) + '）。');
     }
   }
+  // v2: 同じ読みで音声では決められない字（「痛んで」「傷んで」）は、髪の話の書き方にそろえる（1108: 読み方によって違う字になった）
+  // 短い窓・長い窓のどちらも同じ聞き間違いをする、髪の話の言葉も直す（1106「する際｜根元」→「サイン」・1111「ヘアカッター」→「部屋肩」。
+  // 今までの30秒の窓では読めていた）。1文字ごとの時刻は、元の文字の時刻の間に並べる
+  if (v2) for (const c of checked) {
+    if (!c.tokens) continue;
+    let ks = c.tokens;
+    for (let k = 0; k + 2 < ks.length; k++) if (ks[k].s === '痛' && ks[k + 1].s === 'ん' && /^[でだじ]/.test(ks[k + 2].s)) ks[k] = { ...ks[k], s: '傷' };
+    for (const [re, to] of V2_TERM_FIXES) {
+      const text = ks.map(k => k.s).join('');
+      if (ks.some(k => k.s.length !== 1)) break;
+      const m = [...text.matchAll(re)].reverse();
+      for (const x of m) {
+        const a = x.index, b = a + x[0].length, t0 = ks[a].t, t1 = ks[b - 1].t;
+        ks = [...ks.slice(0, a), ...[...to].map((ch, j) => ({ ...ks[a], s: ch, t: +(t0 + ((t1 - t0) * j) / Math.max(1, to.length - 1)).toFixed(3) })), ...ks.slice(b)];
+      }
+    }
+    c.tokens = ks;
+    c.text = c.raw = ks.map(k => k.s).join('');
+  }
   const sentences = engine === 'reazon' && checked.some(c => c.tokens)
     ? attachAudioFixes(tokensToChunks(checked, fine).map(c => fixTerms(c, [...bp.items, ...bp.asrTerms], bp.phrases, { audioChecked: true })), audioFixes, checked.suggest || [])
     : alignSentences(raw, speech.regions);
@@ -968,7 +1000,7 @@ const cacheName = key => 'a-' + [...key].reduce((h, c) => (Math.imul(h, 31) + c.
 async function analyzeEachSource(job, bp) {
   const A = job.analysis, n = state.srcs.length, files = state.files;
   const engine = job.asrEngine || 'whisper';
-  const wordsKey = JSON.stringify([engine, job.useAsr, bp.asrTerms, bp.items, bp.brief?.title, bp.brief?.content, ...(asrSingle(bp) ? ['asr1'] : [])]);
+  const wordsKey = JSON.stringify([engine, job.useAsr, bp.asrTerms, bp.items, bp.brief?.title, bp.brief?.content, ...(asrSingle(bp) ? ['asr1'] : []), ...(V2 ? ['v2'] : [])]);
   A.src = A.src || [];
   const parts = [];
   for (let k = 0; k < n; k++) {
@@ -1388,7 +1420,8 @@ function makePlan(brief) {
   setSubtitleWords({ keep: memo.keepWords, omit: [...memo.omitWords, ...(state.fixWords || [])] });
   state.units = buildUnits({
     duration: src.duration, rmsDb: state.rmsDb, speech: state.speech, chunks: state.chunks, motion: state.motion, restarts: state.restarts,
-    pace: bp.brief.cut === 'tight' ? 'tight' : bp.brief.style === 'tempo' ? 'tempo' : 'natural',
+    // v2（テスト環境）: 手動編集に近いテンポ（PACES.manual）。カットの強さの選択によらない
+    pace: V2 ? 'manual' : bp.brief.cut === 'tight' ? 'tight' : bp.brief.style === 'tempo' ? 'tempo' : 'natural',
     retakes: memo.retake === 'no' ? 'no' : 'auto', retakeTimes: memo.retakeTimes, keepTimes: memo.keepTimes,
   });
   state.memo = memo;
@@ -1821,7 +1854,9 @@ function renderTimeline(clips, { useSubs, useZoom, fixes = [] }) {
   setSubtitleWords({ keep: [...(state.memo?.keepWords || []), ...wf.flatMap(f => f.keep || [])], omit: [...(state.memo?.omitWords || []), ...wf.flatMap(f => f.omit || [])] });
   setBreakTerms(briefPlan(readBrief()).items);
   // 最後の場面は、話し終わりの後を少し延ばしてからフェードアウトする（声にフェードがかからないように）
-  let shaped = extendEnding(clips.map(u => ({ ...u, text: state.chunks ? u.text : '', ...shifted(u, state.subOffset) })), state.speech?.voice, state.src.duration);
+  // v2: 選んだ場面と場面の間に声があるとき・短い間（0.35秒以下）のときは、間も残す（話している途中で切らない）
+  const picked = V2 && state.rmsDb && state.speech?.threshold != null ? bridgeSelected(clips, state.units, fineSpeech(state.rmsDb, state.speech.threshold), { duration: state.src.duration, lay: state.lay }) : clips;
+  let shaped = extendEnding(picked.map(u => ({ ...u, text: state.chunks ? u.text : '', ...shifted(u, state.subOffset) })), state.speech?.voice, state.src.duration);
   // 複数の動画: 場面の使う範囲を、それぞれの動画の中に収める（動画と動画の間の無音・となりの動画にはみ出さない）
   if (state.lay) shaped = shaped.map(u => ({ ...u, pieces: clampPieces(u.pieces, state.lay) })).filter(u => u.pieces.length);
   shaped = applyFixes(shaped, fixes);
@@ -2599,7 +2634,7 @@ $('fixAdd').addEventListener('click', () => {
   if (kind === 'cut') f.to = +$('fixTo').value;
   if (kind === 'note') {
     f.note = $('fixNote').value.trim();
-    const p = parseInstruction(f.note);
+    const p = parseInstruction(f.note, { replace: V2 }); // v2: 「「A」を「B」に直す」で動画全体の言葉を置き換える
     // 編集メモと同じ書き方（「字幕では「かなり」を省いて」）は、動画全体の字幕に使う
     const m = p ? null : parseMemo(f.note);
     const words = m && (m.omitWords.length || m.keepWords.length) ? { kind: 'words', omit: m.omitWords, keep: m.keepWords } : null;

@@ -42,6 +42,11 @@ const MID_FILLER_RE = /([、,]\s*)(?:えー+と?|えっと|ええと|あのー|�
 // 文の中の「このように」（手元を見せながら言う言葉。字幕では書かなくても伝わる。「残したい長さにこのように留めておく」）
 const KONOYOUNI_RE = /(^|[^ぁ-ゖ]|[にでをはがも])このように[、,]?/g;
 
+// v2（テスト環境）: 話したとおりに出す。省くのは、つなぎ言葉（えー・あの・うーん）と、調子をとる「ね」だけ
+// （1112 の手動編集の字幕: 「このように」「それから」「あと」は残し、「ドンとね」の「ね」は省いていた）
+let AS_SPOKEN = false;
+export function setAsSpoken(on) { AS_SPOKEN = !!on; }
+
 // 文の頭として見る位置: 文字の最初と、はっきりした文の終わり（〜ます・〜です…）の直後
 function sentenceHeads(t) {
   const out = [0];
@@ -79,12 +84,12 @@ export function cleanForDisplay(text, times = null, { headIsSentence = true } = 
     }
   };
   mark(INTERJECTION_NE_RE, m => m[1], 'ね');
-  mark(TOIU_RE, m => m[1], 'という');
+  if (!AS_SPOKEN) mark(TOIU_RE, m => m[1], 'という');
   mark(MID_FILLER_RE, m => m[1]);
-  mark(KONOYOUNI_RE, m => m[1], 'このように');
+  if (!AS_SPOKEN) mark(KONOYOUNI_RE, m => m[1], 'このように');
   // 文の頭の、字幕に書かなくてよい言葉（「あと」「それが」「特に」「もし」…）。時刻も一緒に外すので、その言葉を話している間は
   // 次の字幕を出さず、残った言葉を話し始めた時に字幕が出る（省いた所に前の字幕を残さない）
-  for (const p of sentenceHeads(t)) {
+  for (const p of AS_SPOKEN ? [] : sentenceHeads(t)) {
     if (p === 0 && !headIsSentence) continue;
     const rest = t.slice(p);
     const end = (rest.search(/(?:ます|です|ました|でした|ません|ください|しょう)(?![がけかよねのとし])/) + 1 || rest.length + 1) + 2;
@@ -117,19 +122,19 @@ export function displayText(text, { headIsSentence = true } = {}) {
     return { text: '', omitted: [...omitted, lone] };
   }
   for (let guard = 0; guard < 4; guard++) {
-    const m = t.match(FILLER_RE) || t.match(HEAD_CONNECTIVE_RE) || t.match(HEAD_DEMONSTRATIVE_RE) || t.match(HEAD_ALSO_RE) || t.match(HEAD_ANSWER_RE) || t.match(HEAD_SOREWA_RE) || t.match(HEAD_SONO_RE);
+    const m = AS_SPOKEN ? t.match(FILLER_RE) : t.match(FILLER_RE) || t.match(HEAD_CONNECTIVE_RE) || t.match(HEAD_DEMONSTRATIVE_RE) || t.match(HEAD_ALSO_RE) || t.match(HEAD_ANSWER_RE) || t.match(HEAD_SOREWA_RE) || t.match(HEAD_SONO_RE);
     if (!m || restLen(t.slice(m[0].length)) < MIN_REST) break;
     omitted.push(m[0].replace(/[、,\s]+$/, ''));
     t = t.slice(m[0].length);
   }
   t = t.replace(/^[、,\s]+|[、。,\s]+$/g, '');
   // ページの終わりの「〜際に」は「〜際」（「軽くしていく際に」→「軽くしていく際」）
-  if (/際に$/.test(t)) { t = t.slice(0, -1); omitted.push('に'); }
+  if (!AS_SPOKEN && /際に$/.test(t)) { t = t.slice(0, -1); omitted.push('に'); }
   // 話し言葉で、動詞の終わりの形に「です」をつけた所（「軽くするです」）は、字幕では「です」を書かない（意味は同じ）。
   // 「〜ないです」「〜いです」（形容詞）は自然な言い方なので、そのまま
-  if (/[うくすつぬむるぐぶ]です$/.test(t) && !/(?:ます|ません)です$/.test(t)) { t = t.slice(0, -2); omitted.push('です'); }
+  if (!AS_SPOKEN && /[うくすつぬむるぐぶ]です$/.test(t) && !/(?:ます|ません)です$/.test(t)) { t = t.slice(0, -2); omitted.push('です'); }
   // 「〜てです」（「目印をつけてです」）も、字幕では「です」を書かない
-  if (/[^ぁ-ゖ][ぁ-ゖ]*[てで]です$/.test(t) && !/(?:ので|んで)です$/.test(t)) { t = t.slice(0, -2); omitted.push('です'); }
+  if (!AS_SPOKEN && /[^ぁ-ゖ][ぁ-ゖ]*[てで]です$/.test(t) && !/(?:ので|んで)です$/.test(t)) { t = t.slice(0, -2); omitted.push('です'); }
   // 表記をそろえる（「やってみて下さい」→「やってみてください」）
   t = t.replace(/て下さい/g, 'てください');
   // ページの終わりの、調子をとる「ね」（「1〜3度ぐらいね」「その分ね」）は書かない（「ですね」「よね」は文の終わりの言い方なので残す）

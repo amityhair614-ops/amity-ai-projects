@@ -20,7 +20,7 @@ const el = (tag, attrs = {}, text = '') => {
 };
 const sec = v => (v == null ? '-' : `${(+v).toFixed(1)}秒`);
 
-export function mountTestPanel({ state, timings, asrLoadOpts, worker }) {
+export function mountTestPanel({ state, timings, asrLoadOpts, worker, v2 = false }) {
   const errors = [];
   window.addEventListener('error', e => errors.push(String(e.message || e.error?.message || e.error || 'エラー').slice(0, 160)));
   window.addEventListener('unhandledrejection', e => errors.push(String(e.reason?.message || e.reason || 'エラー').slice(0, 160)));
@@ -46,6 +46,7 @@ export function mountTestPanel({ state, timings, asrLoadOpts, worker }) {
   const envText = [
     `クロスオリジン分離: ${iso ? 'はい' : 'いいえ'}・SharedArrayBuffer: ${sab ? 'あり' : 'なし'}・コア数: ${hw ?? '不明'}`,
     `音声認識のスレッド: 自動なら ${auto}${opts.threads ? `（このページでは ${opts.threads} を指定）` : ''}・ONNX Runtime の場所: ${opts.ortLocal ? 'このサイト' : 'CDN'}`,
+    `改善版（v2: 短い窓＋長い窓の音声認識・手動編集に近いカット・1文ずつの字幕）: ${v2 ? 'ON（今までの方式と比べるときは、住所の最後に ?v2=0 を付けて開く）' : 'OFF（?v2=0 で開いています）'}`,
     `ブラウザ: ${navigator.userAgent}`,
   ].join('\n');
   env.textContent = envText;

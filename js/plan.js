@@ -2,7 +2,7 @@
 import { hasTokenizer, phraseUnits, boundaryStrength, ambiguousEnd, subtitleOmissions } from './morph.js';
 import { analyzeContent } from './content.js';
 
-import { displayText, cleanForDisplay, formatNumbers } from './captions.js';
+import { displayText, cleanForDisplay, formatNumbers, setAsSpoken } from './captions.js';
 
 export const FRAME_SEC = 0.05; // 音量を測る単位（50ms）
 export const OUT_W = 1080;
@@ -246,6 +246,9 @@ export const PACES = {
   // カットの強さ「テンポ重視」: 声の前後の余白を、手動編集の余白の中央くらいまで詰める（細かい声の区間の端から
   // 頭 0.08秒・語尾 0.13秒。固定テスト素材9本の手動編集: 頭 0.07〜0.13秒・語尾 0.08〜0.22秒）。声のある所は切らない
   tight: { lead: 0.03, tail: 0.06, keepGap: 0.12, minGap: 0.1, maxGap: 0.14 },
+  // 改善版（v2・テスト環境）: 手動編集に近いテンポ（1112 の手動編集: 10か所だけつなぎ、0.3秒より短い間は削っていない）。
+  // 0.35秒以下の間は残し、長い間も0.25〜0.4秒は残す。小さな声の語尾・話し始め（声の区間の外の、小さな音の続き）も残す（quiet）
+  manual: { lead: 0.1, tail: 0.2, keepGap: 0.35, minGap: 0.25, maxGap: 0.4, quiet: true },
 };
 
 // 声の区間 segs を、その中の息継ぎの間（細かい声の区間 fine のすき間が minGap 以上）で分ける。
@@ -419,6 +422,94 @@ export function asrWindows(regions, rmsDb, L = ASR_WINDOW, lay = null, bounds = 
   return [...grid(0, 'A'), ...(withB ? grid(L / 2, 'B') : []), ...C];
 }
 
+// 改善版（テスト環境・v2）: 0.3秒以上の間で区切った短い窓（最大8秒）。A として読み、長い窓（C）の結果で補う。
+// 長い窓では、0.5秒以上の間をはさむと文がまるごと落ちることがある（1112: 27文中 長い窓7文・短い窓1文を落とした）。
+// 短い窓だけでは、まれに長い窓が読めた文を落とす（過去の素材17本で3か所）ため、C と合わせ、違う所は音声で確かめる（verify.js）。
+// 区切り方（Python の試験と同じ）:
+// - 声の区間: 音量の下から15%の値 + thr dB を超える所（0.25秒未満の切れ目はつなぐ・0.12秒未満の区間は除く）
+// - 間が join 秒未満、または前後どちらかが minSeg 秒未満の短い区間は、max 秒までひとつの窓にする（言葉の途中で区切らない）
+// - max 秒を超える区間は、max の半分〜max の間の一番静かな所で分ける
+// - 前後に pad 秒の余白（となりの窓と重ならないよう、間の真ん中まで）
+// 窓の切れ目が C のまとまりの中（間が0.5秒未満）なら、headCut・tailCut を付ける（そこで A と C の文字が違えば C を使う）
+export function shortAsrWindows(rmsDb, { join = 0.3, max = 8, thr = 10, pad = 0.4, minSeg = 1.5, srcSec = null } = {}) {
+  if (!rmsDb?.length) return [];
+  const F = FRAME_SEC, n = rmsDb.length, total = srcSec ?? n * F;
+  const sorted = Array.from(rmsDb).sort((a, b) => a - b);
+  const th = sorted[Math.floor(0.15 * (sorted.length - 1))] + thr;
+  const regs = [];
+  for (let i = 0; i < n;) {
+    if (!(rmsDb[i] > th)) { i++; continue; }
+    let j = i;
+    while (j < n && rmsDb[j] > th) j++;
+    const last = regs[regs.length - 1];
+    if (last && (i - last[1]) * F < 0.25) last[1] = j;
+    else regs.push([i, j]);
+    i = j;
+  }
+  const kept = regs.filter(r => (r[1] - r[0]) * F >= 0.12);
+  const groups = [];
+  for (const [a, b] of kept) {
+    const g = groups[groups.length - 1];
+    if (g && (b - g.a) * F <= max && ((a - g.b) * F < join || (g.b - g.a) * F < minSeg || (b - a) * F < minSeg)) { g.b = b; g.gaps.push([g.b0, a]); g.b0 = b; }
+    else groups.push({ a, b, b0: b, gaps: [] });
+  }
+  const res = [];
+  for (const g of groups) {
+    let a = g.a;
+    while ((g.b - a) * F > max) {
+      const lo = a + Math.floor(max * 0.5 / F), hi = Math.min(g.b, a + Math.floor(max / F));
+      let k = lo;
+      for (let i = lo; i < hi; i++) if (rmsDb[i] < rmsDb[k]) k = i;
+      res.push({ a, b: k, forcedEnd: true });
+      a = k;
+    }
+    res.push({ a, b: g.b, forcedStart: a !== g.a });
+  }
+  return res.map((r, k) => {
+    const start = r.a * F, end = r.b * F;
+    let s = start - pad, t = end + pad + 0.05;
+    const prev = res[k - 1], nx = res[k + 1];
+    if (prev) s = Math.max(s, (prev.b * F + start) / 2);
+    if (nx) t = Math.min(t, (end + nx.a * F) / 2);
+    s = Math.max(0, s); t = Math.min(total, t);
+    const gapBefore = prev ? start - prev.b * F : Infinity, gapAfter = nx ? nx.a * F - end : Infinity;
+    return {
+      start: +start.toFixed(3), end: +end.toFixed(3), padStart: +(start - s).toFixed(3), padEnd: +(t - end).toFixed(3),
+      lo: +(s - 0.001).toFixed(3), hi: +t.toFixed(3), speech: +(end - start).toFixed(3), pass: 'A', short: true,
+      headCut: r.forcedStart || gapBefore < 0.5 || start < 0.3, tailCut: r.forcedEnd || gapAfter < 0.5 || total - end < 0.3,
+    };
+  });
+}
+
+// v2: 文字と文字の間が minGap 秒以上あいているのに、その間に声（合わせて minVoice 秒以上）がある所を、その声だけでもう一度読む窓（B として合わせる）。
+// 1112 の2本目: 「まずはブロック分けしていきます」の後の4.6秒（2文）を、短い窓でも長い窓でも落とした
+// 文字を受け取る範囲は、その間の中だけ（前後の文字を2回入れない）。max 秒を超える声は、一番長い間で分ける
+export function voiceGapWindows(fine, merged, { minGap = 1.2, minVoice = 0.8, max = 8 } = {}) {
+  const ts = merged.flatMap(c => c.tokens || []).map(k => k.t).sort((a, b) => a - b);
+  const out = [];
+  const edges = [-Infinity, ...ts, Infinity];
+  for (let i = 0; i + 1 < edges.length; i++) {
+    const a = edges[i], b = edges[i + 1];
+    if (b - a < minGap) continue;
+    const lo = a + 0.2, hi = b - 0.05;
+    const vs = fine.map(f => ({ start: Math.max(f.start, lo), end: Math.min(f.end, hi) })).filter(f => f.end - f.start >= 0.05);
+    const split = rs => {
+      if (!rs.length) return [];
+      if (rs[rs.length - 1].end - rs[0].start <= max || rs.length === 1) return [rs];
+      let k = 1;
+      for (let j = 2; j < rs.length; j++) if (rs[j].start - rs[j - 1].end > rs[k].start - rs[k - 1].end) k = j;
+      return [...split(rs.slice(0, k)), ...split(rs.slice(k))];
+    };
+    for (const rs of split(vs)) {
+      const speech = rs.reduce((s, r) => s + r.end - r.start, 0);
+      if (speech < minVoice) continue;
+      const s = rs[0].start, e = rs[rs.length - 1].end;
+      out.push({ start: +s.toFixed(3), end: +e.toFixed(3), padStart: 0.3, padEnd: 0.3, lo: +Math.max(s - 0.3, Number.isFinite(a) ? a + 0.1 : -Infinity).toFixed(3), hi: +Math.min(e + 0.3, Number.isFinite(b) ? b - 0.02 : Infinity).toFixed(3), speech: +speech.toFixed(3), pass: 'B', retry: 'voice', gapFill: true, headCut: false, tailCut: false });
+    }
+  }
+  return out;
+}
+
 // A と C で読んだ結果（merged）で、話した長さに比べて文字が少ない（1秒あたり rate 文字未満）まとまりにかかる B の窓
 export function asrRetryWindows(regions, rmsDb, windows, merged, rate = 4.5) {
   const toks = merged.flatMap(c => c.tokens || []);
@@ -467,7 +558,8 @@ function alignChars(a, b, tol = 1.5) {
 // edges: 窓の切れ目（話の途中）のすぐそばの文字（Set）。そこで base と other の文字が違うときは、other を使う
 // 読み方によって、時刻が少しずれることがある（窓の頭の読み始めの違い・最大0.8秒ほど。所によってずれ方も変わる）。
 // まず時刻を見ずに照らし合わせ、近く（前後2秒）の同じ文字どうしの時刻の差（中央値）だけ other をずらしてから、時刻も合わせて照らし合わせる
-export function fillDeletions(base, other, minRun = 2, edges = new Set(), startOne = true) {
+// keepTime: 同じ文字で時刻が大きく違うときも、base の時刻のままにする
+export function fillDeletions(base, other, minRun = 2, edges = new Set(), startOne = true, keepTime = false) {
   const med = xs => { const v = xs.slice().sort((x, y) => x - y); return v.length ? v[v.length >> 1] : 0; };
   const m0 = alignChars(base, other, Infinity).filter(([op, i, j]) => op === 'm' && base[i].s === other[j].s).map(([, i, j]) => ({ t: base[i].t, d: other[j].t - base[i].t }));
   // 片方に文がまるごと無いと、時刻を見ない照らし合わせは別の文の同じ文字を対応させる（数秒ずれる）。1秒以内の対応だけで見積もる
@@ -485,7 +577,13 @@ export function fillDeletions(base, other, minRun = 2, edges = new Set(), startO
     const is = ins.filter(x => !(isEdge(x) && near(base, x)));
     // 1文字だけでも補う: 窓の切れ目の誤った文字を外した所（その代わりの文字）・まとまりの頭と終わり（「そ｜うならないために」）
     const one = (ds.length < dels.length && is.length === dels.length - ds.length) || (startOne && !out.length && is.length === 1 && !isEdge(is[0]) && base.length && base[0].t - is[0].t <= 0.5 && base[0].t - is[0].t > 0);
-    if (is.length >= (one ? 1 : minRun)) {
+    // v2（keepTime）: 差し込む言葉が、近く（前後2.5秒）の base にもうある（時刻がずれて対応しなかっただけ）なら、差し込まない
+    // （1111: 短い窓の時刻が1.7秒ずれ、「痛んでいる方いる方」と2回入った）
+    const dup = keepTime && is.length >= 2 && (() => {
+      const w = is.map(x => x.s).join(''), a = is[0].t - 2.5, b = is[is.length - 1].t + 2.5;
+      return base.filter(k => k.t >= a && k.t <= b).map(k => k.s).join('').includes(w);
+    })();
+    if (!dup && is.length >= (one ? 1 : minRun)) {
       const inside = d => is.some((x, k) => k + 1 < is.length && x.t <= d.t && d.t <= is[k + 1].t && is[k + 1].t - x.t <= 0.6);
       out.push(...[...ds.filter(d => !inside(d)), ...is].sort((x, y) => x.t - y.t));
     } else out.push(...ds);
@@ -500,7 +598,7 @@ export function fillDeletions(base, other, minRun = 2, edges = new Set(), startO
       // 同じ文字でも時刻が大きく違う（0.4秒以上）ときは、前の文字に近い方の時刻にする（「ないで30.1｜す31.5」の「す」が
       // 次の文の頭に入らないように。窓の終わり近くでは、字幕AIが文字を遅れて出すことがある）
       const prev = out[out.length - 1];
-      if (k === base[i] && base[i].s === other[j].s && Math.abs(base[i].t - other[j].t) > 0.4 && prev && other[j].t > prev.t && other[j].t - prev.t < base[i].t - prev.t) k = { ...base[i], t: other[j].t };
+      if (!keepTime && k === base[i] && base[i].s === other[j].s && Math.abs(base[i].t - other[j].t) > 0.4 && prev && other[j].t > prev.t && other[j].t - prev.t < base[i].t - prev.t) k = { ...base[i], t: other[j].t };
       out.push(k);
     }
   }
@@ -516,7 +614,9 @@ export const hasNegation = text => NEGATION_RE.test(text || '');
 // まとまり（C の窓）ごとに、A を基にして B・C で落とした言葉を補う。返り値の passes は、読み方ごとの文字（確認用）
 export function mergeAsrPasses(windows, results) {
   if (!windows.some(w => w.pass)) return windows.flatMap((_, k) => results[k] || []);
-  const tokensOf = pass => windows.flatMap((w, k) => w.pass === pass ? (results[k] || []).flatMap(c => c.tokens || []) : []).sort((x, y) => x.t - y.t);
+  // gapFill（voiceGapWindows）の窓の文字は、照らし合わせずに、文字の無い間にそのまま入れる（下）。
+  // 照らし合わせると、間の後の文の同じ文字（「線」）と対応して、順番が入れかわることがある
+  const tokensOf = pass => windows.flatMap((w, k) => w.pass === pass && !w.gapFill ? (results[k] || []).flatMap(c => c.tokens || []) : []).sort((x, y) => x.t - y.t);
   const P = { A: tokensOf('A'), B: tokensOf('B'), C: tokensOf('C') };
   // 話の途中で切れた窓の端（30秒ごとの区切り・動画の始まりと終わり）の前後0.3秒の文字は、言葉の切れ端から出た誤りが多い
   const edges = new Set();
@@ -524,6 +624,7 @@ export function mergeAsrPasses(windows, results) {
     for (const c of results[k] || []) for (const t of c.tokens || []) if ((w.headCut && t.t < w.start + 0.3) || (w.tailCut && t.t > w.end - 0.3)) edges.add(t);
   });
   const segs = windows.filter(w => w.pass === 'C');
+  const short = windows.some(w => w.short); // v2: A は短い窓（shortAsrWindows）
   // まとまりとまとまりの区切り: C の文字は、読んだまとまりのもの。A・B の文字は、間の近くで A・B の文字が無い一番長い所で分ける
   // （読み方によって時刻が少しずれるので、間の真ん中で分けると、同じ言葉が区切りの前後に分かれて2回入ることがある）
   const ab = [...P.A, ...P.B, ...P.C].map(k => k.t).sort((x, y) => x - y);
@@ -541,7 +642,9 @@ export function mergeAsrPasses(windows, results) {
   segs.forEach((g, j) => {
     const lo = j ? cuts[j - 1] : -Infinity, hi = j + 1 < segs.length ? cuts[j] : Infinity;
     const pick = p => P[p].filter(k => k.t >= lo && k.t < hi);
-    const filled = fillDeletions(fillDeletions(pick('A'), pick('B'), 2, edges, false), cTokens[j], 2, edges);
+    // v2（short）: A は短い窓。違う文字の所は A のまま、時刻も A のまま（keepTime）。言葉の違い（「修正過程」と「修正カット」）は、
+    // 音声での確かめ（verify.js の prefer）で C の読み方も比べる。C を基にする方法も試したが、1112 で誤りが増えた（78→84）
+    const filled = fillDeletions(fillDeletions(pick('A'), pick('B'), 2, edges, false, short), cTokens[j], 2, edges, true, short);
     if (!filled.length) return;
     // 差し込んだ文字は別の読み方の時刻なので、前後と順番が逆になることがある。文字の順に時刻をそろえる
     const tokens = [];
@@ -554,6 +657,28 @@ export function mergeAsrPasses(windows, results) {
     const text = tokens.map(k => k.s).join('');
     out.push({ start: g.start, end: g.end, text, raw: text, timed: true, tokens });
   });
+  const gaps = windows.map((w, k) => (w.gapFill ? { w, toks: (results[k] || []).flatMap(c => c.tokens || []) } : null)).filter(x => x?.toks.length);
+  if (gaps.length) {
+    const all = out.flatMap(c => c.tokens);
+    for (const { w, toks } of gaps) {
+      // ほかの読み方で、もう埋まっている間（2文字以上）は使わない
+      if (all.filter(k => k.t > w.lo && k.t < w.hi).length >= 2) continue;
+      // 読み方ごとの文字（passes）には入れない: 間だけを読んだ文字なので、音声での確かめ（verify.js）で、
+      // ほかの所の言葉を「この読み方には無い」として消す直しの候補になってしまう（1112:「ていきます後ろを分け」を消した）
+      for (const k of toks) all.push({ ...k });
+    }
+    all.sort((x, y) => x.t - y.t);
+    // 入れた文字を、時刻でまとまり（C の窓）に分け直す
+    const at = t => { let j = 0; while (j < cuts.length && t >= cuts[j]) j++; return j; };
+    const rows = segs.map(() => []);
+    for (const k of all) rows[at(k.t)].push(k);
+    out.length = 0;
+    rows.forEach((tokens, j) => {
+      if (!tokens.length) return;
+      const text = tokens.map(k => k.s).join('');
+      out.push({ start: segs[j].start, end: segs[j].end, text, raw: text, timed: true, tokens });
+    });
+  }
   out.passes = P;
   return out;
 }
@@ -946,7 +1071,9 @@ export function buildUnits({ duration, rmsDb, speech, chunks, motion, pace, rest
     const before = inside(s0) ? s0 : Math.min(s0, Math.max(0, prevEnd + 0.05, s0 - 1));
     const after = inside(s1) ? s1 : Math.min(duration, nextStart - 0.05);
     const parts = fine ? splitAtPauses(segs, fine, P.keepGap) : segs;
-    return shapePieces(parts, Math.min(before, parts[0].start), Math.max(s1, after, parts[parts.length - 1].end), P);
+    const pieces = shapePieces(parts, Math.min(before, parts[0].start), Math.max(s1, after, parts[parts.length - 1].end), P);
+    if (P.quiet && rmsDb && speech.low != null) quietEdges(pieces, rmsDb, speech.low, Math.max(0, prevEnd + 0.05), Math.min(duration, nextStart - 0.05));
+    return pieces;
   };
 
   // 息継ぎの間を測る細かい声の区間
@@ -1110,6 +1237,39 @@ export function buildUnits({ duration, rmsDb, speech, chunks, motion, pace, rest
   });
   linkSentences(units);
   return units;
+}
+
+// v2: 小さな声の語尾・話し始め（大きな声の区間の外で、音量が小さな声の目安 low を超えて続いている所）を残す。
+// 1112: 「〜ます」の小さな「す」（0.3〜0.5秒）を切っていた。語尾は最大0.6秒・話し始めは最大0.3秒まで（となりの声の手前まで）
+function quietEdges(pieces, rmsDb, low, lo, hi, { tail = 0.6, head = 0.3, hold = 0.1 } = {}) {
+  const F = FRAME_SEC, at = t => rmsDb[Math.max(0, Math.min(rmsDb.length - 1, Math.floor(t / F)))];
+  const last = pieces[pieces.length - 1], first = pieces[0];
+  // 語尾: 今の終わりから、小さな声が続いている所の終わり + hold 秒まで
+  let t = last.end, end = last.end;
+  while (t < Math.min(hi, last.end + tail) && at(t) > low) { t += F; end = t; }
+  if (end > last.end) last.end = Math.min(hi, end + hold);
+  t = first.start; let start = first.start;
+  while (t > Math.max(lo, first.start - head) && at(t - F) > low) { t -= F; start = t; }
+  if (start < first.start) first.start = Math.max(lo, start - 0.05);
+}
+
+// v2: 選んだ場面と場面の間（同じ動画の中・maxGap 秒以内）に声があるときは、その間も残す（話している途中で切らない）。
+// 1112 の2本目 9.22〜9.42: 字幕AIが聞き落とした言葉（「（が）横、あと」）の上で、場面と場面の間として削っていた。
+// 間に声がなくても、間が keep 秒以下なら残す（手動編集は0.3秒ほどの間を削らない）
+export function bridgeSelected(sel, units, fine, { duration = Infinity, lay = null, maxGap = 1.0, keep = 0.35 } = {}) {
+  const list = sel.slice().sort((a, b) => a.start - b.start).map(u => ({ ...u, pieces: u.pieces.map(p => ({ ...p })) }));
+  const srcOf = t => (lay ? lay.findIndex(l => t >= l.offset - 0.01 && t <= l.end + 0.01) : 0);
+  for (let i = 0; i + 1 < list.length; i++) {
+    const a = list[i], b = list[i + 1];
+    const pa = a.pieces[a.pieces.length - 1], pb = b.pieces[0];
+    const g = pb.start - pa.end;
+    if (g <= 0 || g > maxGap || srcOf(pa.end) !== srcOf(pb.start)) continue;
+    // 間に、選ばなかった場面（言い直し・つなぎ言葉など、外した場面）があるときはつながない
+    if (units.some(u => !list.includes(u) && !sel.some(s => s.id === u.id) && u.kind === 'speech' && u.start < pb.start - 0.05 && u.end > pa.end + 0.05)) continue;
+    const voiced = fine.reduce((s, f) => s + Math.max(0, Math.min(f.end, pb.start) - Math.max(f.start, pa.end)), 0);
+    if (voiced >= 0.04 || g <= keep) pa.end = Math.min(duration, pb.start);
+  }
+  return list;
 }
 
 // 選んだ場面を書き出したときの長さ。続けて選んだ場面の余白が重なる分は1回だけ数える（buildTimeline と同じ数え方）
@@ -1462,7 +1622,8 @@ function linePages(text, maxChars, pauseAt) {
 // 長くても、区切りの弱い所（「乾いた状態の髪を／切ればよいのか」）では無理に分けない（15文字まで）
 export const PHRASE = { soft: 12, perPage: 0.6 };
 // omits: 字幕で省く文字の位置（Set）。ページの長さは、省いた後の文字数で数える
-function phrasePages(text, maxChars, pauseAt, omits = null) {
+// soft: これより長いページは、長さの分だけ悪くする（1行の字幕 12。v2 の1文の字幕は長め）
+function phrasePages(text, maxChars, pauseAt, omits = null, soft = PHRASE.soft) {
   const units = phraseUnits(text);
   if (!units) return null;
   const n = units.length;
@@ -1487,10 +1648,13 @@ function phrasePages(text, maxChars, pauseAt, omits = null) {
   const shown = (a, b) => { let t = ''; for (let k = a; k < b; k++) if (!omits?.has(k)) t += text[k]; return t; };
   const chars = (i, j) => normalizeText(shown(units[i].start, units[j - 1].end)).length || 1;
   // 区切らないときの悪さ: 文の終わり 8・節の終わり 4・「〜際」1.5・声の間のある「〜は」「〜を」0.7・「〜すると」0.5
-  const keepCost = s => (s >= 9 ? 8 : s >= 7 ? 4 : s >= 6.8 ? 1.5 : s >= 6.5 ? 0.7 : s >= 6 ? 0.5 : s >= 5 ? 0.3 : 0);
+  // v2（1文ずつ・soft が長い）: 節の終わり（〜て・〜なく）では、長さが足りないときだけ分ける（手動編集は1文を1枚にしていた）
+  const keepCost = soft > PHRASE.soft
+    ? s => (s >= 9 ? 8 : s >= 7 ? 0.4 : s >= 6 ? 0.2 : 0)
+    : s => (s >= 9 ? 8 : s >= 7 ? 4 : s >= 6.8 ? 1.5 : s >= 6.5 ? 0.7 : s >= 6 ? 0.5 : s >= 5 ? 0.3 : 0);
   const breakCost = s => (s <= 0 ? Infinity : s >= 6 ? 0 : s >= 5 ? 0.3 : s >= 4.5 ? 0.6 : s >= 4 ? 0.9 : s >= 3 ? 1.8 : s >= 2 ? 3.2 : 6);
   // 4文字以下のページ（「あります」「メリットは」）は、前後がはっきりした切れ目のとき（「結論」）だけにする
-  const lenCost = (c, alone) => (c <= 2 ? (alone ? 0.5 : 4) : c === 3 ? (alone ? 0.2 : 2) : c === 4 ? (alone ? 0 : 1) : c === 5 ? (alone ? 0 : 0.3) : c <= PHRASE.soft ? 0 : 0.45 * (c - PHRASE.soft));
+  const lenCost = (c, alone) => (c <= 2 ? (alone ? 0.5 : 4) : c === 3 ? (alone ? 0.2 : 2) : c === 4 ? (alone ? 0 : 1) : c === 5 ? (alone ? 0 : 0.3) : c <= soft ? 0 : 0.45 * (c - soft));
   const cost = new Array(n + 1).fill(Infinity), from = new Array(n + 1).fill(-1);
   cost[0] = 0;
   for (let j = 1; j <= n; j++) {
@@ -1518,6 +1682,11 @@ function phrasePages(text, maxChars, pauseAt, omits = null) {
 function pageTexts(text, maxChars, maxLines, pauseAt, omits = null) {
   if (maxLines === 1 && hasTokenizer()) {
     const r = phrasePages(text, maxChars, pauseAt, omits);
+    if (r) return r;
+  }
+  // v2（1文ずつ）: 意味のまとまりで、1枚 page 文字まで（2行に折り返す）。文の終わり・節の終わり（〜なく・〜して）で分けやすい
+  if (SUB_MODE.page && hasTokenizer()) {
+    const r = phrasePages(text, SUB_MODE.page, pauseAt, omits, SUB_MODE.soft);
     if (r) return r;
   }
   if (maxLines === 1) return linePages(text, maxChars, pauseAt);
@@ -1566,6 +1735,12 @@ function pageTexts(text, maxChars, maxLines, pauseAt, omits = null) {
 // 分けると不自然になる（「段を入れる必要が／あります」）ときは、12〜15文字も使う（最大15文字）
 export const SUB_MAX_CHARS = 15;
 export const SUB_LINES = 1;
+// v2（テスト環境）: 1文を1枚に（1行15文字・2行まで）。手動編集の字幕は、話した1文をそのまま1枚にしていた（1112: 27枚）。
+// 30文字を超える文・はっきりした間（0.5秒以上）のある文だけ、意味の切れ目で分ける
+let SUB_MODE = { maxChars: SUB_MAX_CHARS, lines: SUB_LINES };
+export function setSubtitleMode(mode) {
+  setAsSpoken(mode === 'sentence');
+  SUB_MODE = mode === 'sentence' ? { maxChars: 15, lines: 2, page: 26, soft: 26, keepWords: true } : { maxChars: SUB_MAX_CHARS, lines: SUB_LINES }; }
 const SUB_TARGET_CHARS = 8;
 const SUB_SOFT_MAX = 11; // これより長いページは、よい区切りがあれば分ける
 const SUB_LONG_SEC = 3; // これより長く出ているページは、よい区切りがあれば分ける
@@ -2186,13 +2361,14 @@ function timedPages(clip, text) {
     if (t !== text) { clip = { ...clip, text: t, times: c.times }; text = t; inline = [...c.omitted]; }
     // 字幕で省く言葉（「それとも」「ちなみにですが」「かなり」「そのような」…）。ページの区切りは省く前の文で決める
     // （「理由／それは表面の…」のように、省く言葉が文の切れ目の手がかりになるため）
-    omits = subtitleOmissions(text, { keep: SUB_WORDS.keep, extra: SUB_WORDS.omit });
+    // v2（1文ずつ）: 話した言葉をできるだけそのまま出す（「このように」「かなり」などは省かない。編集メモで省くと書いた言葉だけ省く）
+    omits = SUB_MODE.keepWords ? subtitleOmissions(text, { keep: SUB_WORDS.keep, extra: SUB_WORDS.omit, only: true }) : subtitleOmissions(text, { keep: SUB_WORDS.keep, extra: SUB_WORDS.omit });
   }
   // 手直しで表示時刻が変わっていても、その範囲の中の発話だけを使う
   const fine = (clip.fine || []).map(r => ({ start: Math.max(r.start, clip.subStart), end: Math.min(r.end, clip.subEnd) })).filter(r => r.end > r.start);
   // 声の間を、ページ・行の区切りに使う（1文字ごとの時刻がわかるとき）
   const omitSet = omits?.length ? new Set(omits.flatMap(o => Array.from({ length: o.end - o.start }, (_, k) => o.start + k))) : null;
-  let pages = subtitlePages(text, 1, SUB_MAX_CHARS, SUB_LINES, text === clip.text ? charPauses(clip, fine) : null, omitSet);
+  let pages = subtitlePages(text, 1, SUB_MODE.maxChars, SUB_MODE.lines, text === clip.text ? charPauses(clip, fine) : null, omitSet);
   // 省く言葉を、1文字ごとの時刻と一緒に各ページから取り除く（省いた言葉を話している間は、次の字幕を出さない）
   if (omits?.length && pages.length) {
     const r = dropOmitted(pages, text, clip.times, omits);
