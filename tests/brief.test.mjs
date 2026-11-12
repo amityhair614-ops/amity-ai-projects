@@ -46,14 +46,14 @@ function plan(v, brief) {
   return { bp, units, must, sel, fit: fitReport({ targetSec: bp.brief.targetSec, selected: sel, units, sourceDuration: v.duration }) };
 }
 
-test('入力なしでも、これまでどおり約60秒の構成になる', () => {
+test('入力なしでも、約60秒（55〜65秒）の構成になる', () => {
   const v = fakeVideo();
   const a = plan(v, {});
   const units = buildUnits(v);
   const b = selectUnits(units, v.duration);
   assert.deepEqual(a.sel.map(u => u.start), b.map(u => u.start), '入力なしの選び方は従来と同じ');
   assert.ok(a.fit.ok);
-  assert.ok(total(a.sel) <= 60 && total(a.sel) >= 50, String(total(a.sel)));
+  assert.ok(total(a.sel) <= 65 && total(a.sel) >= 55, String(total(a.sel)));
 });
 
 test('入力値の正規化: 不正な値・範囲外は安全な値にする', () => {
@@ -71,9 +71,11 @@ test('希望時間 30秒・45秒・60秒・自由入力（20秒）に合わせ�
   for (const sec of [20, 30, 45, 60]) {
     const { sel, fit } = plan(v, { targetSec: sec });
     const t = total(sel);
-    assert.ok(t <= sec + 1e-6, `${sec}: ${t}`);
-    assert.ok(t >= sec - Math.max(3, sec * 0.1), `${sec}: ${t}`);
-    assert.ok(fit.ok, fit.reason);
+    const { lo, max } = targetRange(sec);
+    // 上限を少し（許容幅の半分まで）超えるだけなら、説明の文を外さずに残す
+    assert.ok(t <= max + (max - sec) / 2 + 1e-6, `${sec}: ${t}`);
+    assert.ok(t >= lo, `${sec}: ${t}`);
+    assert.ok(fit.ok || /内容と自然な流れを優先/.test(fit.reason), fit.reason);
     for (let i = 1; i < sel.length; i++) assert.ok(sel[i].start > sel[i - 1].start, '元の動画の順番のまま');
   }
 });
@@ -154,15 +156,20 @@ test('文字起こし用の用語: 入力にある辞書外の言葉だけを渡
   assert.ok(bp.asrTerms.length <= 30);
 });
 
-test('編集スタイル: テンポ重視はズームの間隔が短く、それでも 1.10 倍まで', () => {
+test('控えめなズーム: 1.03〜1.06倍・1分に2回まで・20秒以上あける。1080の幅の動画（拡大になる）ではズームしない', () => {
   const clip = (s, e) => ({ pieces: [{ start: s, end: e }], text: '', motion: 0.8, cx: 0.5, box: [0.35, 0.65, 0.4, 0.6] });
   const clips = [];
   for (let s = 0; s < 60; s += 4) clips.push(clip(s, s + 3));
-  const simple = buildTimeline(clips, { srcW: 1080, srcH: 1920, zoom: true, style: 'simple' }).filter(c => c.zoom);
-  const tempo = buildTimeline(clips, { srcW: 1080, srcH: 1920, zoom: true, style: 'tempo' }).filter(c => c.zoom);
-  assert.ok(tempo.length > simple.length, `${tempo.length} > ${simple.length}`);
-  for (const c of [...simple, ...tempo]) assert.ok(c.zoom.z >= 1.03 && c.zoom.z <= 1.10, String(c.zoom.z));
-  for (const c of simple) assert.ok(c.zoom.z <= 1.08);
+  for (const style of ['simple', 'tempo']) {
+    const z = buildTimeline(clips, { srcW: 2160, srcH: 3840, zoom: true, style }).filter(c => c.zoom);
+    assert.ok(z.length >= 1 && z.length <= 2, `${style}: ${z.length}回`);
+    for (const c of z) assert.ok(c.zoom.z >= 1.03 && c.zoom.z <= 1.06, String(c.zoom.z));
+    for (let i = 1; i < z.length; i++) assert.ok(z[i].outStart - (z[i - 1].outStart + z[i - 1].outDuration) >= 12);
+  }
+  // 1080×1920 の動画: ズームすると元の画素を拡大することになるので、ズームしない（理由を残す）
+  const low = buildTimeline(clips, { srcW: 1080, srcH: 1920, zoom: true });
+  assert.ok(!low.some(c => c.zoom));
+  assert.equal(low.zoomSkipped, 'resolution');
 });
 
 test('テンポ重視は長い場面より短い場面を選びやすい', () => {

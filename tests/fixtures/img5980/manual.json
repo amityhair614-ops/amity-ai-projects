@@ -1,0 +1,455 @@
+{
+ "source": "IMG_5980.mp4（64.97秒）",
+ "manual": "タイトルなし(20261030-055022).mp4（56.03秒）",
+ "ai": "amity-short-20261030-1436.mp4（58.63秒・v0.9.4）",
+ "duration": 56.03,
+ "targetSec": 60,
+ "pauses": {
+  "median": 0.15,
+  "p75": 0.2,
+  "p90": 0.35,
+  "max": 0.95,
+  "note": "手動編集の動画の音声を測った話の途中の間（1.5秒未満）"
+ },
+ "note": "手動編集（正解）と元の動画の照合結果。kept/removed は元の動画の秒（2コマ以内の小さなカットは見分けられない）。subtitles は手動編集の字幕（画面から0.5秒ごとに読んだ。時刻は±0.25秒）。spoken の retake は手動編集が削った言いかけ",
+ "kept": [
+  {
+   "srcStart": 0.67,
+   "srcEnd": 9.97,
+   "outStart": 0.0,
+   "outEnd": 9.3
+  },
+  {
+   "srcStart": 10.33,
+   "srcEnd": 11.6,
+   "outStart": 9.1,
+   "outEnd": 10.37
+  },
+  {
+   "srcStart": 12.0,
+   "srcEnd": 13.07,
+   "outStart": 10.37,
+   "outEnd": 11.44
+  },
+  {
+   "srcStart": 13.4,
+   "srcEnd": 17.1,
+   "outStart": 11.43,
+   "outEnd": 15.13
+  },
+  {
+   "srcStart": 17.3,
+   "srcEnd": 22.4,
+   "outStart": 15.17,
+   "outEnd": 20.27
+  },
+  {
+   "srcStart": 22.8,
+   "srcEnd": 31.83,
+   "outStart": 20.2,
+   "outEnd": 29.23
+  },
+  {
+   "srcStart": 32.13,
+   "srcEnd": 35.7,
+   "outStart": 29.23,
+   "outEnd": 32.8
+  },
+  {
+   "srcStart": 39.83,
+   "srcEnd": 44.37,
+   "outStart": 32.8,
+   "outEnd": 37.34
+  },
+  {
+   "srcStart": 44.7,
+   "srcEnd": 55.97,
+   "outStart": 37.33,
+   "outEnd": 48.6
+  },
+  {
+   "srcStart": 56.63,
+   "srcEnd": 60.77,
+   "outStart": 48.37,
+   "outEnd": 52.51
+  },
+  {
+   "srcStart": 61.0,
+   "srcEnd": 64.53,
+   "outStart": 52.5,
+   "outEnd": 56.03
+  }
+ ],
+ "removed": [
+  {
+   "srcStart": 0,
+   "srcEnd": 0.67,
+   "dur": 0.67
+  },
+  {
+   "srcStart": 9.97,
+   "srcEnd": 10.33,
+   "dur": 0.36
+  },
+  {
+   "srcStart": 11.6,
+   "srcEnd": 12.0,
+   "dur": 0.4
+  },
+  {
+   "srcStart": 13.07,
+   "srcEnd": 13.4,
+   "dur": 0.33
+  },
+  {
+   "srcStart": 17.1,
+   "srcEnd": 17.3,
+   "dur": 0.2
+  },
+  {
+   "srcStart": 22.4,
+   "srcEnd": 22.8,
+   "dur": 0.4
+  },
+  {
+   "srcStart": 31.83,
+   "srcEnd": 32.13,
+   "dur": 0.3
+  },
+  {
+   "srcStart": 35.7,
+   "srcEnd": 39.83,
+   "dur": 4.13
+  },
+  {
+   "srcStart": 44.37,
+   "srcEnd": 44.7,
+   "dur": 0.33
+  },
+  {
+   "srcStart": 55.97,
+   "srcEnd": 56.63,
+   "dur": 0.66
+  },
+  {
+   "srcStart": 60.77,
+   "srcEnd": 61.0,
+   "dur": 0.23
+  },
+  {
+   "srcStart": 64.53,
+   "srcEnd": 64.97,
+   "dur": 0.44
+  }
+ ],
+ "subtitles": [
+  {
+   "text": "伸びて重くなったギリギリ結べるボブを",
+   "outStart": 0.9,
+   "outEnd": 4.9,
+   "srcStart": 1.57,
+   "srcEnd": 5.57,
+   "chars": 18
+  },
+  {
+   "text": "セルフで軽くしていく際に、",
+   "outStart": 4.9,
+   "outEnd": 7.4,
+   "srcStart": 5.57,
+   "srcEnd": 8.07,
+   "chars": 12
+  },
+  {
+   "text": "これをやってしまうと結べなくなります",
+   "outStart": 7.4,
+   "outEnd": 10.4,
+   "srcStart": 8.07,
+   "srcEnd": 9.97,
+   "chars": 18
+  },
+  {
+   "text": "それは生え際",
+   "outStart": 10.4,
+   "outEnd": 11.4,
+   "srcStart": 12.03,
+   "srcEnd": 13.03,
+   "chars": 6
+  },
+  {
+   "text": "生え際あたりを",
+   "outStart": 11.4,
+   "outEnd": 13.3,
+   "srcStart": 13.03,
+   "srcEnd": 13.07,
+   "chars": 7
+  },
+  {
+   "text": "軽くする",
+   "outStart": 13.4,
+   "outEnd": 14.9,
+   "srcStart": 15.37,
+   "srcEnd": 16.87,
+   "chars": 4
+  },
+  {
+   "text": "やればやるほど結べなくなります",
+   "outStart": 15.4,
+   "outEnd": 20.4,
+   "srcStart": 17.53,
+   "srcEnd": 22.4,
+   "chars": 15
+  },
+  {
+   "text": "生え際辺りに",
+   "outStart": 20.9,
+   "outEnd": 21.9,
+   "srcStart": 23.5,
+   "srcEnd": 24.5,
+   "chars": 6
+  },
+  {
+   "text": "細かな短い髪の毛がたくさんできてしまいます",
+   "outStart": 21.9,
+   "outEnd": 24.9,
+   "srcStart": 24.5,
+   "srcEnd": 27.5,
+   "chars": 21
+  },
+  {
+   "text": "それによって結びにくいですし、結んでいても",
+   "outStart": 25.4,
+   "outEnd": 28.4,
+   "srcStart": 28.0,
+   "srcEnd": 31.0,
+   "chars": 20
+  },
+  {
+   "text": "結んでいても",
+   "outStart": 28.4,
+   "outEnd": 29.4,
+   "srcStart": 31.0,
+   "srcEnd": 31.83,
+   "chars": 6
+  },
+  {
+   "text": "落ちてしまいやすいです",
+   "outStart": 29.9,
+   "outEnd": 32.9,
+   "srcStart": 32.8,
+   "srcEnd": 35.7,
+   "chars": 11
+  },
+  {
+   "text": "ギリギリ結べるようになったボブを",
+   "outStart": 32.9,
+   "outEnd": 35.9,
+   "srcStart": 39.93,
+   "srcEnd": 42.93,
+   "chars": 16
+  },
+  {
+   "text": "軽くしていく際",
+   "outStart": 35.9,
+   "outEnd": 36.9,
+   "srcStart": 42.93,
+   "srcEnd": 43.93,
+   "chars": 7
+  },
+  {
+   "text": "中の方をメインで",
+   "outStart": 37.4,
+   "outEnd": 39.4,
+   "srcStart": 44.77,
+   "srcEnd": 46.77,
+   "chars": 8
+  },
+  {
+   "text": "軽くするようにやっていきましょう",
+   "outStart": 39.4,
+   "outEnd": 41.4,
+   "srcStart": 46.77,
+   "srcEnd": 48.77,
+   "chars": 16
+  },
+  {
+   "text": "上と下はあまり軽くしないです",
+   "outStart": 41.9,
+   "outEnd": 45.9,
+   "srcStart": 49.27,
+   "srcEnd": 53.27,
+   "chars": 14
+  },
+  {
+   "text": "横髪、後ろ髪ともにです",
+   "outStart": 45.9,
+   "outEnd": 48.4,
+   "srcStart": 53.27,
+   "srcEnd": 55.77,
+   "chars": 10
+  },
+  {
+   "text": "特に軽くしていい場所は",
+   "outStart": 48.4,
+   "outEnd": 49.9,
+   "srcStart": 55.77,
+   "srcEnd": 55.97,
+   "chars": 11
+  },
+  {
+   "text": "後ろ髪の真ん中の辺りです",
+   "outStart": 49.9,
+   "outEnd": 52.4,
+   "srcStart": 58.16,
+   "srcEnd": 60.66,
+   "chars": 12
+  },
+  {
+   "text": "軽くする際はここを中心にやってみてください",
+   "outStart": 52.4,
+   "outEnd": 56.0,
+   "srcStart": 60.66,
+   "srcEnd": 60.77,
+   "chars": 21
+  }
+ ],
+ "spoken": [
+  {
+   "start": 1.57,
+   "end": 5.57,
+   "text": "伸びて重くなったギリギリ結べるボブを",
+   "retake": false
+  },
+  {
+   "start": 5.57,
+   "end": 8.07,
+   "text": "セルフで軽くしていく際に、",
+   "retake": false
+  },
+  {
+   "start": 8.07,
+   "end": 9.97,
+   "text": "これをやってしまうと結べなくなります",
+   "retake": false
+  },
+  {
+   "start": 12.03,
+   "end": 13.03,
+   "text": "それは生え際",
+   "retake": false
+  },
+  {
+   "start": 13.03,
+   "end": 13.07,
+   "text": "生え際あたりを",
+   "retake": false
+  },
+  {
+   "start": 15.37,
+   "end": 16.87,
+   "text": "軽くする",
+   "retake": false
+  },
+  {
+   "start": 17.53,
+   "end": 22.4,
+   "text": "やればやるほど結べなくなります",
+   "retake": false
+  },
+  {
+   "start": 23.5,
+   "end": 24.5,
+   "text": "生え際辺りに",
+   "retake": false
+  },
+  {
+   "start": 24.5,
+   "end": 27.5,
+   "text": "細かな短い髪の毛がたくさんできてしまいます",
+   "retake": false
+  },
+  {
+   "start": 28.0,
+   "end": 31.0,
+   "text": "それによって結びにくいですし、結んでいても",
+   "retake": false
+  },
+  {
+   "start": 31.0,
+   "end": 31.83,
+   "text": "結んでいても",
+   "retake": false
+  },
+  {
+   "start": 32.8,
+   "end": 35.7,
+   "text": "落ちてしまいやすいです",
+   "retake": false
+  },
+  {
+   "start": 39.93,
+   "end": 42.93,
+   "text": "ギリギリ結べるようになったボブを",
+   "retake": false
+  },
+  {
+   "start": 42.93,
+   "end": 43.93,
+   "text": "軽くしていく際",
+   "retake": false
+  },
+  {
+   "start": 44.77,
+   "end": 46.77,
+   "text": "中の方をメインで",
+   "retake": false
+  },
+  {
+   "start": 46.77,
+   "end": 48.77,
+   "text": "軽くするようにやっていきましょう",
+   "retake": false
+  },
+  {
+   "start": 49.27,
+   "end": 53.27,
+   "text": "上と下はあまり軽くしないです",
+   "retake": false
+  },
+  {
+   "start": 53.27,
+   "end": 55.77,
+   "text": "横髪、後ろ髪ともにです",
+   "retake": false
+  },
+  {
+   "start": 55.77,
+   "end": 55.97,
+   "text": "特に軽くしていい場所は",
+   "retake": false
+  },
+  {
+   "start": 58.16,
+   "end": 60.66,
+   "text": "後ろ髪の真ん中の辺りです",
+   "retake": false
+  },
+  {
+   "start": 60.66,
+   "end": 60.77,
+   "text": "軽くする際はここを中心にやってみてください",
+   "retake": false
+  },
+  {
+   "start": 36.4,
+   "end": 36.65,
+   "text": "（言いかけ）",
+   "retake": true
+  },
+  {
+   "start": 38.55,
+   "end": 39.6,
+   "text": "特にむす（言いかけ）",
+   "retake": true
+  }
+ ]
+}

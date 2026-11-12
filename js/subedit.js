@@ -83,6 +83,7 @@ export function shifted(u, offset) {
     subStart: u.subStart + off,
     subEnd: u.subEnd + off,
     fine: (u.fine || []).map(r => ({ start: r.start + off, end: r.end + off })),
+    times: u.times && u.times.map(t => t + off),
   };
 }
 

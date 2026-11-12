@@ -1,0 +1,12 @@
+{
+  "name": "amity-ai-video-editor",
+  "private": true,
+  "type": "module",
+  "description": "テスト用（アプリ本体はビルド不要の静的ファイル）。字幕の言葉の区切りに使う kuromoji は、ブラウザでは CDN から読み込む",
+  "scripts": {
+    "test": "node --import ./tests/setup-morph.mjs --test tests/*.test.mjs"
+  },
+  "devDependencies": {
+    "kuromoji": "0.1.2"
+  }
+}

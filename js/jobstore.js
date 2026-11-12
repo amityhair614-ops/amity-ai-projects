@@ -44,8 +44,13 @@ export function isStorageFull(err) {
 }
 
 // ファイルへ書き込むための WritableStream（Mediabunny の StreamTarget に渡せる形: { data, position }）
+// 実際に使った書き込みの方法（'sync' = createSyncAccessHandle / 'stream' = createWritable）。診断情報に記録する
+let writeMode = null;
+export const getWriteMode = () => writeMode;
+
 export async function openWritable(jobId, name) {
-  const { handle } = await rpc({ op: 'open', path: [ROOT, jobId, name] });
+  const { handle, mode } = await rpc({ op: 'open', path: [ROOT, jobId, name] });
+  writeMode = mode;
   let size = 0, closed = false;
   const stream = new WritableStream({
     async write(chunk) {
@@ -74,7 +79,8 @@ export async function openWritable(jobId, name) {
 
 // Blob（元の動画など）を、少しずつ読みながらファイルにコピーする
 export async function copyIn(jobId, name, blob, onProgress, chunkSize = 8 * 1024 * 1024) {
-  const { handle } = await rpc({ op: 'open', path: [ROOT, jobId, name] });
+  const { handle, mode } = await rpc({ op: 'open', path: [ROOT, jobId, name] });
+  writeMode = mode;
   try {
     for (let pos = 0; pos < blob.size; pos += chunkSize) {
       const data = await blob.slice(pos, Math.min(blob.size, pos + chunkSize)).arrayBuffer();

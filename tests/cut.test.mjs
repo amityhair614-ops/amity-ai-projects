@@ -2,7 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  FRAME_SEC, FPS, detectSpeech, shapePieces, PACES, buildUnits, selectUnits, buildTimeline, linkSentences,
+  FRAME_SEC, FPS, untrimUnit, trimUnit, detectSpeech, shapePieces, PACES, buildUnits, selectUnits, buildTimeline, linkSentences,
 } from '../js/plan.js';
 import { AudioStitcher, crossfade, XFADE_SEC } from '../js/audiomix.js';
 
@@ -39,9 +39,9 @@ test('ハサミのような短い音がとびとびに続くだけの区間は�
 
 test('間の整理: 文の中の短い間は残し、長い間は自然な長さまで縮める', () => {
   const P = PACES.natural;
-  const segs = [{ start: 1, end: 2 }, { start: 2.3, end: 3 }, { start: 5, end: 6 }];
+  const segs = [{ start: 1, end: 2 }, { start: 2.2, end: 3 }, { start: 5, end: 6 }];
   const pieces = shapePieces(segs, 0, 10, P);
-  assert.equal(pieces.length, 2, '0.3秒の間はそのまま、2秒の間で分ける');
+  assert.equal(pieces.length, 2, '0.2秒の間はそのまま、2秒の間で分ける');
   assert.ok(Math.abs(pieces[0].start - (1 - P.lead)) < 1e-9, '話し始めの前に余白');
   assert.equal(pieces[1].end, 6 + P.tail, '話し終わりの後に余白（語尾を切らない）');
   const kept = (pieces[0].end - 3) + (5 - pieces[1].start);
@@ -52,10 +52,10 @@ test('間の整理: 文の中の短い間は残し、長い間は自然な長さ
   assert.deepEqual(tight, [{ start: 0.95, end: 2.1 }]);
   // テンポ重視は間が短い
   const t = shapePieces(segs, 0, 10, PACES.tempo);
-  assert.ok((t[0].end - 3) + (5 - t[1].start) < kept);
+  assert.ok((t.at(-2).end - 3) + (5 - t.at(-1).start) < kept);
 });
 
-test('すべての無音をなくさない: 文と文の間は約0.5秒残る', () => {
+test('すべての無音をなくさない: 文と文の間は手動編集のお手本と同じ約0.3〜0.4秒残る', () => {
   const r = rms(20, [[1, 3, -20], [6, 8, -20], [8.6, 10, -20]]);
   const speech = detectSpeech(r);
   const chunks = [
@@ -72,9 +72,9 @@ test('すべての無音をなくさない: 文と文の間は約0.5秒残る', 
     const voiceStart = b.outStart + (speech.voice[i].start - units[i].start);
     gaps.push(voiceStart - voiceEnd);
   }
-  assert.ok(gaps[0] > 0.4 && gaps[0] < 0.6, '3秒の間 → ' + gaps[0]);
-  // 元の動画で 0.6 秒しかない間は、ほとんど詰めない
-  assert.ok(gaps[1] > 0.45 && gaps[1] <= 0.6, '0.6秒の間 → ' + gaps[1]);
+  assert.ok(gaps[0] >= 0.2 && gaps[0] <= 0.45, '3秒の間 → ' + gaps[0]);
+  // 元の動画で 0.6 秒の間も、お手本の間（0.2〜0.4秒）まで詰める
+  assert.ok(gaps[1] >= 0.2 && gaps[1] <= 0.45, '0.6秒の間 → ' + gaps[1]);
 });
 
 test('Whisper の時刻が語尾より早く終わっても、声の区間ごと残す（語尾を切らない）', () => {
@@ -82,7 +82,7 @@ test('Whisper の時刻が語尾より早く終わっても、声の区間ごと
   const speech = detectSpeech(r);
   const units = buildUnits({ duration: 10, rmsDb: r, speech, chunks: [{ start: 1.1, end: 2.8, text: 'ここがガイドになります。' }], motion: null });
   const u = units.find(x => x.text);
-  assert.ok(u.end >= 3.2 + 0.2, 'end=' + u.end);
+  assert.ok(u.end >= 3.2 + PACES.natural.tail - 1e-6, 'end=' + u.end);
   assert.ok(u.start <= 1 - 0.1, 'start=' + u.start);
 });
 
@@ -220,4 +220,101 @@ test('ハサミの音のすぐ後に話し始めても、声の区間を失わ�
   // 話し始めの前の短い音が1つだけなら（言葉の出始めの可能性）、声の区間に含める
   const one = detectSpeech(rms(15, [[2.0, 2.1, -20], [2.25, 4, -20]]));
   assert.ok(one.voice[0].start <= 2.05, JSON.stringify(one.voice));
+});
+
+test('文の終わりで言いかけてやめ、次の文で同じ言葉から言い直した部分（「…なのかトップの」）を取り除く', () => {
+  // 1〜2.5秒「それはどこなのか」、2.8〜3.3秒「トップの」（言いかけ）、4.5〜6.5秒「トップの根元付近です」
+  const r = rms(10, [[1, 2.5, -20], [2.8, 3.3, -20], [4.5, 6.5, -20]]);
+  const speech = detectSpeech(r);
+  const units = buildUnits({
+    duration: 10, rmsDb: r, speech, motion: null,
+    chunks: [{ start: 1, end: 3.3, text: 'それはどこなのかトップの' }, { start: 4.5, end: 6.5, text: 'トップの根元付近です' }],
+  });
+  const [a, b] = units.filter(u => u.text);
+  assert.equal(a.text, 'それはどこなのか');
+  assert.ok(a.trimmed, '言いかけを取り除いた');
+  assert.ok(a.end < 2.8, '言いかけの声は残さない end=' + a.end);
+  assert.ok(a.voiceEnd >= 2.4 && a.end >= a.voiceEnd + PACES.natural.tail - 1e-6, '残す文の語尾は切らない end=' + a.end);
+  assert.equal(b.text, 'トップの根元付近です');
+  untrimUnit(a);
+  assert.equal(a.text, 'それはどこなのかトップの');
+  assert.ok(a.end > 3.3);
+});
+
+test('文の終わりと次の文の頭が同じ語尾（「…します」「します…」）は言い直しとみなさない', () => {
+  const r = rms(10, [[1, 2.5, -20], [2.8, 3.3, -20], [4.5, 6.5, -20]]);
+  const speech = detectSpeech(r);
+  const units = buildUnits({
+    duration: 10, rmsDb: r, speech, motion: null,
+    chunks: [{ start: 1, end: 3.3, text: '襟足からカットします' }, { start: 4.5, end: 6.5, text: 'しますと、こうなります' }],
+  });
+  assert.ok(!units.find(u => u.text).trimmed);
+});
+
+test('文の後に文字起こしされていない声が続くときは、取り除ける候補にする（自動では取り除かない）', () => {
+  const r = rms(10, [[1, 2.5, -20], [2.9, 3.6, -20], [5, 6.5, -20]]);
+  const speech = detectSpeech(r);
+  const text = 'それはどこなのか';
+  const times = Array.from(text, (_, i) => 1 + i * 0.17);
+  const units = buildUnits({ duration: 10, rmsDb: r, speech, motion: null, chunks: [{ start: 1, end: 3.6, text, times }, { start: 5, end: 6.5, text: 'トップの根元付近です' }] });
+  const u = units.find(x => x.text === text);
+  assert.ok(u.trimOption && !u.trimmed, '候補として出す');
+  assert.ok(u.end > 3.6, 'そのまま残している');
+  assert.ok(trimUnit(u, u.trimOption));
+  assert.ok(u.end < 2.9 && u.end >= 2.5, 'end=' + u.end);
+  // 最後の文字のすぐ後で終わる文には出さない
+  const r2 = rms(10, [[1, 2.5, -20]]);
+  const u2 = buildUnits({ duration: 10, rmsDb: r2, speech: detectSpeech(r2), motion: null, chunks: [{ start: 1, end: 2.5, text, times }] }).find(x => x.text);
+  assert.ok(!u2.trimOption);
+});
+
+test('言いかけの言葉の中に間があっても（「トッ／プの」）、残す文の語尾のすぐ後で切る', () => {
+  // 1〜2.5秒「それはどこなのか」、2.7〜2.9秒「トッ」、3.3〜3.6秒「プの」（言いかけの中の間の方が長い）
+  const r = rms(10, [[1, 2.5, -20], [2.7, 2.9, -20], [3.3, 3.6, -20], [5, 6.5, -20]]);
+  const speech = detectSpeech(r);
+  const text = 'それはどこなのかトップの';
+  const times = [...Array.from('それはどこなのか', (_, i) => 1 + i * 0.17), 2.75, 2.85, 3.3, 3.4];
+  const units = buildUnits({ duration: 10, rmsDb: r, speech, motion: null, chunks: [{ start: 1, end: 3.6, text, times, fine: [{ start: 1, end: 2.5 }, { start: 2.7, end: 2.9 }, { start: 3.3, end: 3.6 }] }, { start: 5, end: 6.5, text: 'トップの根元付近です' }] });
+  const a = units.find(u => u.text.startsWith('それは'));
+  assert.equal(a.text, 'それはどこなのか');
+  assert.ok(a.end < 2.7, '「トッ」も残さない end=' + a.end);
+});
+
+test('文の後に間をおかずに文字にならない声が続くとき（「…ないと、うまくいきま」）は、切れる候補にする（自動では切らない）', () => {
+  const r = rms(10, [[1, 3.6, -20], [5, 6.5, -20]]);
+  r[Math.round(2.85 / FRAME_SEC)] = -35; // 言葉の切れ目の小さなくぼみ
+  const speech = detectSpeech(r);
+  const text = '伸ばし続けないと';
+  const times = Array.from(text, (_, i) => 1 + i * 0.22); // 最後の文字 2.54秒
+  const u = buildUnits({ duration: 10, rmsDb: r, speech, motion: null, chunks: [{ start: 1, end: 3.6, text, times }, { start: 5, end: 6.5, text: 'うまくカバーできません' }] }).find(x => x.text === text);
+  assert.ok(u.trimOption && !u.trimmed, '候補として出す');
+  assert.ok(Math.abs(u.trimOption.keepEnd - 2.875) < 0.06, 'くぼみで切る ' + u.trimOption.keepEnd);
+  // 最後の文字のすぐ後に声が終わる文には出さない
+  const r2 = rms(10, [[1, 2.9, -20], [5, 6.5, -20]]);
+  const u2 = buildUnits({ duration: 10, rmsDb: r2, speech: detectSpeech(r2), motion: null, chunks: [{ start: 1, end: 2.9, text, times }] }).find(x => x.text === text);
+  assert.ok(!u2.trimOption);
+});
+
+test('次の文を間をおかずに話し始めたときは、その声を「文字にならない声」とみなさない', () => {
+  const r = rms(10, [[1, 4.2, -20]]);
+  const speech = detectSpeech(r);
+  const a = '傷んでも見えやすいです', b = 'こうなってしまうと';
+  const ta = Array.from(a, (_, i) => 1 + i * 0.15); // 最後の文字 2.5秒
+  const tb = Array.from(b, (_, i) => 2.75 + i * 0.15);
+  const u = buildUnits({ duration: 10, rmsDb: r, speech, motion: null, chunks: [{ start: 1, end: 2.7, text: a, times: ta }, { start: 2.7, end: 4.2, text: b, times: tb }] }).find(x => x.text === a);
+  assert.ok(!u.trimOption, JSON.stringify(u.candidate));
+});
+
+test('文の途中の文字にならない声（「…ないと、うまくいきま、うまくカバー…」の言いかけ）は、取り除ける候補にする', () => {
+  // 1〜2.4秒「伸ばし続けないと」、2.5〜3.2秒 言いかけ（文字なし）、3.35〜4.6秒「うまくカバーできません」
+  const r = rms(10, [[1, 2.4, -20], [2.5, 3.2, -20], [3.35, 4.6, -20]]);
+  const speech = detectSpeech(r);
+  const a = '伸ばし続けないと', b = 'うまくカバーできません';
+  const times = [...Array.from(a, (_, i) => 1 + i * 0.17), ...Array.from(b, (_, i) => 3.35 + i * 0.11)];
+  const fine = [{ start: 1, end: 2.4 }, { start: 2.5, end: 3.2 }, { start: 3.35, end: 4.6 }];
+  const u = buildUnits({ duration: 10, rmsDb: r, speech, motion: null, chunks: [{ start: 1, end: 4.6, text: a + b, times, fine }] }).find(x => x.text);
+  assert.ok(u.trimOption?.mid && !u.trimmed, JSON.stringify(u.candidate));
+  assert.ok(trimUnit(u, u.trimOption));
+  const covered = t => u.pieces.some(p => p.start <= t && t <= p.end);
+  assert.ok(covered(2.3) && covered(3.5) && !covered(2.8), JSON.stringify(u.pieces));
 });

@@ -154,6 +154,16 @@
     .sub-edit { margin: 6px 0 0 30px; }
     .sub-edit textarea { margin: 0; width: 100%; }
     .sub-edit.edited textarea { border-color: var(--accent); }
+    .sub-edit.needs-check textarea { border-color: #e08a1e; background: rgba(224, 138, 30, .08); }
+    .sub-check { font-size: 12px; color: var(--warn); margin: 4px 0 0; }
+    .sub-doubt { font-size: 12px; color: #c0392b; margin: 4px 0 0; }
+    .sub-doubt .link-btn { font-size: 12px; margin-left: 4px; }
+    .needs-doubt textarea { border-color: #c0392b; border-width: 2px; }
+    .opening-edit { margin: -4px 0 12px 32px; }
+    .opening-edit textarea { width: 100%; font-weight: 700; }
+    .opening-dur { display: inline-block; margin: 6px 12px 0 0; font-size: 14px; }
+    .opening-dur select { font: inherit; min-height: 36px; }
+    .field.engine { margin-top: 8px; }
     .sub-time { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; margin-top: 6px; font-size: 13px; }
     .sub-adj { display: inline-flex; align-items: center; gap: 4px; }
     .sub-adj button, .sub-time > button {
@@ -165,6 +175,14 @@
     .sub-tools { margin: 12px 0 4px; padding: 12px; border-radius: 12px; background: var(--bg); font-size: 14px; }
     .sub-tools-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
     .sub-saved { color: var(--ok); min-height: 1em; }
+    .file-list { margin: 12px 0 4px; padding-left: 22px; font-size: 14px; }
+    .file-list li { display: flex; align-items: center; gap: 6px; padding: 4px 0; }
+    .file-list .fname { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .file-list button { font: inherit; font-size: 13px; padding: 4px 8px; border: 1px solid var(--line, #ccc); border-radius: 6px; background: none; }
+    .bgm-box { margin: 8px 0 12px; }
+    .bgm-box .field { display: block; font-size: 14px; margin: 8px 0 2px; }
+    .bgm-box input[type=range] { width: 100%; }
+    .picker.small { padding: 10px; }
     .link-btn { font: inherit; font-size: 13px; color: var(--muted); background: none; border: 0; padding: 4px 0; text-decoration: underline; }
     details { margin-top: 12px; font-size: 14px; }
     summary { cursor: pointer; color: var(--accent); font-weight: 600; padding: 6px 0; }
@@ -204,6 +222,8 @@
     .fit.ok { background: var(--ok-soft); color: var(--ok); }
     .fit.ng { background: var(--warn-soft); color: var(--text); }
     .brief-used { font-size: 13px; color: var(--muted); margin: 8px 0 0; white-space: pre-wrap; }
+    .cand { margin: 6px 0 0 30px; font-size: 12px; padding: 6px 10px; border-radius: 10px; background: var(--warn-soft); display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: center; }
+    .cand .link-btn { font-size: 12px; color: var(--accent); }
     .must-tag { font-size: 11px; font-weight: 700; color: var(--accent); background: var(--accent-soft); border-radius: 999px; padding: 1px 8px; white-space: nowrap; }
     .job { padding: 12px 0; border-top: 1px solid var(--line); }
     .job:first-child { border-top: 0; padding-top: 0; }
@@ -213,7 +233,26 @@
     .job-btns { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
     .need-file { font-size: 14px; padding: 10px 12px; border-radius: 10px; background: var(--warn-soft); margin: 10px 0 0; }
     footer { text-align: center; font-size: 12px; color: var(--muted); margin-top: 32px; }
-  </style>
+    /* 完成後の修正の指示 */
+    .fix-panel { margin: 12px 0 16px; padding: 12px; border: 1px solid var(--line, #ddd); border-radius: 12px; }
+    .fix-panel h3 { margin: 0 0 6px; font-size: 16px; }
+    .fix-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 6px 0; }
+    .fix-row select, .fix-row input[type=text] { font: inherit; padding: 6px; }
+    .mini { font: inherit; font-size: 13px; padding: 4px 10px; border-radius: 8px; border: 1px solid var(--line, #ccc); background: #fff; }
+    .fix-list { list-style: none; padding: 0; margin: 8px 0; }
+    .fix-list li { padding: 8px; border-top: 1px solid var(--line, #eee); font-size: 14px; }
+    .fix-list .st { font-size: 12px; margin-left: 6px; color: var(--muted); }
+    .fix-list .st.check { color: #c0392b; }
+    .fix-list .st.applied { color: #1e8449; }
+    .fix-actions { display: grid; gap: 6px; }
+    .fix-stage { position: relative; width: 100%; max-width: 360px; margin: 8px auto; background: #000; border-radius: 8px; overflow: hidden; }
+    .fix-stage video { width: 100%; display: block; }
+    .fix-sub { position: absolute; left: 0; right: 0; bottom: 10%; text-align: center; color: #fff; font-weight: 700; font-size: 16px; text-shadow: 0 0 3px #000, 0 0 3px #000; padding: 0 8px; }
+  .render-check { border: 1px solid var(--warn, #c9a227); border-radius: 12px; padding: 12px 14px; margin: 12px 0; }
+.render-check ul { margin: 6px 0 12px; padding-left: 1.2em; }
+.render-check li { margin: 4px 0; line-height: 1.5; }
+.file-list .fmemo { display: block; width: 100%; margin-top: 4px; font-size: 14px; padding: 6px 8px; border: 1px solid var(--line, #ccc); border-radius: 8px; box-sizing: border-box; }
+</style>
 </head>
 <body>
 <main>
@@ -222,7 +261,7 @@
     <p class="lead">カット解説動画から、字幕付きのYouTube動画を自動で作ります。動画の内容や完成時間を入力すると、それに合わせて場面を選びます。処理はすべてこのiPhoneの中で行い、動画はどこにも送信しません。</p>
   </header>
 
-  <div class="banner"><b>テスト版です。</b> 編集の途中でSafariを閉じても、もう一度開くと続きから再開できるようにしました（閉じている間は進みません）。<b>今回の追加は、iPhone実機ではまだ確認できていません。</b>うまく動かない場合は、下の「診断情報」をコピーして送ってください。字幕・ズームはそれぞれOFFにできます。</div>
+  <div class="banner"><b>テスト版です（v1.0 候補）。</b> ①分けて撮った動画を何本でも（20本まで）1本ずつ解析してから1本にまとめます。色は元の動画のまま（iPhone の HDR 撮影の色の変換は、実機ではまだ確かめていません）②字幕はポイントだけ（「このように」「それは」「しかも」などは、意味が変わらない所では字幕に書きません。音声は残します）。1行・短い意味のまとまりで、数は算用数字③ご自身で用意した曲を、やわらかく小さく（初期2%）BGMとして入れます。にぎやかな曲のときはお知らせします。<b>これらは iPhone 実機ではまだ確認できていません。</b>うまく動かない場合は、下の「診断情報」をコピーして送ってください。</div>
 
   <div class="recover" id="recover" role="alert" hidden>
     <b>前回の処理が途中で止まりました</b>
@@ -236,6 +275,7 @@
     <h2 id="resume-title">途中の編集</h2>
     <p class="note" style="margin-top:0">Safariを閉じたり、ほかのアプリに切り替えたりすると、編集は<b>一時停止</b>します（閉じている間は進みません）。
       もう一度開いて「続きから再開」を押すと、保存してある所から続けます（解析の済んだ段階・書き終えた区間はやり直しません）。</p>
+    <p class="note" id="resumeContext"></p>
     <div id="jobList"></div>
     <p class="note" id="storageText"></p>
     <p class="note"><b>保存データは必ず残るとは限りません。</b>iPhoneの空き容量が少ないとき、Safariの「履歴とWebサイトデータを消去」をしたとき、長い間使わなかったときなどに消えることがあります。
@@ -248,14 +288,14 @@
     <p class="note" style="margin:0 0 12px">「パソコンで確認」は、パソコン上のブラウザでのテストで動作を確認した機能です。iPhone実機での動作は、修正後まだ確認できていません。</p>
     <ul class="status">
       <li><span>動画の読み込み（端末内）<small>MOV・MP4、H.264・HEVC</small></span><span class="badge warn">パソコンで確認</span></li>
-      <li><span>無音・長い間の自動カット<small>声の区間を音量で判定。語尾を切らず、長い間は自然な長さ（約0.5秒）に縮め、つなぎ目の音はなめらかに入れ替えます。ハサミの音だけの場面は作業場面として残します</small></span><span class="badge warn">パソコンで確認</span></li>
-      <li><span>約60秒・縦9:16（1080×1920）に編集</span><span class="badge warn">パソコンで確認</span></li>
+      <li><span>無音・長い間の自動カット<small>声の区間を音量で判定。語尾を切らず、文と文の間は手動編集のお手本に合わせて約0.3〜0.45秒に縮め、つなぎ目の音はなめらかに入れ替えます。ハサミの音だけの場面は作業場面として残します</small></span><span class="badge warn">パソコンで確認</span></li>
+      <li><span>約60秒・縦9:16（1080×1920）に編集<small>話の内容を優先し、文の途中では切りません。60秒なら55〜65秒が目安で、説明を削らないと収まらないときは少し長くなり、理由を表示します</small></span><span class="badge warn">パソコンで確認</span></li>
       <li><span>MP4の書き出し・iPhoneへの保存</span><span class="badge warn">パソコンで確認</span></li>
       <li><span>カット技術の重要場面を残す<small>手元の動きの量と美容の用語で判定する簡易版。映像の内容までは理解しません</small></span><span class="badge warn">簡易版</span></li>
-      <li><span>言い直しの検出<small>文字起こしが必要。似た発言のくり返し等を検出する簡易版</small></span><span class="badge warn">簡易版</span></li>
-      <li><span>日本語字幕の自動生成<small>端末内のAI（Whisper）。美容用語の辞書を使い、音声と合うときだけ用語に直します。表示は声に合わせます。書き出し前に文字・タイミングを直せます</small></span><span class="badge warn">パソコンで確認</span></li>
-      <li><span>字幕のデザイン<small>白のゴシック体・最大2行・薄い影・ふわっと表示。手元に重ならない位置に置き、言葉の途中で改行しない</small></span><span class="badge warn">パソコンで確認</span></li>
-      <li><span>自然なズーム<small>手元がまとまって動く場面だけ、ゆっくり1.03〜1.08倍。間隔をあけ、手元が切れる場合はしない。色や質感の加工はしません</small></span><span class="badge warn">パソコンで確認</span></li>
+      <li><span>言い直し・くり返しの判断<small>文字起こしが必要。「いや、〜じゃなくて」などの訂正・同じ説明のくり返し・文の中のくり返しを取り除きます。用語が違う説明は外さず、確かでないものは候補として出します</small></span><span class="badge warn">パソコンで確認</span></li>
+      <li><span>日本語字幕の自動生成<small>端末内のAI。初期は日本語専用の ReazonSpeech（1文字ごとの時刻で声に合わせる）、軽い Whisper base も選べます。入力した用語で書き間違いを直し、自信のない言葉はオレンジ色で知らせます。原稿を貼り付けると、原稿の文字で字幕を出します</small></span><span class="badge warn">パソコンで確認</span></li>
+      <li><span>字幕・冒頭のテキスト・最後のフェード<small>字幕は白のゴシック体・1行（原則10文字以内）・薄い影で画面の下に、意味のまとまりごとに切り替え。冒頭は動画タイトルから作った太字のテキスト（文字・行・表示時間を直せます）。最後の0.9秒で映像が黒くなり、音声も小さくなって、0.2秒黒い画面のまま終わります</small></span><span class="badge warn">パソコンで確認</span></li>
+      <li><span>自然なズーム<small>手元がまとまって動く場面を中心に、ゆっくり1.03〜1.08倍で寄る・引く。15秒以上あけ、手元が切れる場合や、元の動画の画素が足りず拡大でぼやける場合（1080pの元動画など）はしない。色や質感の加工はしません</small></span><span class="badge warn">パソコンで確認</span></li>
       <li><span>動画の内容・完成時間・編集スタイルの入力<small>入力した言葉で場面の点数を上げ、「必ず残したい場面」は時間を超えても残します。収まらないときは理由と予定時間を表示</small></span><span class="badge warn">パソコンで確認</span></li>
       <li><span>途中から再開<small>Safariを閉じると一時停止し、もう一度開くと続きから再開します（閉じている間は進みません）。解析の結果と書き終えた区間を端末内に保存し、やり直しません。保存データは消えることがあります</small></span><span class="badge warn">パソコンで確認</span></li>
       <li><span>10分の通常動画（横16:9）の自動編集</span><span class="badge pending">準備中</span></li>
@@ -265,10 +305,15 @@
   <section class="card" aria-labelledby="upload-title">
     <h2 id="upload-title"><span class="step-no">1</span>動画を選ぶ</h2>
     <label class="picker">
-      <input type="file" id="file" accept="video/*">
+      <input type="file" id="file" accept="video/*" multiple>
       <span class="btn">動画を選択</span>
-      <small>iPhoneの写真アプリやファイルから選べます</small>
+      <small>iPhoneの写真アプリやファイルから選べます。分けて撮った動画は20本まで選べ、1本ずつ解析してから1本の動画にまとめます</small>
     </label>
+    <div id="fileListBox" hidden>
+      <ol id="fileList" class="file-list"></ol>
+      <label class="link-btn" id="fileAddLabel"><input type="file" id="fileAdd" accept="video/*" multiple hidden>＋ 動画を追加（20本まで）</label>
+      <p class="note">上から順につなぎます。動画ごとに無音・言い直しを切ってから、つなぎ目に余分な無音を作らずに1本にします。字幕・冒頭のテキスト・BGMは1本の動画として入ります</p>
+    </div>
     <div id="fileInfo" hidden>
       <video id="preview" controls playsinline preload="metadata" style="margin-top:16px"></video>
       <dl>
@@ -278,6 +323,7 @@
         <dt>画面</dt><dd id="dims">-</dd>
         <dt>形式</dt><dd id="codec">-</dd>
       </dl>
+      <p class="note" id="hdrNote" hidden>HDR で撮影された動画が含まれています。書き出す動画は SDR（通常の色）に変換します（iPhone 実機での色の見え方はまだ確かめていません）。色が元の動画と違って見えたら、下の「診断情報」をコピーして送ってください（動画ごとの色の情報と、変換したかどうかが入っています）。</p>
     </div>
     <p class="need-file" id="resumeNeedFile" role="status" hidden></p>
     <p class="error" id="fileError" hidden></p>
@@ -313,6 +359,34 @@
     </div>
 
     <div class="field-group">
+      <p class="group-title">編集の種類</p>
+      <div class="seg style-cards" role="radiogroup" aria-label="編集の種類">
+        <label><input type="radio" name="mode" value="short" checked><span><b>ショート（字幕つき）</b><small>話の内容から場面を選び、字幕・BGM・ズームを入れます（今までどおり）</small></span></label>
+        <label><input type="radio" name="mode" value="cut"><span><b>カットのみ（試作）</b><small>言い間違い・言い直し前の発言・長すぎる間だけを削除し、ほかは全部残します。字幕・BGM・ズームは入れません</small></span></label>
+      </div>
+    </div>
+
+    <div class="field-group">
+      <p class="group-title">編集メモ（任意）</p>
+      <p class="note" style="margin-top:0">編集で気をつけてほしいことを書くと、字幕とカットに反映します。動画1本ごとのメモは、上の動画の一覧の各動画の下に書けます。</p>
+      <div class="seg style-cards" role="radiogroup" aria-label="言い間違い">
+        <label><input type="radio" name="retake" value="auto" checked><span><b>言い間違い: 自動判定</b><small>話した内容と音から、言い直し・くり返しを探します</small></span></label>
+        <label><input type="radio" name="retake" value="no"><span><b>言い間違い: なし</b><small>言い直し・くり返しとして発言を取り除きません（必要な発言を消しません）</small></span></label>
+        <label><input type="radio" name="retake" value="yes"><span><b>言い間違い: あり</b><small>メモに「2本目の15秒付近」のように場所を書くと、そこを確かめます</small></span></label>
+      </div>
+      <label class="field"><span>全体のメモ<small>1行に1つ</small></span><textarea id="bMemo" rows="3" maxlength="2000" placeholder="例:&#10;2本目の15秒付近に言い間違いあり&#10;字幕では「かなり」を省いて&#10;「すきバサミ」を正確に表示"></textarea></label>
+      <p class="brief-used" id="memoUsed" hidden></p>
+    </div>
+
+    <div class="field-group">
+      <p class="group-title">カットの強さ</p>
+      <div class="seg style-cards" role="radiogroup" aria-label="カットの強さ">
+        <label><input type="radio" name="cut" value="tight" checked><span><b>テンポ重視（おすすめ）</b><small>話す前後の余白と文の途中の間を短くします（声のある所・語尾は切りません）</small></span></label>
+        <label><input type="radio" name="cut" value="natural"><span><b>ゆったり</b><small>話す前後と文の間に、ゆとりのある余白を残します</small></span></label>
+      </div>
+    </div>
+
+    <div class="field-group">
       <p class="group-title">動画の内容</p>
       <label class="field"><span>動画タイトル</span><input type="text" id="bTitle" maxlength="100" placeholder="例: 前下がりボブの切り方"></label>
       <label class="field"><span>どんな内容の動画か</span><textarea id="bContent" rows="2" maxlength="2000" placeholder="例: 肩上の前下がりボブを、ブロッキングから仕上げまで解説"></textarea></label>
@@ -320,13 +394,24 @@
       <label class="field"><span>動画の流れ<small>「、」や改行で区切る</small></span><textarea id="bFlow" rows="2" maxlength="2000" placeholder="例: 冒頭、ブロッキング、バックのカット、サイド、仕上がり"></textarea></label>
       <label class="field"><span>必ず残したい説明や場面<small>1行に1つ</small></span><textarea id="bMust" rows="3" maxlength="2000" placeholder="例:&#10;45度で引き出す説明&#10;襟足をセニングするところ"></textarea></label>
       <p class="note">「必ず残したい説明」は、話した内容（文字起こし）と照らし合わせて探します。字幕をOFFにすると照合できません。</p>
+      <label class="field"><span>使用アイテム・専門用語<small>「、」や改行で区切る</small></span><textarea id="bItems" rows="2" maxlength="2000" placeholder="例: ヘアカッター、すきバサミ、100均"></textarea></label>
+      <p class="note">字幕の書き間違いを直すのに使います（例: 「アカッター」→「ヘアカッター」）。直した所は、確認画面で印をつけて知らせます。</p>
+      <label class="field"><span>原稿（話す内容が決まっている場合）<small>任意</small></span><textarea id="bScript" rows="4" maxlength="20000" placeholder="話す内容の原稿を貼り付けると、字幕は原稿の文字で表示し、表示のタイミングだけを音声に合わせます"></textarea></label>
+      <p class="note">原稿にない発言（言い直し・余談など）は、確認画面で「候補」として知らせます。原稿の文を勝手に足すことはありません（話していない部分の文字は表示しません）。</p>
       <button type="button" class="link-btn" id="briefClear">入力内容をクリア</button>
     </div>
   </section>
 
   <section class="card" id="stepAnalyze" aria-labelledby="analyze-title" hidden>
     <h2 id="analyze-title"><span class="step-no">3</span>自動編集する</h2>
-    <label class="option"><input type="checkbox" id="optAsr"><span>字幕を作る・言い直しを探す（文字起こし・試験中）<br><small class="note" style="margin:0">OFFでも無音カット・場面選び・MP4書き出しはできます。ONにすると初回にAIモデル（目安100MB前後）をダウンロードし、メモリを多く使います。失敗した場合は字幕なしで続けます。</small></span></label>
+    <label class="option"><input type="checkbox" id="optAsr"><span>字幕を作る・言い直しを探す（文字起こし・試験中）<br><small class="note" style="margin:0">OFFでも無音カット・場面選び・MP4書き出しはできます。ONにすると初回にAIモデルをダウンロードし、メモリを多く使います。失敗した場合は字幕なしで続けます。</small></span></label>
+    <label class="field engine"><span>字幕AI</span>
+      <select id="optEngine">
+        <option value="reazon">ReazonSpeech（日本語専用・高精度）</option>
+        <option value="whisper">Whisper base（軽い・従来）</option>
+      </select>
+    </label>
+    <p class="note" style="margin-top:0">ReazonSpeech（初回に約160MBをダウンロード）は日本語の会話だけで学習した無料のモデルで、美容の言葉や「100均」なども正しく書きやすく、1文字ごとの時刻で字幕を声に合わせます。<b>iPhone実機での動作（メモリ・速さ）は未確認です。</b>途中で止まった場合は、次から自動で Whisper base（約80MB）に切り替えます。どちらも音声は端末の外に送りません。</p>
     <button class="btn block" id="btnAnalyze">自動編集を開始</button>
     <ul class="steps" id="steps" hidden></ul>
     <div class="bar" id="bar" hidden><div></div></div>
@@ -361,11 +446,38 @@
     <details id="otherWrap"><summary id="otherSummary">ほかの候補</summary><div class="clips" id="others"></div></details>
     <details id="retakeWrap"><summary id="retakeSummary">言い直しとして除外した場面</summary><div class="clips" id="retakes"></div></details>
     <div class="render-options">
-      <label class="option"><input type="checkbox" id="optSubs" checked><span>字幕を入れる <small class="note" id="optSubsNote" style="margin:0"></small><br><small class="note" style="margin:0">白のゴシック体・最大2行。手元に重ならない位置に、ふわっと表示します</small></span></label>
-      <label class="option"><input type="checkbox" id="optZoom" checked><span>自然なズーム<br><small class="note" style="margin:0">手元がまとまって動く場面だけ、ゆっくり1.03〜1.08倍に寄ります（間隔をあけて、ハサミや手元が切れない場合のみ）</small></span></label>
+      <label class="option"><input type="checkbox" id="optOpening" checked><span>冒頭にタイトルの文字を入れる <small class="note" id="openingNote" style="margin:0"></small><br><small class="note" style="margin:0">白の太いゴシック体・最大3行・薄い影（黒い帯なし）。最初にふわっと出て消えます。文字と改行（行数）は下の欄で直せます</small></span></label>
+      <div class="opening-edit">
+        <textarea id="openingText" rows="3" maxlength="60" aria-label="冒頭に出す文字（改行で行を分ける）" placeholder="例:&#10;ハサミ&#10;すきバサミ&#10;以外にもある"></textarea>
+        <label class="opening-dur">表示時間 <select id="openingDur" aria-label="冒頭の文字の表示時間">
+          <option value="0.7">0.7秒</option><option value="1" selected>1秒</option><option value="1.5">1.5秒</option><option value="2">2秒</option><option value="3">3秒</option>
+        </select></label>
+        <button type="button" class="link-btn" id="openingReset">動画タイトルから作り直す</button>
+      </div>
+      <label class="option"><input type="checkbox" id="optSubs" checked><span>字幕を入れる <small class="note" id="optSubsNote" style="margin:0"></small><br><small class="note" style="margin:0">白のゴシック体・1行（10文字前後・自然なら15文字まで）・薄い影。意味のまとまり・息継ぎごとに、話すテンポで画面の下に表示します。つなぎ言葉や「〜ね」「という」は字幕にだけ書かず、音声はそのまま残します（否定の言葉・用語・数字は省きません）</small></span></label>
+      <label class="option"><input type="checkbox" id="optZoom" checked><span>自然なズーム<br><small class="note" style="margin:0">長めの場面で、ゆっくり1.03〜1.06倍に寄る・引く（1分に2回まで・20秒以上あけて、ハサミや手元が切れない場合のみ。1080pの元動画では、拡大で髪の細かさが落ちるためズームしません）</small></span></label>
+      <label class="option" id="optFastRow" hidden><input type="checkbox" id="optFast" checked><span>高速書き出し（試作・カットのみ） <small class="note" id="optFastNote" style="margin:0"></small><br><small class="note" style="margin:0">元の映像のデータをそのまま使い、つなぎ目の近くだけ作り直します（画質・色は元のまま。最後の黒いフェードは入りません）。使えない動画・確かめで問題が見つかったときは、自動で今までの書き出しにします。外すと、今までの書き出しで比べられます</small></span></label>
+      <p class="note" style="margin-top:0">最後の約0.9秒で映像がなめらかに黒くなり（音声も同時に小さくなります）、最後の0.2秒は黒い画面のまま終わります。</p>
+    </div>
+    <div class="bgm-box">
+      <label class="option"><input type="checkbox" id="optBgm"><span>BGMを入れる<br><small class="note" style="margin:0">ご自身で用意した音楽ファイル（MP3・AAC・WAV）を選びます。著作権を確認できた曲だけを使ってください（アプリが曲を足すことはありません）。話し声を優先し、話している間はさらに小さくします。冒頭と最後は自然にフェードします</small></span></label>
+      <div id="bgmControls" hidden>
+        <label class="picker small"><input type="file" id="bgmFile" accept="audio/*,.mp3,.m4a,.aac,.wav"><span class="btn secondary">音楽ファイルを選ぶ</span> <small id="bgmName">未選択</small></label>
+        <label class="field">BGMの音量 <output id="bgmVolOut">2%</output>
+          <input type="range" id="bgmVol" min="0" max="10" step="0.5" value="2"></label>
+        <small class="note">初期は2%（話し声の邪魔にならない、ごく小さい音量）。0〜10%で選べます。話している間は、さらに小さくします。曲は高い音と急に大きくなる音（ドラムなど）を抑えて、やわらかく入れます。やさしいピアノや静かなアンビエントの曲がおすすめです</small>
+        <p class="note" id="bgmNote" role="status" hidden></p>
+      </div>
+    </div>
+    <div class="render-check" id="renderCheck" hidden role="region" aria-label="書き出す前の確認">
+      <p class="group-title" style="margin-top:0">書き出す前の確認</p>
+      <ul id="renderCheckList"></ul>
+      <button type="button" class="btn block" id="renderGo">このまま書き出す</button>
+      <button type="button" class="link-btn" id="renderBack">戻って確認する</button>
     </div>
     <button class="btn block" id="btnRender">この内容でMP4を書き出す</button>
-    <p class="note">書き出しは数秒ずつの区間に分けて進め、書き終えた区間はこのiPhoneの中に保存します。途中でSafariを閉じた場合は、もう一度開いて「途中の編集」の「続きから再開」を押してください。</p>
+    <p class="note">書き出しは数秒ずつの区間に分けて進め、書き終えた区間はこのiPhoneの中に保存します。途中でSafariを閉じた場合は、もう一度開いて「途中の編集」の「続きから再開」を押してください。
+      書き出し中にほかのアプリに切り替えたり画面を消したりすると一時停止し、戻ると続きから進みます。<span id="renderContext"></span></p>
     <div class="bar" id="renderBar" hidden><div></div></div>
     <p class="progress-text" id="renderText"></p>
     <p class="error" id="renderError" hidden></p>
@@ -374,7 +486,40 @@
   <section class="card" id="stepResult" aria-labelledby="result-title" hidden>
     <h2 id="result-title"><span class="step-no">5</span>完成・保存</h2>
     <video id="outVideo" class="result-video" controls playsinline></video>
-    <dl><dt>長さ</dt><dd id="outDuration">-</dd><dt>サイズ</dt><dd id="outSize">-</dd><dt>形式</dt><dd>MP4（H.264）1080×1920</dd><dt>演出</dt><dd id="outStyle">-</dd></dl>
+    <dl><dt>長さ</dt><dd id="outDuration">-</dd><dt>サイズ</dt><dd id="outSize">-</dd><dt>形式</dt><dd>MP4（H.264）1080×1920</dd><dt>演出</dt><dd id="outStyle">-</dd><dt>処理時間</dt><dd id="outTimings">-</dd></dl>
+    <div class="fix-panel" id="fixPanel">
+      <h3>修正の指示</h3>
+      <p class="note" style="margin-top:0">気になった所で動画を止めると、その時刻が入ります。指示を追加して「まとめて適用」すると、すぐ下のプレビューで確かめられます（文字起こし・解析はやり直しません）。最後に「修正を反映して書き出す」でMP4を作り直します。</p>
+      <div class="fix-row">
+        <label>時刻 <input type="number" id="fixAt" step="0.1" min="0" inputmode="decimal" style="width:5.5em">秒</label>
+        <button type="button" class="mini" id="fixAtMinus" aria-label="0.1秒前">−0.1</button><button type="button" class="mini" id="fixAtPlus" aria-label="0.1秒後">＋0.1</button>
+      </div>
+      <div class="fix-row">
+        <select id="fixKind" aria-label="修正の種類">
+          <option value="subtitle">字幕の文字を変える</option>
+          <option value="timing">字幕の時刻をずらす</option>
+          <option value="cut">範囲をカットする（言い間違いなど）</option>
+          <option value="gap">不要な間を詰める</option>
+          <option value="note">自由に書く</option>
+        </select>
+      </div>
+      <div class="fix-row" id="fixTextRow"><input type="text" id="fixText" placeholder="新しい字幕（例: 毛先に向かって）" style="width:100%"></div>
+      <div class="fix-row" id="fixShiftRow" hidden><label>ずらす <input type="number" id="fixShift" step="0.1" value="-0.3" inputmode="decimal" style="width:5em">秒（マイナスは早く）</label></div>
+      <div class="fix-row" id="fixToRow" hidden><label>終わりの時刻 <input type="number" id="fixTo" step="0.1" min="0" inputmode="decimal" style="width:5.5em">秒</label> <button type="button" class="mini" id="fixToNow">今の時刻</button></div>
+      <div class="fix-row" id="fixNoteRow" hidden><input type="text" id="fixNote" placeholder="例: 25〜27秒の言い間違いを削除" style="width:100%"></div>
+      <button type="button" class="btn block secondary" id="fixAdd">指示を追加</button>
+      <ul class="fix-list" id="fixList"></ul>
+      <div class="fix-actions">
+        <button type="button" class="btn block" id="fixApply">まとめて適用</button>
+        <button type="button" class="btn block secondary" id="fixUndo">元に戻す（最後に適用した分）</button>
+      </div>
+      <div class="fix-preview" id="fixPreviewBox" hidden>
+        <div class="fix-stage"><video id="fixPreview" playsinline muted></video><div class="fix-sub" id="fixPreviewSub"></div></div>
+        <div class="fix-row"><button type="button" class="mini" id="fixPlayBefore">修正前を再生</button><button type="button" class="mini" id="fixPlayAfter">修正後を再生</button><span class="note" id="fixPreviewNote"></span></div>
+      </div>
+      <p class="note" id="fixStatus"></p>
+      <button type="button" class="btn block" id="fixRender" disabled>修正を反映して書き出す</button>
+    </div>
     <button class="btn block" id="btnSave">iPhoneに保存</button>
     <a class="btn block secondary" id="btnDownload" style="text-align:center;text-decoration:none" download>ファイルとしてダウンロード</a>
     <p class="note">完成した動画は、このiPhoneの中（Safariの保存領域）にも残しています。消えることがあるので、早めに「iPhoneに保存」してください。保存が済んだら、下のボタンで端末内の保存データを削除できます。</p>
@@ -399,12 +544,12 @@
     <ul class="note" style="padding-left:1.2em;margin:0">
       <li>iOS 26 以降の Safari を想定しています。古いiOSでは動きません。</li>
       <li>動画・音声はこのiPhoneの中だけで処理します。インターネットを使うのは、ページとAIモデルの読み込みのときだけです。</li>
-      <li>HDRで撮影した動画は、色が少し薄く見えることがあります。</li>
+      <li>HDRで撮影した動画は SDR に変換して書き出します（iPhone 実機での色はまだ確かめていません）。</li>
       <li>処理中にページが再読み込みされた場合は、メモリ不足の可能性があります。次に開いたとき、どこで止まったかを表示します。</li>
     </ul>
   </section>
 
-  <footer>Amity AI動画編集 ・ テスト版 v0.8</footer>
+  <footer>Amity AI動画編集 ・ テスト版 v1.0 候補</footer>
 </main>
 <script type="module" src="js/app.js"></script>
 </body>

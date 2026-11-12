@@ -33,9 +33,17 @@ def to_out(t):
 
 
 head_clip, tail_clip, partial_sent, kept = [], [], [], []
+removed_ok, removed_ng, left_in = [], [], []  # 正解のラベル（del）があるとき: 取り除くべき句・残すべき句の扱い
 for si, sent in enumerate(truth):
     states = []
     for ph in sent['phrases']:
+        if 'del' in ph:
+            inside = covered(ph['start'], ph['end']) > (ph['end'] - ph['start']) * 0.5
+            if ph['del']:
+                (left_in if inside else removed_ok).append(ph['text'])
+                continue  # 取り除くべき句は、欠け・途中で切れた文の判定に使わない
+            if not inside and not sent.get('retake'):
+                removed_ng.append(ph['text'])
         L = ph['end'] - ph['start']
         c = covered(ph['start'], ph['end'])
         if c < 0.02:
@@ -100,6 +108,9 @@ def stat(a):
 dur = pieces[-1]['o'] + (pieces[-1]['e'] - pieces[-1]['s'])
 said = sum(k['end'] - k['start'] for k in kept)
 print(f'完成 {dur:.1f}秒 / 話している割合 {said / dur * 100:.0f}% / 句 {len(kept)}個 / カットのつなぎ目 {joins}か所')
+if removed_ok or left_in or removed_ng:
+    print(f'取り除くべき句: {len(removed_ok)}/{len(removed_ok) + len(left_in)} を取り除いた（残っている: {left_in}）')
+    print(f'残すべき句で入らなかったもの: {len(removed_ng)}（完成時間に合わせて場面ごと選ばなかったものを含む） {removed_ng}')
 print(f'言葉の頭が欠けた句: {len(head_clip)} {head_clip}')
 print(f'語尾が欠けた句: {len(tail_clip)} {tail_clip}')
 print(f'途中で切れた文: {len(partial_sent)} {partial_sent}')

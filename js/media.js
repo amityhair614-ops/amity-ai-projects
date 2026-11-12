@@ -10,11 +10,13 @@ import {
   Output, Mp4OutputFormat, BufferTarget, StreamTarget, CanvasSource, AudioBufferSource, EncodedVideoPacketSource,
   canEncodeAudio, canEncodeVideo,
 } from 'mediabunny';
+import { hdrKind, ToneMapper, drawsHdrRaw, outputColorSpace } from './color.js';
 import { registerAacEncoder } from '@mediabunny/aac-encoder';
-import { FRAME_SEC, FPS, OUT_W, OUT_H, SUB_ZONES, cropAt, subtitleAlpha } from './plan.js';
+import { FRAME_SEC, FPS, OUT_W, OUT_H, SUB_ZONES, cropAt, subtitleAlpha, openingAlpha, endFadeAlpha } from './plan.js';
 import { log } from './diag.js';
 import { Resampler } from './resample.js';
-import { AudioStitcher, applyGain } from './audiomix.js';
+import { AudioStitcher, applyGain, applyEndFade, mixBgm, bgmCharacter } from './audiomix.js';
+import { localPiece } from './sources.js';
 
 export const ASR_RATE = 16000;
 
@@ -62,9 +64,17 @@ export async function openVideo(file) {
     duration: +duration.toFixed(2),
     video: `${CODEC_NAMES[codec] || codec} ${await video.getCodedWidth()}×${await video.getCodedHeight()} 回転${rotation}° 表示${width}×${height}${hdr ? ' HDR' : ''}`,
     decoder: decoderConfig.codec,
+    // 色の情報（HDR の HLG / PQ か、SDR の BT.709 か）。iPhone の HDR 動画は、ブラウザで SDR に変換するときに
+    // 暗く・薄くなる可能性があるため、診断情報で確かめられるようにする
+    color: colorText(decoderConfig.colorSpace),
     audio: audio ? `${CODEC_NAMES[audio.codec] || audio.codec} ${audio.sampleRate}Hz ${audio.numberOfChannels}ch` : 'なし',
   };
-  return { input, video, audio, duration, width, height, rotation, decoderConfig, info };
+  return { input, video, audio, duration, width, height, rotation, decoderConfig, info, hdr };
+}
+
+function colorText(cs) {
+  if (!cs) return '不明';
+  return [cs.primaries, cs.transfer, cs.matrix, cs.fullRange == null ? null : cs.fullRange ? 'full' : 'limited'].map(x => x ?? '?').join(' / ');
 }
 
 export function closeVideo(src) {
@@ -73,7 +83,14 @@ export function closeVideo(src) {
 
 // ---------- 映像のデコード（コマ数を絞って順に処理する） ----------
 
-const tick = () => new Promise(r => setTimeout(r, 0));
+// いったん処理を区切る（使い終わったコマのメモリを解放させる）。setTimeout(0) は続けて使うと1回4ミリ秒以上待たされる
+// （ブラウザの決まり）ため、1コマごとに使うと書き出しが遅くなる（1分の動画で約2000コマ → 8秒以上）。MessageChannel は待たされない
+const channel = typeof MessageChannel !== 'undefined' ? new MessageChannel() : null;
+const waiting = [];
+if (channel) channel.port1.onmessage = () => waiting.shift()?.();
+const tick = () => new Promise(r => { if (channel) { waiting.push(r); channel.port2.postMessage(0); } else setTimeout(r, 0); });
+// デコーダーの処理待ち（キューが空くまで）。少し待ってから確かめる（何度も確かめて CPU を使い続けないように）
+const wait = ms => new Promise(r => setTimeout(r, ms));
 
 class FrameDecoder {
   constructor(config) {
@@ -97,7 +114,7 @@ class FrameDecoder {
       }
       if (this.error) throw this.error;
       if (this.decoder.decodeQueueSize <= maxPending) return;
-      await tick();
+      await wait(2);
     }
   }
 
@@ -124,19 +141,46 @@ function codedRect(crop, rotation, cw, ch) {
   return { x: L, y: T, w: W, h: H };
 }
 
+// 縮小・拡大の補間を高品質にする（ブラウザの初期設定は「低」で、4Kから縮小すると髪の細い線がつぶれる）
+function hq(ctx) {
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
+  return ctx;
+}
+
 class FramePainter {
-  constructor(rotation, outW, outH) {
+  // color: 元の動画の色の情報（decoderConfig.colorSpace）。HDR なら、描いた後に SDR へ変換する（color.js）
+  constructor(rotation, outW, outH, color = null) {
     this.rotation = rotation;
     this.outW = outW;
     this.outH = outH;
+    this.hdr = hdrKind(color);
+    this.mapper = null;
+    this.checked = !this.hdr;
     if (rotation) {
       const side = rotation === 180;
       this.tmp = new OffscreenCanvas(side ? outW : outH, side ? outH : outW);
-      this.tctx = this.tmp.getContext('2d');
+      this.tctx = hq(this.tmp.getContext('2d'));
     }
   }
 
+  // 最初のコマで、ブラウザが HDR の値のまま描くかを確かめる（そのときだけ変換する）
+  async check(frame) {
+    if (this.checked) return;
+    this.checked = true;
+    const kind = hdrKind(frame.colorSpace) || this.hdr;
+    if (!kind) return;
+    const r = await drawsHdrRaw(frame);
+    this.colorNote = `HDR（${kind}）: ${r.raw ? 'SDR に変換して描く' : 'ブラウザが変換済み'}（${r.how}）`;
+    if (r.raw) this.mapper = new ToneMapper(this.outW, this.outH, kind);
+  }
+
   draw(ctx, frame, crop) {
+    this.paint(ctx, frame, crop);
+    if (this.mapper) this.mapper.apply(ctx);
+  }
+
+  paint(ctx, frame, crop) {
     const r = codedRect(crop, this.rotation, frame.displayWidth, frame.displayHeight);
     const { outW, outH } = this;
     if (!this.rotation) {
@@ -368,11 +412,60 @@ function toAudioBuffer(data, sr, from, to) {
 
 // ---------- 書き出し ----------
 
-// 字幕: 白の読みやすいゴシック体・最大2行・薄い黒の影。文字は動かさず、不透明度だけで出し入れする
+// 字幕: 白の読みやすいゴシック体・1行・薄い黒の影。文字は動かさず、不透明度だけで出し入れする。
+// 大きさは手動編集のお手本（文字の高さが画面の幅の約3.2%＝1080の幅で約34px）に合わせ、髪や手元を隠す面積を減らしている
 const FONT_FAMILY = '"Hiragino Sans", "Hiragino Kaku Gothic ProN", "Noto Sans JP", "IPAGothic", sans-serif';
-const FONT_SIZE = 58;
-const LINE_HEIGHT = 1.42;
+const FONT_SIZE = 42;
+const LINE_HEIGHT = 1.4;
 const MAX_TEXT_W = OUT_W * 0.86;
+
+// 冒頭のテキスト: 白の太いゴシック体・大きめ・黒の縁取り（手動編集のお手本と同じ。背景の帯はつけない）
+const TITLE_SIZE = 108;
+const TITLE_LINE_HEIGHT = 1.22;
+const TITLE_MAX_W = OUT_W * 0.86;
+const TITLE_OUTLINE = 0.13; // 縁取りの太さ（文字の大きさに対する割合）
+
+function drawOpening(ctx, op, t) {
+  const alpha = openingAlpha(op, t);
+  if (alpha <= 0) return;
+  ctx.save();
+  let size = TITLE_SIZE;
+  ctx.font = `900 ${size}px ${FONT_FAMILY}`;
+  const widest = Math.max(...op.lines.map(l => ctx.measureText(l).width)) + size * TITLE_OUTLINE;
+  if (widest > TITLE_MAX_W) {
+    size = Math.floor(size * TITLE_MAX_W / widest);
+    ctx.font = `900 ${size}px ${FONT_FAMILY}`;
+  }
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.globalAlpha = alpha;
+  ctx.fillStyle = '#ffffff';
+  const lh = size * TITLE_LINE_HEIGHT;
+  const firstY = OUT_H * op.y - ((op.lines.length - 1) * lh) / 2;
+  // 黒の縁取り（角を丸くする）の上に白い文字。縁取りに薄い影をつけて、明るい背景でも浮かせる
+  ctx.lineJoin = 'round';
+  ctx.miterLimit = 2;
+  ctx.lineWidth = size * TITLE_OUTLINE;
+  ctx.strokeStyle = 'rgba(0, 0, 0, 0.9)';
+  ctx.shadowColor = 'rgba(0, 0, 0, 0.35)';
+  ctx.shadowBlur = 10;
+  ctx.shadowOffsetY = 3;
+  op.lines.forEach((line, i) => ctx.strokeText(line, OUT_W / 2, firstY + i * lh));
+  ctx.shadowColor = 'transparent';
+  op.lines.forEach((line, i) => ctx.fillText(line, OUT_W / 2, firstY + i * lh));
+  ctx.restore();
+}
+
+// 最後のフェードアウト（映像をなめらかに黒くする）
+function drawEndFade(ctx, t, total) {
+  const a = endFadeAlpha(t, total);
+  if (a <= 0) return;
+  ctx.save();
+  ctx.globalAlpha = a;
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, OUT_W, OUT_H);
+  ctx.restore();
+}
 
 function drawSubtitle(ctx, page, t) {
   if (!page) return;
@@ -381,18 +474,18 @@ function drawSubtitle(ctx, page, t) {
   ctx.save();
   // 1行が長すぎるときだけ、そのページの文字を少し小さくする
   let size = FONT_SIZE;
-  ctx.font = `600 ${size}px ${FONT_FAMILY}`;
+  ctx.font = `700 ${size}px ${FONT_FAMILY}`;
   const widest = Math.max(...page.lines.map(l => ctx.measureText(l).width));
   if (widest > MAX_TEXT_W) {
     size = Math.floor(size * MAX_TEXT_W / widest);
-    ctx.font = `600 ${size}px ${FONT_FAMILY}`;
+    ctx.font = `700 ${size}px ${FONT_FAMILY}`;
   }
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   ctx.globalAlpha = alpha;
   ctx.fillStyle = '#ffffff';
-  ctx.shadowColor = 'rgba(0, 0, 0, 0.42)';
-  ctx.shadowBlur = 10;
+  ctx.shadowColor = 'rgba(0, 0, 0, 0.5)';
+  ctx.shadowBlur = 8;
   ctx.shadowOffsetY = 2;
   const lh = size * LINE_HEIGHT;
   const centerY = OUT_H * (SUB_ZONES[page.pos] ?? SUB_ZONES.bottom);
@@ -411,78 +504,196 @@ function drawSubtitle(ctx, page, t) {
 //    → 音声を区間ごとに作ると、つなぎ目ごとに AAC の先頭の無音（エンコーダーの遅延）が入って「プツッ」となるため
 // どちらも書き出し先はファイル（StreamTarget）で、動画全体をメモリに持たない（10分の動画でも使うメモリは一定）
 
+let encoderLogged = false;
 async function checkVideoEncoder() {
   if (!(await canEncodeVideo('avc', { width: OUT_W, height: OUT_H }))) {
     throw new Error('この端末では H.264 の書き出しに対応していません。');
   }
+  // 画質の確認用（診断情報）: この端末の H.264 エンコーダーがハードウェアか。画質はエンコーダーで大きく変わる
+  if (encoderLogged) return;
+  encoderLogged = true;
+  try {
+    const base = { codec: 'avc1.640028', width: OUT_W, height: OUT_H, bitrate: VIDEO_BITRATE, framerate: FPS };
+    const hw = await VideoEncoder.isConfigSupported({ ...base, hardwareAcceleration: 'prefer-hardware' }).then(r => r.supported, () => null);
+    const sw = await VideoEncoder.isConfigSupported({ ...base, hardwareAcceleration: 'prefer-software' }).then(r => r.supported, () => null);
+    log('映像のエンコーダー', { hardware: hw, software: sw, bitrate: VIDEO_BITRATE });
+  } catch {}
 }
 
-// ピース piece のうち、出力のコマ f0〜f1 を描く。コマごとに emit(出力の時刻) を呼ぶ（その時点の画像は base にある）
-async function drawFrames(src, packets, painter, bctx, clip, piece, f0, f1, emit) {
+// 書き出しを一時停止するときの合図（画面を離れたときなど）。この例外は失敗ではない
+export class RenderPaused extends Error {
+  constructor() { super('一時停止しました'); this.name = 'RenderPaused'; }
+}
+
+// 書き出しに使う canvas と描画の準備。区間ごとに作り直すと、iPhone では使い終わった canvas の
+// メモリ（GPU）がすぐに解放されずに積み重なるため、書き出し全体で1つを使い回す
+export function createRenderContext(src) {
+  const canvas = new OffscreenCanvas(OUT_W, OUT_H);
+  const base = new OffscreenCanvas(OUT_W, OUT_H); // 字幕を載せる前のコマ
+  return {
+    canvas, ctx: hq(canvas.getContext('2d')), base, bctx: hq(base.getContext('2d')),
+    painter: new FramePainter(src.rotation, OUT_W, OUT_H, src.decoderConfig?.colorSpace),
+  };
+}
+
+// 2本目以降の動画のコマの描き方（回転・HDR の色が同じ動画どうしは使い回す。canvas を増やしすぎない）
+function painterFor(rc, v) {
+  const key = `${v.rotation}|${hdrKind(v.decoderConfig?.colorSpace) || 'sdr'}`;
+  rc.painters = rc.painters || new Map();
+  if (!rc.painters.has(key)) rc.painters.set(key, new FramePainter(v.rotation, OUT_W, OUT_H, v.decoderConfig?.colorSpace));
+  return rc.painters.get(key);
+}
+
+// デコーダーの失敗を、原因を調べられるよう詳しく記録した例外にする
+function decodeError(err, info) {
+  if (err?.detail?.stage) { err.detail = { ...info, ...err.detail }; return err; } // 内側で段階を記録済み（エンコードなど）
+  const e = new Error(`${err?.name || 'Error'}: ${err?.message || err}`);
+  e.name = err?.name || 'Error';
+  e.cause = err;
+  e.detail = { stage: err?.stage || 'decode', ...info, stack: String(err?.stack || '').split('\n').slice(0, 4).join(' | ') };
+  return e;
+}
+
+// ピース piece のうち、出力のコマ f0〜f1 を描く。コマごとに emit(出力の時刻) を呼ぶ（その時点の画像は base にある）。
+// opts.lowLatency: false にすると、デコーダーの低遅延モードを使わない（やり直しのとき）
+// opts.earlierKey: true にすると、1つ前のキーフレームからデコードする（やり直しのとき）
+async function drawFrames(src, packets, rc, clip, piece, f0, f1, emit, opts = {}, painter = rc.painter, scale = 1) {
   const from = piece.srcStart + f0 / FPS;
   const n = f1 - f0;
   const end = from + n / FPS;
-  let k = 0;
+  let k = 0, decoded = 0, sent = 0, skipped = 0, lastTs = null;
   const out = async () => { await emit(piece.outStart + (f0 + k) / FPS); k++; };
   // 新しいコマが来たら、それより前の時刻の出力コマを直前の画像で埋めてから描き替える
   const onFrame = async frame => {
+    decoded++;
     const ts = frame.timestamp / 1e6;
     while (k < n && from + k / FPS < ts - 1e-3) await out();
-    // ズーム中は、このコマの出力時刻に合わせた枠で切り抜く
-    if (k < n) painter.draw(bctx, frame, cropAt(clip, piece.outStart + f0 / FPS + Math.max(0, ts - from)));
+    // ズーム中は、このコマの出力時刻に合わせた枠で切り抜く。
+    // 使う範囲より0.1秒以上前のコマ（キーフレームから使う所までの読み進め）は描かない（後に、使う範囲の手前のコマが必ず来る）
+    if (k < n && ts >= from - 0.1) {
+      try {
+        const r = cropAt(clip, piece.outStart + f0 / FPS + Math.max(0, ts - from));
+        if (!painter.checked) await painter.check(frame);
+        painter.draw(rc.bctx, frame, scale === 1 ? r : { left: r.left * scale, top: r.top * scale, width: r.width * scale, height: r.height * scale });
+      }
+      catch (err) { throw Object.assign(err, { stage: 'draw' }); }
+    }
   };
-  const dec = new FrameDecoder(src.decoderConfig);
+  const config = { ...src.decoderConfig, optimizeForLatency: opts.lowLatency !== false };
+  let key = (await packets.getKeyPacket(from, { verifyKeyPackets: true })) ?? (await packets.getFirstPacket());
+  if (opts.earlierKey && key && key.timestamp > 0) {
+    key = (await packets.getKeyPacket(Math.max(0, key.timestamp - 0.001), { verifyKeyPackets: true })) ?? key;
+  }
+  const info = () => ({
+    srcFrom: +from.toFixed(3), frames: `${f0}-${f1}`, outFrame: k, key: key && +key.timestamp.toFixed(3),
+    lastPacket: lastTs, sent, skipped, decoded, codec: config.codec, coded: `${config.codedWidth}x${config.codedHeight}`,
+    rotation: src.rotation, decoderState: dec?.decoder?.state, queue: dec?.decoder?.decodeQueueSize, lowLatency: config.optimizeForLatency,
+  });
+  let dec = null;
   try {
-    let p = (await packets.getKeyPacket(from, { verifyKeyPackets: true })) ?? (await packets.getFirstPacket());
+    dec = new FrameDecoder(config);
+    let p = key;
     // B フレームの並べ替えを考えて少し先まで送る
     while (p && p.timestamp < end + 0.5 && k < n) {
-      dec.decoder.decode(p.toEncodedVideoChunk());
-      await dec.drain(onFrame, 2);
-      p = await packets.getNextPacket(p);
+      // キーフレームより前に表示されるコマ（HEVC の「前のまとまりを参照するコマ」など）は、
+      // キーフレームから始めると正しくデコードできないので送らない（表示時刻が from より前なので出力には使わない）
+      if (p !== key && p.timestamp < key.timestamp) { skipped++; }
+      else {
+        lastTs = +p.timestamp.toFixed(3);
+        dec.decoder.decode(p.toEncodedVideoChunk());
+        sent++;
+        await dec.drain(onFrame, 2);
+      }
+      try { p = await packets.getNextPacket(p); }
+      catch (err) { throw Object.assign(err, { stage: 'read' }); }
     }
     await dec.flush(onFrame);
+  } catch (err) {
+    if (err instanceof RenderPaused) throw err;
+    throw decodeError(err, info());
   } finally {
-    dec.close();
+    dec?.close();
   }
   while (k < n) await out();
 }
 
-// 区間 seg（resume.planSegments の結果の1つ）の映像だけを、stream（ファイル）に MP4 として書き出す
-export async function renderSegment(src, timeline, seg, stream, { onProgress } = {}) {
+// 区間 seg（resume.planSegments の結果の1つ）の映像だけを、stream（ファイル）に MP4 として書き出す。
+// rc: createRenderContext の結果（区間をまたいで使い回す）。shouldPause() が true になったら、きりのよい所で RenderPaused を投げる
+// overlay: { opening: 冒頭のテキスト（openingPlan の結果）, total: 完成動画の長さ（最後のフェード用）}
+// srcs: 動画（openVideo の結果）か、複数の動画を1本にするときはその並び（lay: sources.js の layout。ピースの時刻はつないだ時刻）
+export async function renderSegment(srcs, timeline, seg, stream, { onProgress, rc, shouldPause, decode, overlay, lay = null } = {}) {
+  const list = Array.isArray(srcs) ? srcs : [srcs];
+  const src = list[0];
   await checkVideoEncoder();
+  rc = rc || createRenderContext(src);
   const output = new Output({ format: new Mp4OutputFormat({ fastStart: false }), target: new StreamTarget(stream) });
-  const canvas = new OffscreenCanvas(OUT_W, OUT_H);
-  const ctx = canvas.getContext('2d');
-  const base = new OffscreenCanvas(OUT_W, OUT_H); // 字幕を載せる前のコマ
-  const bctx = base.getContext('2d');
-  bctx.fillStyle = '#000';
-  bctx.fillRect(0, 0, OUT_W, OUT_H);
-  // 髪の質感がつぶれないよう、ビットレートは高め（約 75MB/分）。色の加工はしない
-  const videoSource = new CanvasSource(canvas, { codec: 'avc', bitrate: VIDEO_BITRATE, keyFrameInterval: 2 });
+  rc.bctx.fillStyle = '#000';
+  rc.bctx.fillRect(0, 0, OUT_W, OUT_H);
+  // 髪の質感がつぶれないよう、ビットレートは高め（約 150MB/分）。色の加工はしない
+  const videoSource = new CanvasSource(rc.canvas, { codec: 'avc', bitrate: VIDEO_BITRATE, keyFrameInterval: 2 });
   output.addVideoTrack(videoSource, { frameRate: FPS });
   await output.start();
-  const packets = new EncodedPacketSink(src.video);
-  const painter = new FramePainter(src.rotation, OUT_W, OUT_H);
+  // 動画ごとの読み出し口と、回転に合わせた描き方（向きが違う動画もあるため）
+  const sinks = new Map();
+  const reader = k => {
+    if (!sinks.has(k)) {
+      const v = list[k];
+      sinks.set(k, { packets: new EncodedPacketSink(v.video), painter: v === src ? rc.painter : painterFor(rc, v), scale: v.width / src.width });
+    }
+    return sinks.get(k);
+  };
   let done = 0;
+  let current = null;
   try {
     for (const s of seg.slices) {
       const clip = timeline[s.c];
-      await drawFrames(src, packets, painter, bctx, clip, clip.pieces[s.p], s.f0, s.f1, async t => {
-        ctx.drawImage(base, 0, 0);
-        drawSubtitle(ctx, clip.subtitles.find(p => t >= p.start && t < p.end), t);
-        await videoSource.add(t - seg.outStart, 1 / FPS);
+      current = s;
+      const { source, piece } = lay ? localPiece(lay, clip.pieces[s.p]) : { source: 0, piece: clip.pieces[s.p] };
+      const r = reader(source);
+      await drawFrames(list[source], r.packets, rc, clip, piece, s.f0, s.f1, async t => {
+        if (shouldPause?.()) throw new RenderPaused();
+        rc.ctx.drawImage(rc.base, 0, 0);
+        drawSubtitle(rc.ctx, pageAt(timeline, s.c, t), t);
+        if (overlay?.opening) drawOpening(rc.ctx, overlay.opening, t);
+        if (overlay?.total) drawEndFade(rc.ctx, t, overlay.total);
+        try {
+          await videoSource.add(t - seg.outStart, 1 / FPS);
+        } catch (err) {
+          throw Object.assign(new Error(`${err?.name || 'Error'}: ${err?.message || err}`), { name: err?.name || 'Error', cause: err, detail: { stage: 'encode', outTime: +t.toFixed(3), stack: String(err?.stack || '').split('\n').slice(0, 4).join(' | ') } });
+        }
         done++;
         onProgress?.(done / seg.frames);
-      });
+      }, decode, r.painter, r.scale);
     }
     await output.finalize();
   } catch (err) {
     await output.cancel().catch(() => {});
+    if (err && !(err instanceof RenderPaused)) {
+      err.detail = { segment: seg.index, slice: current && { clip: current.c, piece: current.p }, framesDone: done, ...(err.detail || {}) };
+    }
     throw err;
   }
 }
 
-export const VIDEO_BITRATE = 10_000_000;
+// 時刻 t に出す字幕。次の場面の最初の字幕は、読みやすさのため前の場面の終わりから少し早く出ることがある（plan.readableAcross）
+export function pageAt(timeline, c, t) {
+  const hit = ps => (ps || []).find(p => t >= p.start && t < p.end);
+  return hit(timeline[c].subtitles) || hit(timeline[c + 1]?.subtitles?.slice(0, 1));
+}
+
+let bundledAac = false;
+function useBundledAac() {
+  if (bundledAac) return;
+  registerAacEncoder();
+  bundledAac = true;
+  log('音声は内蔵のAACエンコーダーで作成');
+}
+
+// 映像のビットレート（約150MB/分）。髪の細かい線は圧縮で真っ先に失われるため高めにしている。
+// ただしパソコンの Chromium（ソフトウェアのエンコーダー）では、同じコマで比べると 10Mbps でも 20Mbps でも
+// 細かさは圧縮前の約80%で、ビットレートでは変わらなかった（tests/e2e/quality-bench）。
+// iPhone はハードウェアのエンコーダーを使うため、効果は iPhone 実機で確かめる必要がある
+export const VIDEO_BITRATE = 20_000_000;
 export const AUDIO_BITRATE = 160_000;
 
 function sameConfig(a, b) {
@@ -495,15 +706,23 @@ function sameConfig(a, b) {
 
 // 保存した区間の映像をつなぎ、音声を通して作って、stream（ファイル）に完成したMP4を書き出す。
 // getSegment(i): i 番目の区間のファイル（File）
-export async function assembleOutput(src, timeline, segments, getSegment, stream, { gainDb = 0, onProgress } = {}) {
-  const withAudio = !!src.audio;
-  if (withAudio && !(await canEncodeAudio('aac'))) {
-    log('AACの書き出しに端末が対応していないため、内蔵のAACエンコーダーを使用');
-    registerAacEncoder();
-  }
+// srcs・lay: renderSegment と同じ（複数の動画を1本にするとき）。bgm: { reader（readBgm の結果）, volume（0〜0.1）, speech（声の区間・つないだ時刻） }
+// feedVideo（高速書き出し・js/fastcut.js）: 区間のファイルの代わりに、映像のコマを add(packet, meta) で直接入れる関数。
+//   そのときは segments を1つ（planSegments(timeline, Infinity)）にする。videoCodec: 'avc' | 'hevc'。色の印は元の動画のまま
+export async function assembleOutput(srcs, timeline, segments, getSegment, stream, { gainDb = 0, onProgress, endFade = 0, endHold = 0, lay = null, bgm = null, feedVideo = null, videoCodec = 'avc', rotation = 0 } = {}) {
+  const list = Array.isArray(srcs) ? srcs : [srcs];
+  const src = list[0];
+  const withAudio = list.some(v => v.audio);
+  // 動画ごとに音声の標本化の周波数が違うときは、最初の動画にそろえる
+  const outSr = (list.find(v => v.audio) || src).audio?.sampleRate;
+  // 音声は、ブラウザの AAC エンコーダーではなく、内蔵の AAC エンコーダー（FFmpeg の WASM 版）で作る。
+  // WebKit（Safari と同じエンジン）のエンコーダーは、1回に渡した音声から作られる AAC のフレームすべてに
+  // 同じ時刻を付けて返すことがあり（Linux の WebKit で確認）、MP4 の音声の時刻が壊れるため
+  if (withAudio) useBundledAac();
   const output = new Output({ format: new Mp4OutputFormat({ fastStart: false }), target: new StreamTarget(stream) });
-  const videoSource = new EncodedVideoPacketSource('avc');
-  output.addVideoTrack(videoSource, { frameRate: FPS });
+  const videoSource = new EncodedVideoPacketSource(feedVideo ? videoCodec : 'avc');
+  // 高速書き出しは元の動画のコマ（回転する前の向き）をそのまま使うので、回転の情報を書く
+  output.addVideoTrack(videoSource, { frameRate: FPS, ...(feedVideo && rotation ? { rotation } : {}) });
   let audioSource = null;
   if (withAudio) {
     audioSource = new AudioBufferSource({ codec: 'aac', bitrate: AUDIO_BITRATE });
@@ -513,21 +732,35 @@ export async function assembleOutput(src, timeline, segments, getSegment, stream
   const gain = Math.pow(10, gainDb / 20);
   const stitcher = new AudioStitcher();
   const lastSeg = segments[segments.length - 1];
+  const outTotal = timeline.reduce((sum, c) => sum + c.outDuration, 0);
   let firstConfig = null;
   try {
     for (const seg of segments) {
       // 音声: この区間の分を、前の区間から続けて作る（つなぎ目のクロスフェードは区間をまたいでも同じ）
       if (withAudio) {
         for (const s of seg.slices) {
-          const piece = timeline[s.c].pieces[s.p];
+          const vpiece = timeline[s.c].pieces[s.p];
+          const { source, piece } = lay ? localPiece(lay, vpiece) : { source: 0, piece: vpiece };
           const dur = (s.f1 - s.f0) / FPS;
-          const raw = await readAudioSafe(src, piece.srcStart + s.f0 / FPS, dur + AudioStitcher.extra());
+          let raw = list[source].audio ? await readAudioSafe(list[source], piece.srcStart + s.f0 / FPS, dur + AudioStitcher.extra()) : null;
+          if (!raw) raw = { sr: outSr, data: [new Float32Array(Math.ceil((dur + AudioStitcher.extra()) * outSr))] };
+          if (raw.sr !== outSr) raw = { sr: outSr, data: raw.data.map(ch => resampleLinear(ch, raw.sr, outSr)) };
           applyGain(raw.data, gain);
           const len = Math.round(dur * raw.sr);
           const last = seg === lastSeg && s === seg.slices[seg.slices.length - 1];
           const data = stitcher.add(raw.data, raw.sr, { len, contiguous: s.f0 > 0 || piece.contiguous, last });
+          // BGM（選んだときだけ）: 話し声の下にごく小さく重ねる
+          if (bgm) mixBgm(data, raw.sr, await bgm.reader.read(len, raw.sr), piece.outStart + s.f0 / FPS, outTotal, bgm);
+          // 最後のフェードアウト（映像が黒くなるのと同じ時間で、音声も小さくする）
+          if (endFade) applyEndFade(data, raw.sr, piece.outStart + s.f0 / FPS, outTotal, endFade, endHold);
           await audioSource.add(toAudioBuffer(data, raw.sr, 0, len));
         }
+      }
+      // 高速書き出し: 元の動画のコマ（つなぎ目だけエンコードし直したもの）を、そのまま入れる
+      if (feedVideo) {
+        await feedVideo((packet, meta) => videoSource.add(packet, meta));
+        onProgress?.(1);
+        continue;
       }
       // 映像: 保存した区間のデータを、時刻だけずらしてそのまま入れる
       const file = await getSegment(seg.index);
@@ -543,7 +776,8 @@ export async function assembleOutput(src, timeline, segments, getSegment, stream
         const sink = new EncodedPacketSink(track);
         let first = seg === segments[0];
         for (let p = await sink.getFirstPacket(); p; p = await sink.getNextPacket(p)) {
-          await videoSource.add(p.clone({ timestamp: p.timestamp + seg.outStart }), first ? { decoderConfig: config } : undefined);
+          // 色の印は元の動画（BT.709）と同じにする（canvas から書き出すと sRGB の印になり、iPhone で暗く見える。color.js）
+          await videoSource.add(p.clone({ timestamp: p.timestamp + seg.outStart }), first ? { decoderConfig: { ...config, colorSpace: outputColorSpace } } : undefined);
           first = false;
         }
       } finally {
@@ -555,5 +789,89 @@ export async function assembleOutput(src, timeline, segments, getSegment, stream
   } catch (err) {
     await output.cancel().catch(() => {});
     throw err;
+  }
+}
+
+// x をちょうど n サンプルに伸び縮みさせる（直線でつなぐ）
+function resampleTo(x, n) {
+  const y = new Float32Array(n), r = x.length / n;
+  for (let i = 0; i < n; i++) {
+    const p = i * r, k = Math.floor(p), f = p - k;
+    y[i] = (x[k] ?? 0) * (1 - f) + (x[k + 1] ?? x[k] ?? 0) * f;
+  }
+  return y;
+}
+
+// 音声の標本化の周波数をそろえる（直線でつなぐ。動画ごとに違うときだけ使う）
+function resampleLinear(x, from, to) {
+  const n = Math.round(x.length * to / from), y = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    const p = i * from / to, k = Math.floor(p), f = p - k;
+    y[i] = (x[k] ?? 0) * (1 - f) + (x[k + 1] ?? x[k] ?? 0) * f;
+  }
+  return y;
+}
+
+// ---------- BGM ----------
+
+// 選んだ音楽ファイルを、先頭から順に、必要な長さずつ読む（全体を一度にメモリに置かない）。
+// 曲が動画より短いときは、最初に戻って続ける。read(len, sr): sr の周波数で len サンプル（2チャンネル）
+export async function readBgm(file) {
+  const input = new Input({ source: new BlobSource(file, { useStreamReader: false, maxCacheSize: 4 * 1024 * 1024 }), formats: ALL_FORMATS });
+  const track = await input.getPrimaryAudioTrack();
+  if (!track) { input.dispose(); throw new Error('選んだファイルに音声が見つかりませんでした。'); }
+  if (!(await track.canDecode())) { input.dispose(); throw new Error(`この音声の形式（${track.codec}）は読み込めません。MP3・AAC（m4a）・WAV の音楽ファイルを選んでください。`); }
+  const duration = await input.computeDuration();
+  let iter = null, buf = [[], []], have = 0, srIn = track.sampleRate, pos = 0; // pos: 出力側で読んだサンプル数（周波数変換の位置）
+  const open = () => { iter?.return?.(); iter = new AudioBufferSink(track).buffers(0, duration)[Symbol.asyncIterator](); };
+  open();
+  const pull = async () => {
+    let r = await iter.next();
+    if (r.done) { open(); r = await iter.next(); if (r.done) return false; } // 曲の最後まで来たら最初から
+    const ab = r.value.buffer;
+    for (let c = 0; c < 2; c++) buf[c].push(ab.getChannelData(Math.min(c, ab.numberOfChannels - 1)).slice());
+    have += ab.length;
+    return true;
+  };
+  const take = n => {
+    const out = [new Float32Array(n), new Float32Array(n)];
+    for (let c = 0; c < 2; c++) {
+      let k = 0;
+      while (k < n) {
+        const b = buf[c][0];
+        const m = Math.min(n - k, b.length);
+        out[c].set(b.subarray(0, m), k);
+        k += m;
+        if (m === b.length) buf[c].shift(); else buf[c][0] = b.subarray(m);
+      }
+    }
+    have -= n;
+    return out;
+  };
+  return {
+    duration,
+    async read(len, sr) {
+      // 出力 len サンプル分の入力サンプル（周波数が違えば、ちょうど len サンプルに変換する）
+      const start = Math.round(pos * srIn / sr), end = Math.round((pos + len) * srIn / sr), n = Math.max(1, end - start);
+      while (have < n) if (!(await pull())) break;
+      const raw = take(Math.min(have, n));
+      pos += len;
+      return raw.map(ch => (ch.length === len ? ch : resampleTo(ch, len)));
+    },
+    close() { iter?.return?.(); input.dispose(); },
+  };
+}
+
+// 選んだ曲の雰囲気の目安（最初の30秒）。話し声がメインの動画に向くかを知らせる（曲を変えることはしない）
+export async function analyzeBgm(file) {
+  const r = await readBgm(file);
+  try {
+    const sr = 16000, n = Math.round(Math.min(30, r.duration || 30) * sr);
+    const [l, rr] = await r.read(n, sr);
+    const mono = new Float32Array(n);
+    for (let i = 0; i < n; i++) mono[i] = 0.5 * (l[i] + rr[i]);
+    return { duration: r.duration, ...bgmCharacter(mono, sr) };
+  } finally {
+    r.close();
   }
 }

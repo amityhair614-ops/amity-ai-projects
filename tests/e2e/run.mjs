@@ -10,7 +10,10 @@
 //     --zoom / --no-zoom / --no-subs  書き出し時の設定
 //     --target=秒     完成動画の長さ（30/45/60 はボタン、それ以外は自由入力）
 //     --style=tempo   編集スタイル
+//     --cut=tight     カットの強さ（テンポ重視）
+//     --fixes=FILE    書き出した後に、完成後の修正の指示を入れて書き出し直す（JSON）
 //     --brief         タイトル・内容・伝えたいこと・流れ・必ず残したい場面を入力する
+//     --title=… / --content=… / --items=…  動画タイトル・動画の説明（内容）・使用アイテムを入力する
 //     --replan=秒     構成の確認画面で長さを変えて「構成し直す」を押す
 //
 // 事前に `python3 -m http.server 8123` をリポジトリ直下で起動しておく。
@@ -21,6 +24,7 @@
 import { chromium } from 'playwright-core';
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { execSync } from 'node:child_process';
 
 const dir = process.argv[2];
@@ -30,19 +34,33 @@ const failAsr = process.argv.includes('--fail-asr');
 const webaudio = process.argv.includes('--webaudio');
 const reloadAt = (process.argv.find(a => a.startsWith('--reload-at=')) || '').split('=')[1];
 const realAsr = (process.argv.find(a => a.startsWith('--real-asr=')) || '').split('=')[1];
+// --reazon=URL: 本物の ReazonSpeech で文字起こしする。URL はモデルのファイル（encoder-…onnx 等）を CORS つきで配信する場所
+// （例: python3 tests/webkit/cors-server.py DIR 8124 → http://127.0.0.1:8124/）。ONNX Runtime は ORT_DIST（1.22.0 の dist）から配信する
+const reazon = (process.argv.find(a => a.startsWith('--reazon=')) || '').slice('--reazon='.length);
+const titleArg = (process.argv.find(a => a.startsWith('--title=')) || '').slice('--title='.length);
+const itemsArg = (process.argv.find(a => a.startsWith('--items=')) || '').slice('--items='.length);
+const contentArg = (process.argv.find(a => a.startsWith('--content=')) || '').slice('--content='.length);
+const scriptArg = (process.argv.find(a => a.startsWith('--script=')) || '').slice('--script='.length);
 const zoom = process.argv.includes('--zoom') ? true : process.argv.includes('--no-zoom') ? false : null;
 const noSubs = process.argv.includes('--no-subs');
 const arg = name => (process.argv.find(a => a.startsWith(`--${name}=`)) || '').split('=')[1];
 const target = arg('target');
 const style = arg('style');
+const cutArg = arg('cut');
+const fixesArg = (process.argv.find(a => a.startsWith('--fixes=')) || '').slice('--fixes='.length);
 const withBrief = process.argv.includes('--brief');
 const replan = arg('replan');
-const base = path.basename(sample).replace(/\.(mp4|mov)$/, '');
+// 複数の動画は「,」でつなぐ（a.mov,b.mov）。上から順に1本の動画にまとめる
+const samples = sample.split(',');
+const base = path.basename(samples[0]).replace(/\.(mp4|mov)$/, '') + (samples.length > 1 ? `-x${samples.length}` : '');
+// --bgm=FILE: BGM の曲（--bgm-vol=2 のように % で音量）
+const bgmArg = (process.argv.find(a => a.startsWith('--bgm=')) || '').slice('--bgm='.length);
+const bgmVol = arg('bgm-vol');
 const tFile = fs.existsSync(path.join(dir, `${base}-transcript.json`)) ? `${base}-transcript.json` : 'sample-transcript.json';
 const transcript = JSON.parse(fs.readFileSync(path.join(dir, tFile), 'utf8'));
-const tag = base + (noAsr ? '-noasr' : '') + (failAsr ? '-failasr' : '') + (webaudio ? '-webaudio' : '') + (realAsr ? '-realasr' : '')
+const tag = base + (noAsr ? '-noasr' : '') + (failAsr ? '-failasr' : '') + (webaudio ? '-webaudio' : '') + (realAsr ? '-realasr' : '') + (reazon ? '-reazon' : '') + (scriptArg ? '-script' : '') + (process.env.TAG || '')
   + (zoom === true ? '-zoom' : zoom === false ? '-nozoom' : '') + (noSubs ? '-nosubs' : '')
-  + (target ? '-t' + target : '') + (style ? '-' + style : '') + (withBrief ? '-brief' : '') + (replan ? '-replan' + replan : '');
+  + (target ? '-t' + target : '') + (style ? '-' + style : '') + (cutArg ? '-' + cutArg : '') + (arg('mode') ? '-' + arg('mode') : '') + (withBrief ? '-brief' : '') + (replan ? '-replan' + replan : '');
 
 // ブラウザのプロセスごとのメモリ（RSS）を0.5秒ごとに測り、段階ごとのピークを記録する
 const mem = { stage: '開始', peaks: {} };
@@ -101,7 +119,12 @@ self.onmessage = e => {
 // GPU を有効にする（GPU なしだと、コマを描くたびにメモリが増える Chrome 側の現象が出て、実機と違う測定になる）
 const asrRequests = [];
 const browser = await chromium.launch({ executablePath: process.env.CHROME_PATH, args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
-page = await browser.newPage({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2 });
+// https のページ（APP_URL=https://…）でも開けるよう、自分で作った証明書を受け付ける（Cloudflare Pages と同じ https での確認）
+page = await browser.newPage({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, ignoreHTTPSErrors: true });
+// 書き出し前の確認（字幕の要確認が残っているとき）は、内容を記録してから「はい」を選ぶ
+// 確認のポップアップ（window.confirm など）の回数。書き出しの確認は画面の中に出すので、書き出しでは0回のはず
+let dialogs = 0, dialogsAtRender = null;
+page.on('dialog', async d => { dialogs++; console.log('[確認ダイアログ] ' + d.message().replace(/\n/g, ' / ')); await d.accept(); });
 const logs = [];
 page.on('console', m => logs.push(`[${m.type()}] ${m.text()}`));
 page.on('pageerror', e => logs.push('[pageerror] ' + e.message));
@@ -126,8 +149,26 @@ if (realAsr) {
     asrRequests.push(new URL(request.url()).pathname);
     serve(route, m ? path.join(realAsr, m[1]) : '/nonexistent');
   });
+} else if (reazon) {
+  // 字幕の言葉の区切りの辞書（kuromoji）は、手元の node_modules から返す（npm install が必要）
+  const kuroDir = path.join(path.dirname(fileURLToPath(import.meta.url)), '../../node_modules/kuromoji');
+  await page.context().route(/^https:\/\/cdn\.jsdelivr\.net\/npm\/kuromoji@0\.1\.2\/(.*)$/, (route, request) => {
+    const rel = new URL(request.url()).pathname.replace(/^\/npm\/kuromoji@0\.1\.2\//, '');
+    route.fulfill({ path: path.join(kuroDir, rel), contentType: rel.endsWith('.js') ? 'text/javascript' : 'application/octet-stream', headers: { 'access-control-allow-origin': '*' } });
+  });
+  const ortDist = process.env.ORT_DIST;
+  await page.context().route(/^https:\/\/cdn\.jsdelivr\.net\/npm\/onnxruntime-web@1\.22\.0\/dist\/.*$/, (route, request) => {
+    const f = path.basename(new URL(request.url()).pathname);
+    route.fulfill({ path: path.join(ortDist, f), contentType: f.endsWith('.wasm') ? 'application/wasm' : 'text/javascript', headers: { 'access-control-allow-origin': '*' } });
+  });
+  // 大きなモデルは Playwright 経由で返すとページが落ちるため、手元のサーバーに転送する
+  await page.context().route(/^https:\/\/huggingface\.co\/.*$/, (route, request) => {
+    asrRequests.push(new URL(request.url()).pathname);
+    route.fulfill({ status: 302, headers: { location: reazon + path.basename(new URL(request.url()).pathname), 'access-control-allow-origin': '*' } });
+  });
 } else {
   await page.route('**/js/transcribe-worker.js', r => r.fulfill({ contentType: 'text/javascript', body: fakeWorker }));
+  await page.route('**/js/reazon-worker.js', r => r.fulfill({ contentType: 'text/javascript', body: fakeWorker }));
 }
 
 // iPhone の画面幅で字幕を手直しする（文字の修正・0.1秒の調整・全体のずらし・保存）
@@ -250,7 +291,7 @@ async function reloadDuring(stage) {
 
 try {
   await page.goto((process.env.APP_URL || 'http://127.0.0.1:8123/') + (webaudio ? '?audio=webaudio' : ''));
-  await page.setInputFiles('#file', path.join(dir, sample));
+  await page.setInputFiles('#file', samples.map(f => path.join(dir, f)));
   await page.waitForSelector('#stepAnalyze:not([hidden]), #fileError:not([hidden])', { timeout: 60000 });
   const fileErr = await page.$eval('#fileError', el => (el.hidden ? null : el.textContent));
   if (fileErr) {
@@ -263,6 +304,15 @@ try {
   await page.waitForSelector('#stepBrief:not([hidden])');
   await setTarget(target);
   if (style) await page.click(`input[name=style][value=${style}] + span`);
+  if (cutArg) await page.click(`input[name=cut][value=${cutArg}] + span`);
+  // --mode=cut: 編集の種類「カットのみ（試作）」
+  if (arg('mode')) await page.click(`input[name=mode][value=${arg('mode')}] + span`);
+  // 偽の文字起こし（Whisper の形の結果）は Whisper の区切り方で返す
+  if (await page.$('#optEngine')) await page.selectOption('#optEngine', reazon ? 'reazon' : 'whisper');
+  if (titleArg) await page.fill('#bTitle', titleArg);
+  if (itemsArg) await page.fill('#bItems', itemsArg);
+  if (contentArg) await page.fill('#bContent', contentArg);
+  if (scriptArg) await page.fill('#bScript', fs.readFileSync(scriptArg, 'utf8'));
   if (withBrief) {
     await page.fill('#bTitle', 'ボブのカット解説');
     await page.fill('#bContent', 'ブロッキングから仕上がりまで、ボブの切り方を解説します');
@@ -284,19 +334,19 @@ try {
   console.log('段階: ' + steps);
   console.log(`解析: ${((Date.now() - t0) / 1000).toFixed(1)}秒`);
 
-  if (realAsr) {
+  if (realAsr || reazon) {
     console.log('モデルの読み込み: ' + asrRequests.filter(p => /onnx|json/.test(p)).map(p => p.split('/').pop()).join(', '));
     const chunks = await page.evaluate(() => window.amityDebug.chunks || []);
-    console.log('--- 文字起こし（本物のWhisper） ---');
+    console.log('--- 文字起こし（本物のモデル） ---');
     for (const c of chunks) console.log(`  ${c.start.toFixed(1)}-${c.end.toFixed(1)} ${c.text}${c.raw && c.raw !== c.text ? '  ← 元: ' + c.raw : ''}`);
     const truthText = transcript.filter(c => !c.retake).map(c => c.text).join('');
     const got = chunks.map(c => c.text).join('');
     console.log('文字の一致率（正解との比較・目安）: ' + charAgreement(truthText, got));
-    if (transcript[0].phrases) {
+    if (transcript[0]?.phrases) {
       // 話した内容（言い直し前の発言も含む）と、文字起こし全体の一致率
       const said = transcript.map(c => c.retake ? c.phrases.map(p => p.text).join('') : c.text).join('');
       console.log('話した内容との一致率（言い直しも含む）: ' + charAgreement(said, got));
-      const fixes = await page.evaluate(() => JSON.parse(localStorage.getItem('amity.log.v1')).filter(e => e.msg.startsWith('文字起こし ')).flatMap(e => e.data.fixes || []));
+      const fixes = await page.evaluate(() => JSON.parse(localStorage.getItem('amity.log.v1')).filter(e => e.msg.startsWith('文字起こし ') && e.data).flatMap(e => e.data.fixes || []));
       console.log('用語の修正: ' + (fixes.join(' / ') || 'なし'));
       // 字幕の時刻: 正解の各文に、文字が最も似ている字幕を対応づけて、開始・終了の差を測る
       const errs = [];
@@ -315,7 +365,7 @@ try {
       console.log(`字幕の時刻の差（元の動画上）: 開始 中央値 ${med(S).toFixed(2)}s 最大 ${S.at(-1).toFixed(2)}s / 終了 中央値 ${med(Ee).toFixed(2)}s 最大 ${Ee.at(-1).toFixed(2)}s（${errs.length}文）`);
       for (const e of errs) if (Math.abs(e.ds) > 0.3 || Math.abs(e.de) > 0.3) console.log(`  ずれ ${e.ds.toFixed(2)} / ${e.de.toFixed(2)}  ${e.text}`);
     }
-    console.log('時刻トークン: ' + (await page.evaluate(() => JSON.parse(localStorage.getItem('amity.log.v1')).filter(e => e.msg.startsWith('文字起こし ')).map(e => JSON.stringify(e.data.times)).join(' / '))));
+    console.log('時刻トークン: ' + (await page.evaluate(() => JSON.parse(localStorage.getItem('amity.log.v1')).filter(e => e.msg.startsWith('文字起こし ') && e.data).map(e => JSON.stringify(e.data.times)).join(' / '))));
   }
   const plan = await page.evaluate(() => {
     const s = window.amityDebug;
@@ -324,14 +374,27 @@ try {
       summary: document.getElementById('summary').textContent,
       total: document.getElementById('total').textContent,
       regions: s.speech.regions.map(r => [+r.start.toFixed(2), +r.end.toFixed(2)]),
+      chunks: (s.chunks || []).map(c => ({ start: +c.start.toFixed(2), end: +c.end.toFixed(2), text: c.text, times: (c.times || []).map(t => +t.toFixed(2)), doubts: c.doubts || [] })),
       units: s.units.map(u => ({
         id: u.id, kind: u.kind, start: +u.start.toFixed(2), end: +u.end.toFixed(2), dur: +u.duration.toFixed(2),
         text: u.text, excluded: u.excluded || null, score: +u.score.toFixed(2), cx: +u.cx.toFixed(2),
         selected: s.selected.has(u.id), reasons: u.reasons, mustKeep: u.mustKeep || null,
+        candidate: u.candidate || null, doubts: u.doubts || [], trimOption: !!u.trimOption,
       })),
     };
   });
   fs.writeFileSync(path.join(dir, `plan-${tag}.json`), JSON.stringify(plan, null, 1));
+  // --dump-analysis=FILE: 解析の結果（音量・声の区間・文字起こし・動き）を保存する。構成の回帰テスト（tests/fixtures）に使う
+  const dumpPath = arg('dump-analysis');
+  if (dumpPath) {
+    const a = await page.evaluate(() => {
+      const s = window.amityDebug;
+      return { duration: s.src.duration, rmsDb: Array.from(s.rmsDb, v => +v.toFixed(1)), speech: s.speech, chunks: s.chunks, motion: s.motion, restarts: s.restarts || [], ...(s.lay ? { lay: s.lay } : {}), ...(s.asrVerify ? { verify: s.asrVerify } : {}) };
+    });
+    fs.writeFileSync(dumpPath, JSON.stringify(a));
+    console.log('解析の結果を保存: ' + dumpPath);
+    if (process.argv.includes('--plan-only')) { await browser.close(); process.exit(0); }
+  }
   console.log(plan.summary);
   console.log(plan.total);
   console.log('完成時間: ' + (await page.$eval('#fit', el => (el.hidden ? '(表示なし)' : el.textContent))));
@@ -344,7 +407,7 @@ try {
     console.log(`構成し直し（${replan}秒）: ${await page.$eval('#total', el => el.textContent)} / ${await page.$eval('#fit', el => el.textContent)}`);
   }
   for (const u of plan.units) {
-    console.log(`${u.selected ? '■' : '□'} ${u.kind.padEnd(6)} ${u.start.toFixed(1).padStart(6)}-${u.end.toFixed(1).padStart(6)} score=${u.score} ${u.mustKeep ? '[必ず残す] ' : ''}${u.excluded ? '[除外:' + u.excluded + '] ' : ''}${u.text}`);
+    console.log(`${u.selected ? '■' : '□'} ${u.kind.padEnd(6)} ${u.start.toFixed(1).padStart(6)}-${u.end.toFixed(1).padStart(6)} score=${u.score} ${u.mustKeep ? '[必ず残す] ' : ''}${u.excluded ? '[除外:' + u.excluded + '] ' : ''}${u.text}${u.doubts?.length ? '  [要確認: ' + u.doubts.join('・') + ']' : ''}${u.candidate ? '  [候補: ' + u.candidate + ']' : ''}`);
   }
   await page.screenshot({ path: path.join(dir, `review-${tag}.png`), fullPage: true });
 
@@ -353,13 +416,44 @@ try {
   if (zoom === true) await page.check('#optZoom');
   if (zoom === false) await page.uncheck('#optZoom');
   if (noSubs) await page.uncheck('#optSubs');
+  // --no-fast: 高速書き出し（カットのみ・試作）を使わず、今までの書き出しで比べる
+  if (process.argv.includes('--no-fast') && await page.$('#optFast')) await page.$eval('#optFast', el => { el.checked = false; });
+  // --fast-fail-verify: 高速書き出しの確かめで問題が見つかった場合（今までの書き出しに切り替わるか）
+  if (process.argv.includes('--fast-fail-verify')) await page.evaluate(() => { window.__amityFastTest = 'verify'; });
+  // --fast-broken: 設定（SPS・PPS）を入れない壊れた動画を作り、確かめで見つけて今までの書き出しに切り替わるか
+  if (process.argv.includes('--fast-broken')) await page.evaluate(() => { window.__amityFastTest = 'noparams'; });
   mem.stage = '書き出し';
-  await page.click('#btnRender');
+  if (bgmArg) {
+    await page.check('#optBgm');
+    await page.setInputFiles('#bgmFile', bgmArg);
+    if (bgmVol) await page.$eval('#bgmVol', (el, v) => { el.value = v; el.dispatchEvent(new Event('input')); }, bgmVol);
+  } else if (process.argv.includes('--bgm-unselected')) await page.check('#optBgm'); // BGM を ON にしたまま曲を選ばない
+  // --force-doubt: 字幕の要確認がある状態を作る（選んだ場面の1つ。音声の聞き取りの結果がたまたま確かでも、確認の流れを試すため）
+  if (process.argv.includes('--force-doubt')) {
+    console.log('[要確認を付けた場面] ' + await page.evaluate(() => {
+      const s = window.amityDebug, u = s.units.filter(x => s.selected.has(x.id) && x.kind === 'speech' && x.text === x.aiText)[3];
+      u.doubts = ['（テスト）否定の言葉を聞き落としている可能性'];
+      return `元の時刻 ${u.start.toFixed(2)}秒「${u.text.slice(0, 16)}」`;
+    }));
+  }
+  // --taps=N: 書き出しのボタンを続けて N 回押す（準備に時間がかかって、何度も押してしまったとき）
+  const taps = +(arg('taps') || 1);
+  dialogsAtRender = dialogs;
+  await page.evaluate(n => { for (let i = 0; i < n; i++) document.getElementById('btnRender').click(); }, taps);
+  // 書き出す前の確認（画面の中）が出たら、内容を記録して「このまま書き出す」を押す（これも続けて押す）
+  const first = await page.waitForSelector('#renderCheck:not([hidden]), #renderBar:not([hidden]), #renderError:not([hidden])', { timeout: 120000 });
+  if (await first.evaluate(el => el.id === 'renderCheck')) {
+    console.log('[書き出す前の確認] ' + (await page.$$eval('#renderCheckList li', els => els.map(e => e.textContent).join(' / '))));
+    await page.evaluate(n => { for (let i = 0; i < n; i++) document.getElementById('renderGo').click(); }, taps);
+  }
   if (reloadAt === 'render') await reloadDuring('render');
-  await page.waitForSelector('#stepResult:not([hidden]), #renderError:not([hidden])', { timeout: 600000 });
+  await page.waitForSelector('#stepResult:not([hidden]), #renderError:not([hidden])', { timeout: +(process.env.RENDER_TIMEOUT || 600000) });
   const renderErr = await page.$eval('#renderError', el => (el.hidden ? null : el.textContent));
   if (renderErr) throw new Error('書き出しエラー: ' + renderErr);
   console.log(`書き出し: ${((Date.now() - t1) / 1000).toFixed(1)}秒`);
+  console.log(`書き出しを始めた回数: ${await page.evaluate(() => window.__amityRenderRuns || 0)} / 書き出しの間の確認ダイアログ: ${dialogs - dialogsAtRender}回 / ページのエラー: ${logs.filter(l => l.startsWith('[pageerror]')).length}件`);
+  for (const l of logs.filter(l => l.startsWith('[pageerror]'))) console.log('  ' + l);
+  console.log('段階ごとの時間（秒）: ' + JSON.stringify(await page.evaluate(() => window.__amityTimings || {})));
   const b64 = await page.evaluate(async () => {
     const buf = new Uint8Array(await window.amityDebug.blob.arrayBuffer());
     let s = '';
@@ -374,7 +468,7 @@ try {
     const probe = execSync(`ffprobe -v error -show_entries stream=codec_name,width,height:format=duration -of compact "${outFile}"`, { encoding: 'utf8' });
     console.log('ffprobe: ' + probe.trim().replace(/\n/g, ' | '));
   } catch {}
-  if (realAsr && transcript[0].phrases) await evaluateOutputTiming();
+  if ((realAsr || reazon) && transcript[0]?.phrases) await evaluateOutputTiming();
   if (editExpect) {
     const subs = await page.evaluate(() => window.amityDebug.timeline.flatMap(c => c.subtitles.map(p => p.lines.join(''))).join(''));
     const first = await page.evaluate(() => window.amityDebug.timeline.find(c => c.subtitles.length).subtitles.map(p => `${p.start.toFixed(2)}-${p.end.toFixed(2)} ${p.lines.join('／')}`).join(' | '));
@@ -382,8 +476,12 @@ try {
     console.log(`MP4の字幕に手直しが反映: ${subs.replace(/[、。]/g, '').includes(editExpect.text) ? 'はい' : 'いいえ'}`);
   }
   console.log('演出: ' + (await page.$eval('#outStyle', el => el.textContent)));
-  const tl = await page.evaluate(() => window.amityDebug.timeline.map(c => ({ outStart: +c.outStart.toFixed(2), dur: +c.outDuration.toFixed(2), pos: c.subPos, zoom: c.zoom && { z: c.zoom.z, rect: c.zoom.rect }, crop: c.crop, inCrop: c.inCrop, text: c.text, pieces: c.pieces.map(p => ({ srcStart: p.srcStart, frames: p.frames, outStart: p.outStart })), subs: c.subtitles.map(p => p.lines.join('／')) })));
+  console.log('処理時間: ' + (await page.$eval('#outTimings', el => el.textContent)));
+  const tl = await page.evaluate(() => window.amityDebug.timeline.map(c => ({ outStart: +c.outStart.toFixed(2), dur: +c.outDuration.toFixed(2), pos: c.subPos, zoom: c.zoom && { z: c.zoom.z, rect: c.zoom.rect }, crop: c.crop, inCrop: c.inCrop, text: c.text, pieces: c.pieces.map(p => ({ srcStart: p.srcStart, frames: p.frames, outStart: p.outStart })), subs: c.subtitles.map(p => p.lines.join('／')), pages: c.subtitles.map(p => ({ s: +p.start.toFixed(2), e: +p.end.toFixed(2), t: p.lines.join('') })) })));
   fs.writeFileSync(path.join(dir, `timeline-${tag}.json`), JSON.stringify(tl, null, 1));
+  // --fixes=FILE: 完成後の修正の指示を画面から入れ、適用・プレビューして、書き出し直す
+  // （JSON: [{ kind, at | atText, text, shift, to | toText, note }]。atText はその字幕が出ている時刻、cut の toText はその字幕の終わり）
+  if (fixesArg) await runFixes();
 } catch (err) {
   if (err.message !== 'RELOAD_CHECK_DONE') throw err;
 } finally {
@@ -393,4 +491,53 @@ try {
   const errs = logs.filter(l => /error|pageerror/i.test(l));
   if (errs.length) console.log('ブラウザのエラー:\n' + errs.join('\n'));
   await browser.close();
+}
+
+// 完成後の修正の指示（--fixes）
+async function runFixes() {
+  const fixes = JSON.parse(fs.readFileSync(fixesArg, 'utf8'));
+  const pageTime = async (t, which) => page.evaluate(([t, which]) => {
+    const pages = window.amityDebug.job.render.timeline.flatMap(c => c.subtitles || []);
+    const p = pages.find(x => x.lines.join('') === t);
+    if (!p) return null;
+    return which === 'start' ? p.start + 0.05 : which === 'end' ? p.end - 0.05 : (p.start + p.end) / 2;
+  }, [t, which]);
+  for (const f of fixes) {
+    const at = f.at ?? await pageTime(f.atText, f.kind === 'cut' ? 'start' : 'mid');
+    if (at == null) { console.log('修正の時刻が見つからない:', JSON.stringify(f)); continue; }
+    await page.fill('#fixAt', at.toFixed(2));
+    await page.selectOption('#fixKind', f.kind);
+    if (f.kind === 'subtitle') await page.fill('#fixText', f.text);
+    if (f.kind === 'timing') await page.fill('#fixShift', String(f.shift));
+    if (f.kind === 'cut') await page.fill('#fixTo', String((f.to ?? await pageTime(f.toText, 'end')).toFixed(2)));
+    if (f.kind === 'note') await page.fill('#fixNote', f.note);
+    await page.click('#fixAdd');
+  }
+  for (const b of await page.$$('#fixList button')) if ((await b.textContent()) === 'この内容で使う') await b.click();
+  console.log('修正の指示: ' + (await page.$$eval('#fixList li', els => els.map(e => e.textContent.replace(/編集|削除|この内容で使う/g, '').trim()).join(' / '))));
+  const tFix = Date.now();
+  await page.click('#fixApply');
+  console.log(`修正の適用（構成の作り直し）: ${((Date.now() - tFix) / 1000).toFixed(2)}秒 / ${await page.$eval('#fixStatus', el => el.textContent)}`);
+  console.log('適用後の一覧: ' + (await page.$$eval('#fixList li', els => els.map(e => e.textContent.replace(/編集|削除/g, '').trim()).join(' / '))));
+  await page.click('#fixPlayAfter');
+  await page.waitForTimeout(1500);
+  console.log('修正後のプレビュー: ' + (await page.$eval('#fixPreviewNote', el => el.textContent)) + ' 字幕「' + (await page.$eval('#fixPreviewSub', el => el.textContent)) + '」');
+  await page.screenshot({ path: path.join(dir, `fixes-${tag}.png`), fullPage: true });
+  const t2 = Date.now();
+  await page.click('#fixRender');
+  await page.waitForSelector('#stepResult[hidden]', { state: 'attached' });
+  await page.waitForSelector('#stepResult:not([hidden]), #renderError:not([hidden])', { timeout: +(process.env.RENDER_TIMEOUT || 600000) });
+  console.log('区間の再利用: ' + (await page.$eval('#renderBar', el => el.textContent.trim()).catch(() => '')));
+  console.log(`修正後の書き出し: ${((Date.now() - t2) / 1000).toFixed(1)}秒`);
+  const b64f = await page.evaluate(async () => {
+    const buf = new Uint8Array(await window.amityDebug.blob.arrayBuffer());
+    let s = '';
+    for (let i = 0; i < buf.length; i += 0x8000) s += String.fromCharCode(...buf.subarray(i, i + 0x8000));
+    return btoa(s);
+  });
+  const fixedFile = path.join(dir, `out-${tag}-fixed.mp4`);
+  fs.writeFileSync(fixedFile, Buffer.from(b64f, 'base64'));
+  console.log('修正後の出力:', fixedFile, execSync(`ffprobe -v error -show_entries format=duration -of csv=p=0 "${fixedFile}"`, { encoding: 'utf8' }).trim());
+  const tl2 = await page.evaluate(() => window.amityDebug.timeline.map(c => ({ outStart: +c.outStart.toFixed(2), dur: +c.outDuration.toFixed(2), text: c.text, pieces: c.pieces.map(p => ({ srcStart: p.srcStart, frames: p.frames, outStart: p.outStart })), pages: c.subtitles.map(p => ({ s: +p.start.toFixed(2), e: +p.end.toFixed(2), t: p.lines.join('') })) })));
+  fs.writeFileSync(path.join(dir, `timeline-${tag}-fixed.json`), JSON.stringify(tl2, null, 1));
 }

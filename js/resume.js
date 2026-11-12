@@ -6,7 +6,8 @@ export const SEGMENT_SEC = 8; // 書き出しの1区間の長さの目安（秒�
 // タイムラインを、書き出しの区間に分ける。区間は { index, outStart, frames, slices: [{ c, p, f0, f1 }] }。
 // c: 場面の番号、p: その場面のピースの番号、f0〜f1: そのピースの中のコマの範囲。
 // ピースはなるべく途中で分けない（1区間に収まらない長いピースだけ、コマの位置で分ける）
-export function planSegments(timeline, segSec = SEGMENT_SEC) {
+// byClip: 場面の始まりで新しい区間にする（完成後の修正で1つの場面だけが変わったとき、ほかの場面の区間をそのまま使えるように）
+export function planSegments(timeline, segSec = SEGMENT_SEC, { byClip = Number.isFinite(segSec) } = {}) {
   const cap = Math.max(1, Math.round(segSec * FPS));
   const segs = [];
   let cur = null, frames = 0;
@@ -15,7 +16,7 @@ export function planSegments(timeline, segSec = SEGMENT_SEC) {
     let f0 = 0;
     while (f0 < piece.frames) {
       const rest = piece.frames - f0;
-      if (!cur || cur.frames >= cap || (cur.frames > 0 && rest > cap - cur.frames && rest <= cap)) open();
+      if (!cur || cur.frames >= cap || (byClip && p === 0 && f0 === 0 && cur.frames > 0) || (cur.frames > 0 && rest > cap - cur.frames && rest <= cap)) open();
       const take = Math.min(rest, cap - cur.frames);
       cur.slices.push({ c, p, f0, f1: f0 + take });
       cur.frames += take;
@@ -30,7 +31,7 @@ export const MB = 1024 * 1024;
 
 // 書き出しに必要な保存容量の見積もり（バイト）。
 // 区間のファイル（完成した動画とほぼ同じ大きさ）と、完成したMP4の両方が一時的に必要
-export function renderBytes(outSec, videoBitrate = 10_000_000, audioBitrate = 160_000) {
+export function renderBytes(outSec, videoBitrate = 20_000_000, audioBitrate = 160_000) {
   const out = outSec * (videoBitrate + audioBitrate) / 8 * 1.05;
   return { segments: out, output: out, total: out * 2 + 30 * MB };
 }
@@ -115,4 +116,24 @@ export function jobIdFor(file) {
 // 写真アプリから選び直すとファイル名が変わることがあるので、大きさと長さで確かめる
 export function sameSource(job, file, duration) {
   return !!job && !!file && job.file.size === file.size && Math.abs((job.duration ?? 0) - (duration ?? 0)) < 0.2;
+}
+
+// 区間の中身を表す鍵。同じ鍵の区間は、書き出した映像（字幕・ズーム・冒頭のテキスト・最後のフェードも含む）が同じなので、
+// 前に書き出した区間のファイルをそのまま使える（完成後の修正で、変わっていない場面を書き出し直さない）。
+// 時刻はすべて区間の始まりからの時刻にする（前の場面をカットして区間の位置がずれても、中身が同じなら同じ鍵）
+export function segmentKey(timeline, seg, overlay = null, endFade = 0, endHold = 0) {
+  const r = t => Math.round(t * 1000) / 1000;
+  const a = seg.outStart, b = seg.outStart + seg.frames / FPS;
+  const total = overlay?.total ?? 0;
+  const clips = [...new Set(seg.slices.map(s => s.c))];
+  const subs = timeline.flatMap(c => (c.subtitles || []).filter(p => p.end > a && p.start < b).map(p => [p.lines.join('|'), r(p.start - a), r(p.end - a), p.pos || '', p.cont ? 1 : 0]));
+  const op = overlay?.opening && overlay.opening.end > a && overlay.opening.start < b ? [overlay.opening.lines?.join('|'), r(overlay.opening.start - a), r(overlay.opening.end - a)] : null;
+  const fadeFrom = total - endFade - endHold;
+  const fade = endFade && b > fadeFrom ? [r(fadeFrom - a), r(total - a)] : null;
+  return JSON.stringify({
+    frames: seg.frames,
+    slices: seg.slices.map(s => { const c = timeline[s.c], p = c.pieces[s.p]; return [r(p.srcStart), p.frames, s.f0, s.f1, c.source ?? null]; }),
+    view: clips.map(c => [timeline[c].crop, timeline[c].zoom || null, r(timeline[c].outStart - a), timeline[c].subPos || '']),
+    subs, op, fade,
+  });
 }

@@ -1,0 +1,290 @@
+{
+ "source": "IMG_6052（57.19秒）",
+ "manual": "手動編集（49.53秒）",
+ "ai": "AI自動編集（53.19秒・v0.9.8）",
+ "duration": 49.53,
+ "targetSec": 60,
+ "pauses": {
+  "median": 0.15,
+  "p75": 0.2,
+  "p90": 0.3,
+  "max": 0.45,
+  "note": "手動編集の動画の音声を測った話の途中の間（1.5秒未満）"
+ },
+ "note": "手動編集（正解）と元の動画の照合結果。kept/removed は元の動画の秒（2コマ以内の小さなカットは見分けられない）。subtitles は手動編集の字幕17枚（画面の字幕の帯を見つけて読んだ）。照合は音声だけで行った（手動編集は映像を拡大しているため）。spoken の retake は手動編集が削った発言",
+ "kept": [
+  {
+   "srcStart": 0.83,
+   "srcEnd": 7.77,
+   "outStart": 0.0,
+   "outEnd": 6.93
+  },
+  {
+   "srcStart": 7.97,
+   "srcEnd": 44.73,
+   "outStart": 6.93,
+   "outEnd": 43.67
+  },
+  {
+   "srcStart": 45.17,
+   "srcEnd": 46.3,
+   "outStart": 43.67,
+   "outEnd": 44.8
+  },
+  {
+   "srcStart": 46.93,
+   "srcEnd": 48.9,
+   "outStart": 44.8,
+   "outEnd": 46.77
+  },
+  {
+   "srcStart": 53.57,
+   "srcEnd": 54.17,
+   "outStart": 46.77,
+   "outEnd": 47.37
+  },
+  {
+   "srcStart": 54.77,
+   "srcEnd": 56.93,
+   "outStart": 47.37,
+   "outEnd": 49.53
+  }
+ ],
+ "removed": [
+  {
+   "srcStart": 0,
+   "srcEnd": 0.83,
+   "dur": 0.83
+  },
+  {
+   "srcStart": 7.77,
+   "srcEnd": 7.97,
+   "dur": 0.2
+  },
+  {
+   "srcStart": 44.73,
+   "srcEnd": 45.17,
+   "dur": 0.44
+  },
+  {
+   "srcStart": 46.3,
+   "srcEnd": 46.93,
+   "dur": 0.63
+  },
+  {
+   "srcStart": 48.9,
+   "srcEnd": 53.57,
+   "dur": 4.67
+  },
+  {
+   "srcStart": 54.17,
+   "srcEnd": 54.77,
+   "dur": 0.6
+  },
+  {
+   "srcStart": 56.93,
+   "srcEnd": 57.19,
+   "dur": 0.26
+  }
+ ],
+ "subtitles": [
+  {
+   "text": "セルフカットに使うすきバサミ",
+   "outStart": 1.2,
+   "outEnd": 2.93,
+   "srcStart": 2.03,
+   "srcEnd": 3.77,
+   "chars": 14
+  },
+  {
+   "text": "何を基準に選べば良いのか",
+   "outStart": 3.1,
+   "outEnd": 5.27,
+   "srcStart": 3.93,
+   "srcEnd": 6.11,
+   "chars": 12
+  },
+  {
+   "text": "すき量",
+   "outStart": 5.67,
+   "outEnd": 6.9,
+   "srcStart": 6.5,
+   "srcEnd": 7.74,
+   "chars": 3
+  },
+  {
+   "text": "すき量15%のものを使ってください",
+   "outStart": 7.07,
+   "outEnd": 10.4,
+   "srcStart": 8.1,
+   "srcEnd": 11.44,
+   "chars": 17
+  },
+  {
+   "text": "パーセンテージが高ければ高いほど、",
+   "outStart": 10.7,
+   "outEnd": 13.57,
+   "srcStart": 11.73,
+   "srcEnd": 14.61,
+   "chars": 16
+  },
+  {
+   "text": "一度すきバサミを入れた",
+   "outStart": 14.1,
+   "outEnd": 16.4,
+   "srcStart": 15.13,
+   "srcEnd": 17.44,
+   "chars": 11
+  },
+  {
+   "text": "ドカーッと軽くなってしまいます",
+   "outStart": 16.4,
+   "outEnd": 18.13,
+   "srcStart": 17.43,
+   "srcEnd": 19.17,
+   "chars": 15
+  },
+  {
+   "text": "逆に低いもの",
+   "outStart": 18.37,
+   "outEnd": 20.27,
+   "srcStart": 19.4,
+   "srcEnd": 21.27,
+   "chars": 6
+  },
+  {
+   "text": "10%や5%のもの",
+   "outStart": 20.27,
+   "outEnd": 22.7,
+   "srcStart": 21.27,
+   "srcEnd": 23.74,
+   "chars": 9
+  },
+  {
+   "text": "1度ハサミを入れた",
+   "outStart": 23.2,
+   "outEnd": 25.63,
+   "srcStart": 24.23,
+   "srcEnd": 26.67,
+   "chars": 9
+  },
+  {
+   "text": "あまり変化が感じられないです。",
+   "outStart": 25.63,
+   "outEnd": 27.87,
+   "srcStart": 26.67,
+   "srcEnd": 28.91,
+   "chars": 15
+  },
+  {
+   "text": "15%のものを使ってください",
+   "outStart": 27.87,
+   "outEnd": 31.43,
+   "srcStart": 28.9,
+   "srcEnd": 32.47,
+   "chars": 14
+  },
+  {
+   "text": "価格は2000円以上なものを選んでください",
+   "outStart": 31.77,
+   "outEnd": 36.1,
+   "srcStart": 32.8,
+   "srcEnd": 37.14,
+   "chars": 21
+  },
+  {
+   "text": "セットで2000円というわけではなく、",
+   "outStart": 36.47,
+   "outEnd": 38.43,
+   "srcStart": 37.5,
+   "srcEnd": 39.47,
+   "chars": 18
+  },
+  {
+   "text": "すきバサミ単体で2000円以上なものがベスト",
+   "outStart": 38.9,
+   "outEnd": 42.9,
+   "srcStart": 39.93,
+   "srcEnd": 43.94,
+   "chars": 22
+  },
+  {
+   "text": "100均のものは使わない方が良いです",
+   "outStart": 43.8,
+   "outEnd": 46.8,
+   "srcStart": 45.3,
+   "srcEnd": 53.61,
+   "chars": 18
+  },
+  {
+   "text": "参考にすきバサミを選んでみてください",
+   "outStart": 46.97,
+   "outEnd": 49.4,
+   "srcStart": 53.77,
+   "srcEnd": 56.81,
+   "chars": 18
+  }
+ ],
+ "spoken": [
+  {
+   "start": 1.48,
+   "end": 7.75,
+   "text": "セルフカットに使うすきバサミ何を基準に選べばよいのかそれはすき量です",
+   "retake": false
+  },
+  {
+   "start": 8.05,
+   "end": 11.45,
+   "text": "すき量十五％のものを使ってください",
+   "retake": false
+  },
+  {
+   "start": 10.84,
+   "end": 19.65,
+   "text": "そのパーセンテージが高ければ高いほど一度すきバサミ入れたどかっと軽くなっちゃいます逆に",
+   "retake": false
+  },
+  {
+   "start": 19.85,
+   "end": 28.85,
+   "text": "低いもの十％五％のものだと一度ハサミを入れたあまり変化が感じられないです",
+   "retake": false
+  },
+  {
+   "start": 28.97,
+   "end": 32.2,
+   "text": "十五％のものを使ってください",
+   "retake": false
+  },
+  {
+   "start": 32.41,
+   "end": 36.9,
+   "text": "あと価格は二千円以上なものを選んでください",
+   "retake": false
+  },
+  {
+   "start": 37,
+   "end": 44.6,
+   "text": "セットで二千円というわけではなくすきバサミ単体で二千円以上なものがベストです",
+   "retake": false
+  },
+  {
+   "start": 44.63,
+   "end": 48.8,
+   "text": "100均のものはあまりね使わないほうがよいです",
+   "retake": false
+  },
+  {
+   "start": 48.75,
+   "end": 53.86,
+   "text": "ただ単に切れないっていうことにつながっていきます",
+   "retake": true
+  },
+  {
+   "start": 54.16,
+   "end": 56.8,
+   "text": "すきバサミを選んでみて下さい",
+   "retake": false
+  }
+ ]
+}

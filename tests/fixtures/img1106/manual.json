@@ -1,0 +1,464 @@
+{
+ "source": "3本: タイトルなし(20261106-003623)（25.40秒）・IMG_6354（17.90秒）・IMG_6355（36.17秒）。合計 79.47秒",
+ "manual": "タイトルなし(20261106-003810)（56.17秒）",
+ "ai": "amity-short-20261106-0924（61.00秒・複数の動画を作り直す前）",
+ "duration": 56.17,
+ "targetSec": 60,
+ "pauses": {
+  "median": 0.15,
+  "p75": 0.25,
+  "p90": 0.3,
+  "max": 0.6,
+  "note": "手動編集の動画の音声を測った話の途中の間（1.5秒未満）"
+ },
+ "note": "3本の動画をつないだ手動編集（正解）と元の動画の照合結果。時刻はアプリの「つないだ時刻」（動画と動画の間に1秒の無音をはさむ。lay）。kept の source は何本目の動画か。subtitles は手動編集の字幕23枚。照合は映像と音声で行った。言い直しはなく、手動編集は話の途中の間を細かく詰めている",
+ "kept": [
+  {
+   "srcStart": 1.57,
+   "srcEnd": 2.43,
+   "outStart": 0.0,
+   "outEnd": 0.87,
+   "source": 1
+  },
+  {
+   "srcStart": 4.13,
+   "srcEnd": 8.87,
+   "outStart": 0.87,
+   "outEnd": 5.53,
+   "source": 1
+  },
+  {
+   "srcStart": 11.3,
+   "srcEnd": 12.97,
+   "outStart": 5.53,
+   "outEnd": 7.23,
+   "source": 1
+  },
+  {
+   "srcStart": 13.2,
+   "srcEnd": 16.2,
+   "outStart": 7.23,
+   "outEnd": 10.23,
+   "source": 1
+  },
+  {
+   "srcStart": 18.53,
+   "srcEnd": 24.57,
+   "outStart": 10.23,
+   "outEnd": 15.83,
+   "source": 1
+  },
+  {
+   "srcStart": 28.47,
+   "srcEnd": 32.9,
+   "outStart": 15.83,
+   "outEnd": 20.23,
+   "source": 2
+  },
+  {
+   "srcStart": 33.33,
+   "srcEnd": 36.6,
+   "outStart": 20.23,
+   "outEnd": 23.5,
+   "source": 2
+  },
+  {
+   "srcStart": 36.9,
+   "srcEnd": 39.07,
+   "outStart": 23.5,
+   "outEnd": 25.67,
+   "source": 2
+  },
+  {
+   "srcStart": 39.6,
+   "srcEnd": 42.3,
+   "outStart": 25.67,
+   "outEnd": 28.37,
+   "source": 2
+  },
+  {
+   "srcStart": 47.8,
+   "srcEnd": 48.43,
+   "outStart": 28.37,
+   "outEnd": 29.0,
+   "source": 3
+  },
+  {
+   "srcStart": 48.83,
+   "srcEnd": 52.1,
+   "outStart": 29.0,
+   "outEnd": 32.3,
+   "source": 3
+  },
+  {
+   "srcStart": 52.53,
+   "srcEnd": 54.47,
+   "outStart": 32.3,
+   "outEnd": 34.23,
+   "source": 3
+  },
+  {
+   "srcStart": 56.63,
+   "srcEnd": 61.13,
+   "outStart": 34.23,
+   "outEnd": 38.73,
+   "source": 3
+  },
+  {
+   "srcStart": 61.33,
+   "srcEnd": 75.87,
+   "outStart": 38.73,
+   "outEnd": 52.9,
+   "source": 3
+  },
+  {
+   "srcStart": 78.27,
+   "srcEnd": 81.57,
+   "outStart": 52.9,
+   "outEnd": 56.2,
+   "source": 3
+  }
+ ],
+ "removed": [
+  {
+   "srcStart": 0,
+   "srcEnd": 1.57,
+   "dur": 1.57
+  },
+  {
+   "srcStart": 2.43,
+   "srcEnd": 4.13,
+   "dur": 1.7
+  },
+  {
+   "srcStart": 8.87,
+   "srcEnd": 11.3,
+   "dur": 2.43
+  },
+  {
+   "srcStart": 12.97,
+   "srcEnd": 13.2,
+   "dur": 0.23
+  },
+  {
+   "srcStart": 16.2,
+   "srcEnd": 18.53,
+   "dur": 2.33
+  },
+  {
+   "srcStart": 24.57,
+   "srcEnd": 28.47,
+   "dur": 3.9
+  },
+  {
+   "srcStart": 32.9,
+   "srcEnd": 33.33,
+   "dur": 0.43
+  },
+  {
+   "srcStart": 36.6,
+   "srcEnd": 36.9,
+   "dur": 0.3
+  },
+  {
+   "srcStart": 39.07,
+   "srcEnd": 39.6,
+   "dur": 0.53
+  },
+  {
+   "srcStart": 42.3,
+   "srcEnd": 47.8,
+   "dur": 5.5
+  },
+  {
+   "srcStart": 48.43,
+   "srcEnd": 48.83,
+   "dur": 0.4
+  },
+  {
+   "srcStart": 52.1,
+   "srcEnd": 52.53,
+   "dur": 0.43
+  },
+  {
+   "srcStart": 54.47,
+   "srcEnd": 56.63,
+   "dur": 2.16
+  },
+  {
+   "srcStart": 61.13,
+   "srcEnd": 61.33,
+   "dur": 0.2
+  },
+  {
+   "srcStart": 75.87,
+   "srcEnd": 78.27,
+   "dur": 2.4
+  },
+  {
+   "srcStart": 81.57,
+   "srcEnd": 81.73,
+   "dur": 0.16
+  }
+ ],
+ "subtitles": [
+  {
+   "text": "セルフカットで",
+   "outStart": 1.17,
+   "outEnd": 1.97,
+   "srcStart": 4.43,
+   "srcEnd": 5.24,
+   "chars": 7
+  },
+  {
+   "text": "梳きバサミを使って",
+   "outStart": 1.97,
+   "outEnd": 3.6,
+   "srcStart": 5.23,
+   "srcEnd": 6.87,
+   "chars": 9
+  },
+  {
+   "text": "髪の量を軽くする際",
+   "outStart": 3.6,
+   "outEnd": 5.5,
+   "srcStart": 6.87,
+   "srcEnd": 8.84,
+   "chars": 9
+  },
+  {
+   "text": "根元付近から",
+   "outStart": 5.73,
+   "outEnd": 7.2,
+   "srcStart": 11.47,
+   "srcEnd": 12.94,
+   "chars": 6
+  },
+  {
+   "text": "軽くするとどうなってしまうのか",
+   "outStart": 7.2,
+   "outEnd": 10.03,
+   "srcStart": 12.93,
+   "srcEnd": 16.01,
+   "chars": 15
+  },
+  {
+   "text": "髪の量が",
+   "outStart": 10.5,
+   "outEnd": 11.1,
+   "srcStart": 18.8,
+   "srcEnd": 19.41,
+   "chars": 4
+  },
+  {
+   "text": "すごく軽く感じます",
+   "outStart": 11.1,
+   "outEnd": 13.2,
+   "srcStart": 19.4,
+   "srcEnd": 21.54,
+   "chars": 9
+  },
+  {
+   "text": "こんなことが起こります",
+   "outStart": 14.17,
+   "outEnd": 15.9,
+   "srcStart": 22.9,
+   "srcEnd": 28.57,
+   "chars": 11
+  },
+  {
+   "text": "根元近くから",
+   "outStart": 15.93,
+   "outEnd": 16.9,
+   "srcStart": 28.6,
+   "srcEnd": 29.57,
+   "chars": 6
+  },
+  {
+   "text": "ピンピンした髪の毛が",
+   "outStart": 16.9,
+   "outEnd": 18.4,
+   "srcStart": 29.57,
+   "srcEnd": 31.07,
+   "chars": 10
+  },
+  {
+   "text": "たくさんできてきます",
+   "outStart": 18.4,
+   "outEnd": 20.33,
+   "srcStart": 31.07,
+   "srcEnd": 33.44,
+   "chars": 10
+  },
+  {
+   "text": "まとまらない",
+   "outStart": 21.53,
+   "outEnd": 23.5,
+   "srcStart": 34.63,
+   "srcEnd": 36.61,
+   "chars": 6
+  },
+  {
+   "text": "変なボリューム感",
+   "outStart": 23.5,
+   "outEnd": 25.53,
+   "srcStart": 36.9,
+   "srcEnd": 38.94,
+   "chars": 8
+  },
+  {
+   "text": "ヘアスタイルのバランスがおかしい",
+   "outStart": 25.6,
+   "outEnd": 28.43,
+   "srcStart": 39.0,
+   "srcEnd": 47.87,
+   "chars": 16
+  },
+  {
+   "text": "良くないことがたくさん起こってしまいます",
+   "outStart": 29.23,
+   "outEnd": 32.33,
+   "srcStart": 49.03,
+   "srcEnd": 52.57,
+   "chars": 20
+  },
+  {
+   "text": "梳きバサミを入れるのはやめてください",
+   "outStart": 34.3,
+   "outEnd": 37.8,
+   "srcStart": 56.7,
+   "srcEnd": 60.21,
+   "chars": 18
+  },
+  {
+   "text": "トップ表面辺りは必ずそれを守ってください",
+   "outStart": 38.7,
+   "outEnd": 43.3,
+   "srcStart": 61.1,
+   "srcEnd": 66.11,
+   "chars": 20
+  },
+  {
+   "text": "やってしまうと取り返しがつかないです",
+   "outStart": 43.37,
+   "outEnd": 45.17,
+   "srcStart": 66.17,
+   "srcEnd": 67.97,
+   "chars": 18
+  },
+  {
+   "text": "修正カットするのに",
+   "outStart": 45.7,
+   "outEnd": 47.33,
+   "srcStart": 68.5,
+   "srcEnd": 70.14,
+   "chars": 9
+  },
+  {
+   "text": "半年以上",
+   "outStart": 47.33,
+   "outEnd": 48.93,
+   "srcStart": 70.13,
+   "srcEnd": 71.74,
+   "chars": 4
+  },
+  {
+   "text": "なにもせずに",
+   "outStart": 49.13,
+   "outEnd": 50.1,
+   "srcStart": 71.93,
+   "srcEnd": 72.91,
+   "chars": 6
+  },
+  {
+   "text": "伸ばし続けなければならないです",
+   "outStart": 50.1,
+   "outEnd": 52.97,
+   "srcStart": 72.9,
+   "srcEnd": 78.34,
+   "chars": 15
+  },
+  {
+   "text": "根元付近に梳きバサミを入れるのはやめてください",
+   "outStart": 53.1,
+   "outEnd": 56.03,
+   "srcStart": 78.47,
+   "srcEnd": 81.41,
+   "chars": 23
+  }
+ ],
+ "spoken": [
+  {
+   "start": 3.98,
+   "end": 8.95,
+   "text": "セルフカットですきバサミつかって髪の量を軽くする際",
+   "retake": false
+  },
+  {
+   "start": 10.66,
+   "end": 16.1,
+   "text": "根元付近から軽くするとどうなってしまうのか",
+   "retake": false
+  },
+  {
+   "start": 17.74,
+   "end": 21.93,
+   "text": "髪の量がすごく軽く感じます",
+   "retake": false
+  },
+  {
+   "start": 21.13,
+   "end": 24.7,
+   "text": "でもこんなことが起こります",
+   "retake": false
+  },
+  {
+   "start": 28.01,
+   "end": 42.32,
+   "text": "根元近くからピンピンした髪の毛がたくさんできてきこれによってまとまらない変なボリューム感ヘアスタイルのバランスがおかしい",
+   "retake": false
+  },
+  {
+   "start": 47.13,
+   "end": 52.13,
+   "text": "そのようなよくないことがたくさん起こってしまいます",
+   "retake": false
+  },
+  {
+   "start": 52.48,
+   "end": 55.51,
+   "text": "うならないために",
+   "retake": false
+  },
+  {
+   "start": 55.77,
+   "end": 60.68,
+   "text": "根元付近にすきバサミを入れるのはやめてください",
+   "retake": false
+  },
+  {
+   "start": 59.76,
+   "end": 66.04,
+   "text": "特にトップ表面辺りは必ずそれを守ってください",
+   "retake": false
+  },
+  {
+   "start": 64.96,
+   "end": 68.6,
+   "text": "やってしまうと取り返しがつかないです",
+   "retake": false
+  },
+  {
+   "start": 67.56,
+   "end": 75.78,
+   "text": "修正カットするのに下手すれば半年以上何もせずに伸ばし続けなければならないです",
+   "retake": false
+  },
+  {
+   "start": 77.27,
+   "end": 81.38,
+   "text": "根元付近にすきバサミを入れるのはやめてください",
+   "retake": false
+  }
+ ]
+}
